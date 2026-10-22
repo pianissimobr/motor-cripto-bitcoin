@@ -109,6 +109,8 @@ export type CreateLinkInput = {
   indiceHd: number;
   caminhoDerivacao: string;
   enderecoDeposito: string;
+  carteiraFriaId: string | null;
+  carteiraFriaEndereco: string;
   rampUrl: string;
   status: LinkStatus;
   expiraEm: Date;

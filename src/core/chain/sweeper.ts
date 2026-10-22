@@ -1,6 +1,8 @@
 import { Contract, type Provider } from 'ethers';
 import { encodeTransfer, ERC20_ABI } from './erc20.js';
 import { GasSponsor } from './gas-sponsor.js';
+import { withinTolerance } from '../domain/money.js';
+import type { PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories } from '../ports/index.js';
 import { providerChainId, type ProviderFactory } from './provider.js';
@@ -27,6 +29,10 @@ export type SweeperOptions = {
   gasSponsorMinBalanceWei: bigint;
   /** Numero maximo de links processados por ciclo. */
   batchSize: number;
+  /** A5: quantos links terminais checar por ciclo na reconciliacao. */
+  reconcileBatchSize: number;
+  /** Tolerancia para classificar pago vs parcial. */
+  tolerancePct: number;
 };
 
 export type SweepResult = {
@@ -34,6 +40,8 @@ export type SweepResult = {
   movidos: number;
   falhas: number;
   aguardandoGas: number;
+  /** A5: links resgatados por saldo preso (sweep reorgado / falho). */
+  resgatados: number;
   erros: string[];
 };
 
@@ -51,17 +59,28 @@ export class Sweeper {
 
   constructor(private readonly deps: SweeperDeps) {}
 
+  private get tolerancePct(): number {
+    return this.deps.options.tolerancePct;
+  }
+
   async runCycle(): Promise<SweepResult> {
     const result: SweepResult = {
       processados: 0,
       movidos: 0,
       falhas: 0,
       aguardandoGas: 0,
+      resgatados: 0,
       erros: [],
     };
     if (this.running) return result;
     this.running = true;
     try {
+      // A5: primeiro reavalia links que NAO estao na fila normal.
+      // Um sweep reorgado (ou que o RPC deixou passar) deixa o saldo de
+      // volta no endereco derivado com o link marcado como 'movido':
+      // sem essa passagem, os fundos ficariam presos para sempre.
+      await this.reconcileStrandedBalances(result);
+
       const processados = new Set<string>();
       for (const status of SWEEPABLE_STATUSES) {
         const links = await this.deps.repos.links.listByStatus(status, this.deps.options.batchSize);
@@ -87,6 +106,87 @@ export class Sweeper {
     }
   }
 
+  /**
+   * A5: reavalia links em estados terminais/ja movidos.
+   *
+   * Se o endereco derivado tem saldo, o dinheiro esta preso ali: ou o
+   * sweep anterior caiu num reorg, ou a transacao sumiu do mempool.
+   * O link volta para 'pago' (ou 'parcial') e volta a ser varrido.
+   *
+   * Regra de ouro: nunca recusar dinheiro que chegou.
+   */
+  private async reconcileStrandedBalances(result: SweepResult): Promise<void> {
+    const { repos, logger } = this.deps;
+    const candidates: PaymentLink['status'][] = ['movido', 'expirado', 'revogado'];
+
+    for (const status of candidates) {
+      const links = await repos.links.listByStatus(status, this.deps.options.reconcileBatchSize);
+      if (links.length === 0) continue;
+
+      // Agrupa por chain para nao abrir um provider por link.
+      const porChain = new Map<string, PaymentLink[]>();
+      for (const link of links) {
+        const arr = porChain.get(link.chain) ?? [];
+        arr.push(link);
+        porChain.set(link.chain, arr);
+      }
+
+      for (const [chain, grupo] of porChain) {
+        let provider;
+        try {
+          provider = this.deps.providerFactory(chain);
+        } catch (err) {
+          result.erros.push(`reconciliacao ${chain}: ${err instanceof Error ? err.message : err}`);
+          continue;
+        }
+
+        for (const link of grupo) {
+          try {
+            const token = new Contract(link.tokenContract, ERC20_ABI, provider);
+            const saldo = (await token.getFunction('balanceOf')(link.enderecoDeposito)) as bigint;
+            if (saldo <= 0n) continue;
+
+            // Ha saldo preso: ressuscita o link para a fila de sweep.
+            const novo = await this.recomputeStatus(link);
+            await repos.links.updateStatus(link.id, novo);
+            result.resgatados++;
+            logger.warn(
+              { linkId: link.id, de: status, para: novo, saldo: saldo.toString() },
+              'saldo preso encontrado em link fora da fila de sweep',
+            );
+            await repos.audit.record({
+              ator: 'worker',
+              acao: 'sweep.reconciliado',
+              entidade: 'link',
+              entidadeId: link.id,
+              detalhes: {
+                statusAnterior: status,
+                statusNovo: novo,
+                saldoBaseUnits: saldo.toString(),
+                token: link.tokenContract,
+                chain,
+              },
+            });
+          } catch (err) {
+            result.erros.push(
+              `reconciliacao ${link.id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** Recalcula 'pago' vs 'parcial' a partir do total já confirmado. */
+  private async recomputeStatus(link: PaymentLink): Promise<'pago' | 'parcial'> {
+    const total = await this.deps.repos.payments.sumConfirmedByLink(link.id);
+    if (link.expectedBaseUnits && link.expectedBaseUnits > 0n) {
+      const ok = withinTolerance(link.expectedBaseUnits, total, this.tolerancePct);
+      return ok ? 'pago' : 'parcial';
+    }
+    return 'pago';
+  }
+
   private async sweepLink(linkId: string): Promise<'movido' | 'aguardando_gas' | 'ignorado'> {
     const { repos, logger } = this.deps;
     const link = await repos.links.findById(linkId);
@@ -99,13 +199,11 @@ export class Sweeper {
 
     const saldo = (await balanceOf(link.enderecoDeposito)) as bigint;
     if (saldo <= 0n) {
-      // Nada a mover (pode ter sido movido em um ciclo anterior).
-      const existing = await repos.transfers.findByLink(link.id);
-      const done = existing.some((t) => t.status === 'confirmado');
-      if (!done) {
-        await repos.links.updateStatus(link.id, 'pago_sem_gas');
-        logger.warn({ linkId: link.id }, 'saldo zero no endereco derivado');
-      }
+      // A2: saldo zero NAO e falta de gas. "pago_sem_gas" significa
+      // "recebeu, mas nao consegue pagar o proprio gas" -- usar esse status
+      // aqui dava um diagnostico errado ao operador.
+      // O status do link fica intacto para o proximo ciclo tentar de novo.
+      logger.debug({ linkId: link.id }, 'saldo zero no endereco derivado: nada a mover');
       return 'ignorado';
     }
 
@@ -217,15 +315,32 @@ export class Sweeper {
     }
   }
 
-  /** Descobre a carteira fria de destino do link. */
-  private async resolveColdWallet(link: { rampProfileId: string; chain: string }): Promise<string> {
-    const profile = await this.deps.repos.rampProfiles.findById(link.rampProfileId);
+  /**
+   * Destino do sweep.
+   *
+   * A1: usa SEMPRE o endereco persistido no link (a escolha feita na UI).
+   * O fallback por chain existe apenas para links legados criados antes da
+   * correcao, e nesse caso emite aviso: o destino pode nao ser o esperado.
+   */
+  private async resolveColdWallet(link: {
+    id: string;
+    rampProfileId: string;
+    chain: string;
+    carteiraFriaEndereco: string | null;
+  }): Promise<string> {
+    if (link.carteiraFriaEndereco) return link.carteiraFriaEndereco;
+
     const wallets = await this.deps.repos.coldWallets.list();
     const candidate = wallets.find((w) => w.chain.toLowerCase() === link.chain.toLowerCase());
-    if (candidate) return candidate.address;
+    if (candidate) {
+      this.deps.logger.warn(
+        { linkId: link.id, chain: link.chain, fallback: candidate.address },
+        'link legado sem destino persistado: usando fallback por chain',
+      );
+      return candidate.address;
+    }
     throw new Error(
-      `nenhuma carteira fria cadastrada para a chain "${link.chain}"` +
-        (profile ? '' : ' (perfil Ramp nao encontrado)'),
+      `nenhuma carteira fria para a chain "${link.chain}" e o link nao tem destino persistado`,
     );
   }
 }

@@ -57,11 +57,12 @@ async function main(): Promise<void> {
       }
 
       const sweepResult = await motor.sweeper.runCycle();
-      if (sweepResult.movidos > 0 || sweepResult.falhas > 0) {
+      if (sweepResult.movidos > 0 || sweepResult.falhas > 0 || sweepResult.resgatados > 0) {
         logger.info(
           {
             processados: sweepResult.processados,
             movidos: sweepResult.movidos,
+            resgatados: sweepResult.resgatados,
             falhas: sweepResult.falhas,
             aguardandoGas: sweepResult.aguardandoGas,
           },

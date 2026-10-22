@@ -4,6 +4,7 @@ import { TRANSFER_TOPIC, addressToTopic, decodeTransferLog } from './erc20.js';
 import { divRound, withinTolerance } from '../domain/money.js';
 import type { LinkStatus, PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
+import type { LinkStateMachine } from '../services/link-state-machine.js';
 import type { MotorRepositories } from '../ports/index.js';
 import type { ProviderFactory } from './provider.js';
 
@@ -41,6 +42,8 @@ export type MonitorDeps = {
   providerFactory: ProviderFactory;
   logger: Logger;
   options: MonitorOptions;
+  /** A4: para validar transicoes de status. */
+  linkState: LinkStateMachine;
 };
 
 export class BlockchainMonitor {
@@ -264,7 +267,13 @@ export class BlockchainMonitor {
       if (credit) result.creditosCriados++;
 
       const status = await this.linkStatusFor(link);
-      await repos.links.updateStatus(link.id, status);
+      // A4: passa pela maquina de estados (valida + audita o motivo).
+      await this.deps.linkState.transition({
+        linkId: link.id,
+        to: status,
+        reason: `${confirmacoes} confirmacoes, ${payment.valorBaseUnits} ${payment.token} recebido`,
+        actor: 'monitor',
+      });
       result.pagamentosConfirmados++;
 
       logger.info(

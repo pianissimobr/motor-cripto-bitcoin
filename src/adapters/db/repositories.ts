@@ -60,6 +60,9 @@ import type {
  * entre drivers). O conteudo em claro nunca chega nesta camada.
  */
 
+/** A3: lock de serializacao da cadeia de auditoria (escopo global do banco). */
+const AUDIT_LOCK_ID = 7_315_902_411;
+
 const enc = (buf: Buffer): string => buf.toString('base64');
 const dec = (value: string): Buffer => Buffer.from(value, 'base64');
 
@@ -297,6 +300,8 @@ function toPaymentLink(row: typeof linksGerados.$inferSelect): PaymentLink {
     indiceHd: row.indiceHd,
     caminhoDerivacao: row.caminhoDerivacao,
     enderecoDeposito: row.enderecoDeposito,
+    carteiraFriaId: row.carteiraFriaId,
+    carteiraFriaEndereco: row.carteiraFriaEndereco,
     rampUrl: row.rampUrl,
     status: row.status as LinkStatus,
     expiraEm: row.expiraEm,
@@ -326,6 +331,8 @@ class DrizzleLinkRepository implements LinkRepository {
           indiceHd: input.indiceHd,
           caminhoDerivacao: input.caminhoDerivacao,
           enderecoDeposito: input.enderecoDeposito,
+          carteiraFriaId: input.carteiraFriaId,
+          carteiraFriaEndereco: input.carteiraFriaEndereco,
           rampUrl: input.rampUrl,
           status: input.status,
           expiraEm: input.expiraEm,
@@ -781,10 +788,17 @@ class DrizzleAuditRepository implements AuditRepository {
 
   async record(input: RecordAuditInput): Promise<void> {
     await this.db.transaction(async (tx) => {
+      // A3: sem este lock, duas transacoes concorrentes (API + worker) leem
+      // o mesmo antecesor e a cadeia de auditoria BIFURCA silenciosamente.
+      // O lock e por transacao (soltado no commit/rollback).
+      await tx.execute(sql`select pg_advisory_xact_lock(${AUDIT_LOCK_ID})`);
+
+      // Ordenacao deterministica: criado_em tem precisao de microsegundo e
+      // pode empatar; `id` (uuid random) desempata de forma estavel.
       const [last] = await tx
         .select({ hash: eventosAuditoria.hash })
         .from(eventosAuditoria)
-        .orderBy(desc(eventosAuditoria.criadoEm))
+        .orderBy(desc(eventosAuditoria.criadoEm), desc(eventosAuditoria.id))
         .limit(1);
       const hashAnterior = last?.hash ?? null;
       const detalhes = input.detalhes ? JSON.stringify(input.detalhes) : null;

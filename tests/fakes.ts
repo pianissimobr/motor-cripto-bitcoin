@@ -57,7 +57,8 @@ export class FakeCustomerRepository implements CustomerRepository {
   }
 
   async findById(id: string): Promise<StoredCustomer | null> {
-    return this.rows.find((r) => r.id === id) ?? null;
+    const r = this.rows.find((x) => x.id === id);
+    return r ? { ...r } : null;
   }
 
   async findByEmailBidx(emailBidx: string): Promise<StoredCustomer | null> {
@@ -103,7 +104,8 @@ export class FakeRampProfileRepository implements RampProfileRepository {
   }
 
   async findById(id: string): Promise<RampProfile | null> {
-    return this.rows.find((r) => r.id === id) ?? null;
+    const r = this.rows.find((x) => x.id === id);
+    return r ? { ...r } : null;
   }
 
   async list(): Promise<RampProfile[]> {
@@ -127,7 +129,8 @@ export class FakeColdWalletRepository implements ColdWalletRepository {
   }
 
   async findById(id: string): Promise<ColdWallet | null> {
-    return this.rows.find((r) => r.id === id) ?? null;
+    const r = this.rows.find((x) => x.id === id);
+    return r ? { ...r } : null;
   }
 
   async findByAddress(address: string): Promise<ColdWallet | null> {
@@ -159,6 +162,8 @@ export class FakeLinkRepository implements LinkRepository {
       indiceHd: input.indiceHd,
       caminhoDerivacao: input.caminhoDerivacao,
       enderecoDeposito: input.enderecoDeposito,
+      carteiraFriaId: input.carteiraFriaId,
+      carteiraFriaEndereco: input.carteiraFriaEndereco,
       rampUrl: input.rampUrl,
       status: input.status,
       expiraEm: input.expiraEm,
@@ -169,7 +174,10 @@ export class FakeLinkRepository implements LinkRepository {
   }
 
   async findById(id: string): Promise<PaymentLink | null> {
-    return this.rows.find((r) => r.id === id) ?? null;
+    // Cópia: um repo real hidrata do banco. Sem isso, updateStatus mutaria
+    // o mesmo objeto que o caller já tem em mãos.
+    const r = this.rows.find((x) => x.id === id);
+    return r ? { ...r } : null;
   }
 
   async findByDepositAddress(address: string): Promise<PaymentLink | null> {
@@ -179,15 +187,15 @@ export class FakeLinkRepository implements LinkRepository {
   }
 
   async listByCustomer(clienteId: string): Promise<PaymentLink[]> {
-    return this.rows.filter((r) => r.clienteId === clienteId);
+    return this.rows.filter((r) => r.clienteId === clienteId).map((r) => ({ ...r }));
   }
 
   async listAll(limit: number): Promise<PaymentLink[]> {
-    return this.rows.slice(0, limit);
+    return this.rows.slice(0, limit).map((r) => ({ ...r }));
   }
 
   async listByStatus(status: LinkStatus, limit: number): Promise<PaymentLink[]> {
-    return this.rows.filter((r) => r.status === status).slice(0, limit);
+    return this.rows.filter((r) => r.status === status).slice(0, limit).map((r) => ({ ...r }));
   }
 
   async updateStatus(id: string, status: LinkStatus): Promise<void> {
@@ -234,7 +242,8 @@ export class FakePaymentRepository implements PaymentRepository {
   }
 
   async findByTxHash(txHash: string): Promise<Payment | null> {
-    return this.rows.find((r) => r.txHash === txHash) ?? null;
+    const r = this.rows.find((x) => x.txHash === txHash);
+    return r ? { ...r } : null;
   }
 
   async listByLink(linkId: string): Promise<Payment[]> {
@@ -293,7 +302,8 @@ export class FakeCreditRepository implements CreditRepository {
   }
 
   async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {
-    return this.rows.find((r) => r.pagamentoId === pagamentoId) ?? null;
+    const r = this.rows.find((x) => x.pagamentoId === pagamentoId);
+    return r ? { ...r } : null;
   }
 }
 
@@ -331,7 +341,7 @@ export class FakeTransferRepository implements TransferRepository {
   }
 
   async listByStatus(status: InternalTransfer['status'], limit: number): Promise<InternalTransfer[]> {
-    return this.rows.filter((r) => r.status === status).slice(0, limit);
+    return this.rows.filter((r) => r.status === status).slice(0, limit).map((r) => ({ ...r }));
   }
 }
 
@@ -388,7 +398,11 @@ export class FakeAuditRepository implements AuditRepository {
   }
 
   async list(limit: number): Promise<AuditEvent[]> {
-    return this.rows.slice(0, limit);
+    // Espelha o repositorio real: mais recente primeiro.
+    return this.rows
+      .slice()
+      .sort((a, b) => b.criadoEm.getTime() - a.criadoEm.getTime())
+      .slice(0, limit);
   }
 }
 

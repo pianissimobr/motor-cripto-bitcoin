@@ -104,6 +104,12 @@ export type PaymentLink = {
   indiceHd: number;
   caminhoDerivacao: string;
   enderecoDeposito: string;
+  /**
+   * A1: carteira fria de destino, snapshot da criacao do link.
+   * `null` para links legados (o sweeper cai no fallback por chain).
+   */
+  carteiraFriaId: string | null;
+  carteiraFriaEndereco: string | null;
   rampUrl: string;
   status: LinkStatus;
   expiraEm: Date;

@@ -7,6 +7,7 @@ import type { CustomerRepository } from './ports/index.js';
 import type { Logger } from './logger.js';
 import { CustomerService } from './services/customer-service.js';
 import { LinkService } from './services/link-service.js';
+import { LinkStateMachine } from './services/link-state-machine.js';
 import type { HdWallet } from './hd/hd-wallet.js';
 import type { Signer } from './signer/signer.js';
 import type { MotorRepositories } from './ports/index.js';
@@ -37,6 +38,8 @@ export type MotorOptions = {
 export type Motor = {
   readonly customers: CustomerService;
   readonly links: LinkService;
+  /** A4: unico caminho para mudar status de link. */
+  readonly linkState: LinkStateMachine;
   readonly monitor: BlockchainMonitor;
   readonly sweeper: Sweeper;
   readonly repos: MotorRepositories;
@@ -63,10 +66,14 @@ export function createMotor(options: MotorOptions): Motor {
     ttlHours: options.ttlHours,
   });
 
+  // A4: criado antes do monitor, que depende dele para mudar status.
+  const linkState = new LinkStateMachine({ repos: options.repos, logger });
+
   const monitor = new BlockchainMonitor({
     repos: options.repos,
     providerFactory: options.providerFactory,
     logger,
+    linkState,
     options: {
       confirmationsRequired: options.monitor?.confirmationsRequired ?? 10,
       tolerancePct: options.monitor?.tolerancePct ?? 1,
@@ -86,12 +93,15 @@ export function createMotor(options: MotorOptions): Motor {
       gasSponsorAmountWei: options.sweeper?.gasSponsorAmountWei ?? 500_000_000_000_000_000n,
       gasSponsorMinBalanceWei: options.sweeper?.gasSponsorMinBalanceWei ?? 1_000_000_000_000_000_000n,
       batchSize: options.sweeper?.batchSize ?? 10,
+      reconcileBatchSize: options.sweeper?.reconcileBatchSize ?? 25,
+      tolerancePct: options.monitor?.tolerancePct ?? 1,
     },
   });
 
   return {
     customers,
     links,
+    linkState,
     monitor,
     sweeper,
     repos: options.repos,
@@ -102,6 +112,13 @@ export function createMotor(options: MotorOptions): Motor {
 
 export { CustomerService } from './services/customer-service.js';
 export { LinkService } from './services/link-service.js';
+export { LinkStateMachine } from './services/link-state-machine.js';
+export {
+  LINK_TRANSITIONS,
+  canTransition,
+  assertTransition,
+  IllegalTransitionError,
+} from './domain/link-state.js';
 export { BlockchainMonitor } from './chain/monitor.js';
 export { Sweeper } from './chain/sweeper.js';
 export { GasSponsor } from './chain/gas-sponsor.js';

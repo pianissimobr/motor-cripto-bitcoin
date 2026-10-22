@@ -49,7 +49,7 @@ export class LinkService {
     const profile = await repos.rampProfiles.findById(input.rampProfileId);
     if (!profile) throw new Error('perfil de integracao Ramp nao encontrado');
 
-    const coldWallet = await this.resolveColdWallet(input, profile);
+    const destino = await this.resolveColdWallet(input, profile);
 
     // Alocacao atomica de indice: um endereco derivado nunca e reutilizado.
     const index = await repos.indices.allocate(profile.id);
@@ -87,6 +87,10 @@ export class LinkService {
       indiceHd: index,
       caminhoDerivacao,
       enderecoDeposito,
+      // A1: o destino do sweep fica gravado no link. A UI e o sweeper
+      // passam a concordar, e a escolha do operador fica auditavel.
+      carteiraFriaId: destino.id,
+      carteiraFriaEndereco: destino.endereco,
       rampUrl,
       status: 'aguardando',
       expiraEm,
@@ -105,7 +109,7 @@ export class LinkService {
         valorFiatCentavos: input.amountCents,
         indiceHd: index,
         enderecoDeposito,
-        carteiraFria: coldWallet,
+        carteiraFria: destino.endereco,
       },
       ip: input.ip ?? null,
     });
@@ -117,10 +121,14 @@ export class LinkService {
     return link;
   }
 
+  /**
+   * Resolve a carteira fria de destino e devolve `id` + `endereco` para que
+   * ambos fiquem gravados no link (o sweeper usa o endereco persistido).
+   */
   private async resolveColdWallet(
     input: { coldWalletId?: string | null; coldWalletAddress?: string | null },
     profile: RampProfile,
-  ): Promise<string> {
+  ): Promise<{ id: string | null; endereco: string }> {
     if (input.coldWalletId) {
       const wallet = await this.deps.repos.coldWallets.findById(input.coldWalletId);
       if (!wallet) throw new Error('carteira fria nao encontrada');
@@ -129,13 +137,20 @@ export class LinkService {
           `carteira fria da chain "${wallet.chain}" incompativel com o perfil "${profile.chain}"`,
         );
       }
-      return wallet.address;
+      return { id: wallet.id, endereco: wallet.address };
     }
     if (input.coldWalletAddress) {
       if (!/^0x[a-fA-F0-9]{40}$/.test(input.coldWalletAddress)) {
         throw new Error('endereco de carteira fria invalido');
       }
-      return getAddress(input.coldWalletAddress);
+      // Endereco livre: entra no log como destino, sem id de tabela.
+      const existing = await this.deps.repos.coldWallets.findByAddress(
+        input.coldWalletAddress,
+      );
+      return {
+        id: existing?.id ?? null,
+        endereco: getAddress(input.coldWalletAddress),
+      };
     }
     // fallback: carteira fria cadastrada para a chain do perfil
     const wallets = await this.deps.repos.coldWallets.list();
@@ -148,7 +163,7 @@ export class LinkService {
           'informe coldWalletId ou coldWalletAddress',
       );
     }
-    return candidate.address;
+    return { id: candidate.id, endereco: candidate.address };
   }
 
   async get(id: string): Promise<PaymentLink | null> {

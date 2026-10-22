@@ -114,6 +114,15 @@ export const linksGerados = pgTable(
     caminhoDerivacao: text('caminho_derivacao').notNull(),
     enderecoDeposito: text('endereco_deposito').notNull(),
     rampUrl: text('ramp_url').notNull(),
+    /**
+     * A1: destino do sweep persistido no momento da criacao do link.
+     * Antes o sweeper resolvia sozinho e ignorava a escolha do operador.
+     * Nullable para preservar links legados criados antes da correcao.
+     */
+    carteiraFriaId: uuid('carteira_fria_id').references(() => carteirasFrias.id, {
+      onDelete: 'set null',
+    }),
+    carteiraFriaEndereco: text('carteira_fria_endereco'),
     status: text('status').notNull().default('aguardando'),
     expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),

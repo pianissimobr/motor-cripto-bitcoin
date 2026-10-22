@@ -15,6 +15,13 @@
       "when": 1792675810312,
       "tag": "0001_check_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792693583752,
+      "tag": "0002_link_carteira_fria",
+      "breakpoints": true
     }
   ]
 }
