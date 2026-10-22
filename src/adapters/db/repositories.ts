@@ -96,8 +96,8 @@ function toStoredCustomer(row: typeof cadastros.$inferSelect): StoredCustomer {
     id: row.id,
     nomeEnc: dec(row.nomeEnc),
     emailEnc: dec(row.emailEnc),
-    emailBidx: row.emailBidxV2 ?? row.emailBidx,
-    emailBidxAnterior: row.emailBidxV2 ? row.emailBidx : null,
+    emailBidx: row.emailBidx,
+    emailBidxAnterior: row.emailBidxAnterior,
     nomeMasked: row.nomeMasked,
     emailMasked: row.emailMasked,
     status: row.status as CustomerStatus,
@@ -117,7 +117,7 @@ class DrizzleCustomerRepository implements CustomerRepository {
           nomeEnc: enc(input.nomeEnc),
           emailEnc: enc(input.emailEnc),
           emailBidx: input.emailBidx,
-          emailBidxV2: input.emailBidxV2,
+          emailBidxAnterior: input.emailBidxAnterior,
           nomeMasked: input.nomeMasked,
           emailMasked: input.emailMasked,
           status: input.status ?? 'ativo',
@@ -161,7 +161,7 @@ class DrizzleCustomerRepository implements CustomerRepository {
       .from(cadastros)
       .where(
         or(
-          inArray(cadastros.emailBidxV2, emailBidxes),
+          inArray(cadastros.emailBidxAnterior, emailBidxes),
           inArray(cadastros.emailBidx, emailBidxes),
         ),
       )
@@ -219,16 +219,40 @@ class DrizzleCustomerRepository implements CustomerRepository {
     nomeEnc: Buffer,
     emailEnc: Buffer,
     emailBidx: string,
-    emailBidxV2: string | null,
+    emailBidxAnterior: string | null,
     prefixBidxList: string[],
     prefixBidxListV2: string[],
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx
         .update(cadastros)
-        .set({ nomeEnc: enc(nomeEnc), emailEnc: enc(emailEnc), emailBidx, emailBidxV2 })
+        .set({ nomeEnc: enc(nomeEnc), emailEnc: enc(emailEnc), emailBidx, emailBidxAnterior })
         .where(eq(cadastros.id, id));
 
+      await tx.delete(cadastrosPrefixos).where(eq(cadastrosPrefixos.clienteId, id));
+      const prefixos = [
+        ...prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
+        ...prefixBidxListV2.map((prefixBidx) => ({
+          prefixBidx: `v2:${prefixBidx}`,
+          prefixBidxV2: prefixBidx,
+        })),
+      ];
+      if (prefixos.length > 0) {
+        await tx
+          .insert(cadastrosPrefixos)
+          .values(prefixos.map((p) => ({ ...p, clienteId: id })))
+          .onConflictDoNothing();
+      }
+    });
+  }
+
+  /** Bloco 4: reindexa apenas os prefixos, sem tocar nos blobs cifrados. */
+  async replacePrefixes(
+    id: string,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
       await tx.delete(cadastrosPrefixos).where(eq(cadastrosPrefixos.clienteId, id));
       const prefixos = [
         ...prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),

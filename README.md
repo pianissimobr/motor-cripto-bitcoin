@@ -206,7 +206,11 @@ para um servico externo assinar) ou `psbt` (assinatura manual em hardware wallet
   O banco nao guarda o email em texto puro e o indice nao e reversivel.
 - busca por prefixo: tokens de blind index por prefixo (3..32 chars).
   Trade-off conhecido: o **tamanho** do email e a frequencia de prefixos ficam
-  expostos no indice.
+  expostos no indice. A PK e `(cliente_id, prefix_bidx)`, entao dois clientes
+  com o mesmo prefixo nao se sobrescrevem.
+- `email_bidx` guarda sempre o indice **ativo** (unique); durante a rotacao o
+  token anterior fica em `email_bidx_anterior`. Para reconstruir a tabela de
+  prefixos apos uma rotacao, use `npm run reindex:prefixes` (aceita `--dry-run`).
 - a UI mostra mascarado por padrao (`m***@e***.com`).
 
 ### API
@@ -359,6 +363,8 @@ resultados). Para producao, use Alchemy/Infura/QuickNode em `RPC_URL_POLYGON`.
 | `npm run migrate` | aplica migrations |
 | `npm run seed` | perfis Ramp + carteira fria |
 | `npm run wallet:init` | gera a HD Wallet |
+| `npm run rotate:keys` | re-cifra PII e rotaciona os blind indexes |
+| `npm run reindex:prefixes` | reconstroi os prefixos de busca (`--dry-run`) |
 | `npm run verify:monitor` | verificacao end-to-end do monitor |
 | `npm test` | testes (vitest) |
 | `npm run typecheck` | verificacao de tipos |

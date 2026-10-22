@@ -133,7 +133,7 @@ async function seed(repo: ReturnType<typeof setup>['repos'], endereco: string) {
     nomeEnc: cipher.encrypt('C', id),
     emailEnc: cipher.encrypt(email, id),
     emailBidx: idx.compute(email),
-    emailBidxV2: null,
+    emailBidxAnterior: null,
     nomeMasked: 'C***',
     emailMasked: 'c***@e***.com',
     status: 'ativo',

@@ -28,10 +28,11 @@ export const cadastros = pgTable(
     emailEnc: text('email_enc').notNull(),
     emailBidx: text('email_bidx').notNull(),
     /**
-     * E3: indice na versao 2 da chave. Durante a rotacao, a busca consulta
-     * os dois; ao final, `email_bidx` e redundante e pode sair.
+     * Bloco 4: token do indice anterior durante a rotacao. O indice ATIVO
+     * fica sempre em `email_bidx` (canonico e unico); a busca consulta as
+     * duas colunas enquanto a chave antiga existir.
      */
-    emailBidxV2: text('email_bidx_v2'),
+    emailBidxAnterior: text('email_bidx_anterior'),
     nomeMasked: text('nome_masked').notNull(),
     emailMasked: text('email_masked').notNull(),
     status: text('status').notNull().default('ativo'),
@@ -39,6 +40,7 @@ export const cadastros = pgTable(
   },
   (t) => [
     uniqueIndex('cadastros_email_bidx_uq').on(t.emailBidx),
+    index('cadastros_email_bidx_anterior_idx').on(t.emailBidxAnterior),
     index('cadastros_criado_em_idx').on(t.criadoEm),
   ],
 );
@@ -48,8 +50,8 @@ export const cadastrosPrefixos = pgTable(
   {
     prefixBidx: text('prefix_bidx').notNull(),
     /**
-     * E3: versao 2 do token de prefixo. Como o primary key e (prefix_bidx),
-     * o token v2 entra como linha separada e nao colide com o antigo.
+     * E3: token v2 cru (o token tambem vai em `prefix_bidx` com o prefixo
+     * literal "v2:"). Mantido para diagnostico; a busca usa `prefix_bidx`.
      */
     prefixBidxV2: text('prefix_bidx_v2'),
     clienteId: uuid('cliente_id')
@@ -57,7 +59,10 @@ export const cadastrosPrefixos = pgTable(
       .references(() => cadastros.id, { onDelete: 'cascade' }),
   },
   (t) => [
-    primaryKey({ columns: [t.prefixBidx] }),
+    // Bloco 4: o token so e unico DENTRO do cliente. Antes o PK era apenas
+    // o token e dois clientes com o mesmo prefixo colidiam entre si.
+    primaryKey({ columns: [t.clienteId, t.prefixBidx] }),
+    index('cadastros_prefixos_prefix_idx').on(t.prefixBidx),
     index('cadastros_prefixos_cliente_idx').on(t.clienteId),
     index('cadastros_prefixos_v2_idx').on(t.prefixBidxV2),
   ],

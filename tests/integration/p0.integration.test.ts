@@ -30,7 +30,7 @@ async function seedBase() {
     nomeEnc: Buffer.from('nome'),
     emailEnc: Buffer.from('email'),
     emailBidx: createHash('sha256').update(randomUUID()).digest('hex'),
-    emailBidxV2: null,
+    emailBidxAnterior: null,
     nomeMasked: 'N***',
     emailMasked: 'e***@e***.com',
     status: 'ativo',
@@ -314,6 +314,42 @@ describe('P0 com Postgres real', () => {
         rawTransaction: raw,
       }),
     ).rejects.toThrow();
+  });
+
+  it('nao perde prefixo compartilhado e mantem email canonico unico', async () => {
+    const prefixo = createHash('sha256').update('prefixo:mar').digest('hex');
+    const emailA = createHash('sha256').update('maria@example.com').digest('hex');
+    const emailB = createHash('sha256').update('marcos@example.com').digest('hex');
+
+    const base = (id: string, emailBidx: string) => ({
+      id,
+      nomeEnc: Buffer.from('nome'),
+      emailEnc: Buffer.from('email'),
+      emailBidx,
+      emailBidxAnterior: null,
+      nomeMasked: 'M***',
+      emailMasked: 'm***@e***.com',
+      status: 'ativo' as const,
+      prefixBidxList: [prefixo],
+      prefixBidxListV2: [],
+    });
+
+    // PK composta (cliente_id, prefix_bidx): o mesmo token pode existir
+    // para clientes diferentes sem o segundo ser descartado.
+    await repos.customers.create(base(randomUUID(), emailA));
+    await repos.customers.create(base(randomUUID(), emailB));
+
+    const achados = await repos.customers.searchByEmailPrefixBidx([prefixo], 10);
+    expect(achados).toHaveLength(2);
+
+    // O unique canonico continua valendo para a coluna ativa.
+    const erro = await repos.customers
+      .create(base(randomUUID(), emailA))
+      .catch((e: unknown) => e);
+    const code =
+      (erro as { code?: string; cause?: { code?: string } }).code ??
+      (erro as { cause?: { code?: string } }).cause?.code;
+    expect(code).toBe('23505');
   });
 
   it('lock de sessao usa conexao dedicada e libera ao fechar', async () => {

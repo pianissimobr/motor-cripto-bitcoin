@@ -44,12 +44,18 @@ export class FakeCustomerRepository implements CustomerRepository {
   readonly rows: StoredCustomer[] = [];
 
   async create(input: CreateCustomerInput): Promise<StoredCustomer> {
+    // Espelha o unique canonico de `cadastros.email_bidx`.
+    if (this.rows.some((r) => r.emailBidx === input.emailBidx)) {
+      const err = new Error('email ja cadastrado') as Error & { code?: string };
+      err.code = '23505';
+      throw err;
+    }
     const row: StoredCustomer = {
       id: input.id,
       nomeEnc: input.nomeEnc,
       emailEnc: input.emailEnc,
       emailBidx: input.emailBidx,
-      emailBidxAnterior: input.emailBidxV2 ? input.emailBidx : null,
+      emailBidxAnterior: input.emailBidxAnterior,
       nomeMasked: input.nomeMasked,
       emailMasked: input.emailMasked,
       status: input.status ?? 'ativo',
@@ -104,16 +110,25 @@ export class FakeCustomerRepository implements CustomerRepository {
     nomeEnc: Buffer,
     emailEnc: Buffer,
     emailBidx: string,
-    emailBidxV2: string | null,
-    _prefixBidxList: string[],
-    _prefixBidxListV2: string[],
+    emailBidxAnterior: string | null,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
   ): Promise<void> {
     const r = this.rows.find((x) => x.id === id);
     if (!r) return;
     r.nomeEnc = nomeEnc;
     r.emailEnc = emailEnc;
-    r.emailBidx = emailBidxV2 ?? emailBidx;
-    r.emailBidxAnterior = emailBidxV2 ? emailBidx : null;
+    r.emailBidx = emailBidx;
+    r.emailBidxAnterior = emailBidxAnterior;
+    this.prefixos.set(id, [...prefixBidxList, ...prefixBidxListV2]);
+  }
+
+  async replacePrefixes(
+    id: string,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
+  ): Promise<void> {
+    this.prefixos.set(id, [...prefixBidxList, ...prefixBidxListV2]);
   }
 
   async list(limit: number, offset: number): Promise<StoredCustomer[]> {

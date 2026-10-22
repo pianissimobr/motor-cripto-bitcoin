@@ -30,9 +30,10 @@ export type CreateCustomerInput = {
   id: string;
   nomeEnc: Buffer;
   emailEnc: Buffer;
+  /** Indice ATIVO do e-mail (canonico e unico entre clientes). */
   emailBidx: string;
-  /** E3: indice na versao 2 (null enquanto a rotacao nao alcanca este cadastro). */
-  emailBidxV2: string | null;
+  /** Indice anterior, mantido durante a rotacao para a busca continuar valendo. */
+  emailBidxAnterior: string | null;
   nomeMasked: string;
   emailMasked: string;
   status?: CustomerStatus;
@@ -76,7 +77,13 @@ export interface CustomerRepository {
     nomeEnc: Buffer,
     emailEnc: Buffer,
     emailBidx: string,
-    emailBidxV2: string | null,
+    emailBidxAnterior: string | null,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
+  ): Promise<void>;
+  /** Bloco 4: reconstroi os prefixos de um cliente (reindexacao). */
+  replacePrefixes(
+    id: string,
     prefixBidxList: string[],
     prefixBidxListV2: string[],
   ): Promise<void>;

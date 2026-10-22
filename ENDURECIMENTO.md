@@ -109,8 +109,10 @@ revogado é creditado e sinalizado para revisão.
 - **E1**: **Envelope v2**: `[version=2][kid(1)][iv(12)][tag(16)][ct]`.
   `DataCipher` v2 **lê v1 e v2**; toda escrita nova usa v2 + `kid` corrente.
 - **E2**: **Keyring**: `KEYRING` no `.env` = JSON com chaves + `DATA_ACTIVE_KID`.
-- **E3**: **Blind index versionado**: `cadastros.email_bidx_v2` +
-  `cadastros_prefixos` ganha `key_id`.
+- **E3**: **Blind index versionado**: `email_bidx` guarda sempre o token
+  ativo (canonico e unico); durante a rotacao o anterior fica em
+  `email_bidx_anterior`. Prefixos usam PK `(cliente_id, prefix_bidx)` para
+  que dois clientes com o mesmo prefixo nao se sobrescrevam.
 - **E4**: **CLI `npm run rotate-keys`**: `--dry-run`, lotes transacionais,
   verificação pós-rotação, modo `--blind-index`.
 - **E5**: Testes: round-trip v1↔v2, `kid` desconhecido → erro.
@@ -166,3 +168,104 @@ Cada frente vira um commit separado (revisável e revertível).
 - **Fallback automático de RPC**: hoje o `RPC_URL_POLYGON` é fixo
 - **Preço on-chain (Chainlink)**: a taxa de referência é configurada manualmente
 - **Rollback de reorg em cadeias sem `finalized`**: só Polygon está no escopo
+
+---
+
+## Resultado da execução
+
+### Fase 1 — frentes A a F
+
+Todas as 6 frentes foram executadas, na ordem A → C → D → E → B → F.
+Um commit por frente, cada um revisável e revertível isoladamente.
+
+| Frente | Commit | Entregue |
+|---|---|---|
+| A | `5b8f35e` | destino do sweep persistido, diagnóstico correto, auditoria sem bifurcação, máquina de estados, reconciliação |
+| C | `fd3232b` | teto `finalized`, âncoras de hash, rollback, revogação de crédito, sweep reorgado |
+| D | `dd1ff64` | dust nativo, sem tx duplicada, idempotência `(link, nonce)`, sponsor sem saldo |
+| E | `fde99c5` | envelope v2 com `kid`, keyring, blind index versionado, CLI de rotação |
+| B | `7ac706c` | 25 propriedades de dinheiro + contrato do cursor |
+| F | `dc1edd4` | QR server-side, `/api/alerts`, badge e painel na tela |
+
+**Testes: 60 → 164.**
+
+### Fase 2 — endurecimento adicional (blocos 0 a 4)
+
+Depois da primeira entrega, a revisão dos caminhos de falha do sweep, da
+assinatura e dos índices de e-mail gerou mais cinco blocos. O commit
+`b87d852` cobre os blocos 0–3; o bloco 4 entra no commit deste documento.
+
+| Bloco | Entregue |
+|---|---|
+| 0–2 | recuperação de sweep após crash, `kind`/`rawTransaction`, idempotência `(link, kind, nonce)`, dust, reorg até `finalized` + âncoras, crédito revertido/restaurado, piso de `MONITOR_START_BLOCK` |
+| 3 | PSBT ponta a ponta (`unsigned_transaction`, `POST /api/movimentos/:id/raw`), validação da tx assinada contra a unsigned, `LocalSigner` confrontando seed x xpub, `--account-index` no `init-wallet`, `fromAccountXprv` só aceitando conta |
+| 4 | `email_bidx` sempre canônico e único, `email_bidx_anterior` na rotação, PK de prefixos por `(cliente_id, prefix_bidx)`, `reindex:prefixes`, e-mail duplicado como 409 |
+
+Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
+`0010_email_index_canonical` (aplicada no banco de desenvolvimento).
+
+**Testes: 164 → 230 unitários + 9 de integração com Postgres real.**
+
+### Bugs reais encontrados durante a execução
+
+Não foram só as correções planejadas; testes e validações ao vivo revelaram
+mais problemas, todos corrigidos:
+
+| Achado | Onde | Gravidade |
+|---|---|---|
+| Sweep pendente sem `raw_transaction` ficava preso após crash antes do broadcast, sem caminho de recuperação | `sweeper.ts` | ALTO |
+| PSBT preparava a unsigned mas não expunha submissão do raw assinado; a validação da tx assinada não comparava todos os campos | `sweeper.ts`, `signer.ts` | ALTO |
+| `LocalSigner` não confrontava a seed com o `HD_XPUB`; `init-wallet` ignorava `--account-index` e `fromAccountXprv` aceitava xprv que não era de conta | `signer/`, `scripts/init-wallet.ts` | MÉDIO |
+| O harness de teste derivava `accountNode.deriveChild(index)` em vez de `0/index`, assinando um endereço diferente do esperado | `tests/` | teste |
+| PK de `cadastros_prefixos` era só `prefix_bidx`; `onConflictDoNothing()` descartava o segundo cliente com o mesmo prefixo | migration 0000 / `repositories.ts` | ALTO |
+| Unique existia só em `email_bidx`; após a rotação o token ativo ia para `email_bidx_v2` sem unique, permitindo e-mail duplicado | migration 0005 / `customer-service.ts` | ALTO |
+| E-mail duplicado virava 500 em vez de erro de domínio | `customer-service.ts` / `app.ts` | MÉDIO |
+| Prefixos já perdidos pela colisão antiga não eram recuperáveis por SQL; passaram a ter reconstrução a partir do e-mail decifrado | `scripts/reindex-prefixes.ts` | MÉDIO |
+
+O achado da **tolerância** só apareceu porque a propriedade "nunca aceita
+pagamento dobrado" foi escrita. Nenhum caso fixo teria pego. O mesmo vale
+para a colisão de prefixos: só apareceu ao testar dois clientes com o mesmo
+início de e-mail.
+
+### Como cada problema foi validado
+
+Nenhuma entrega foi aceita só por "os testes passam":
+
+- **A1** — escolhi a carteira B com a A existente e verifiquei que o link
+  aponta para B no banco (antes o sweeper pegaria a A)
+- **A3** — cadeia de auditoria com `pg_advisory_xact_lock`
+- **C** — contra a Polygon real: corrompi o hash do cursor e o detector
+  percebeu o reorg, voltou 2 blocos até o ancestral comum
+- **E** — rotação completa no Postgres: cadastra com k1, rotaciona, busca
+  funciona com a chave nova **e** com a antiga, e para de funcionar quando
+  a chave nova sai do keyring
+- **F** — link criado pela API volta com QR de 5,3 KB, sem `<script>`
+- **Bloco 3** — PSBT assinado manualmente, raw submetido pela API e
+  broadcast; unsigned divergente é rejeitada campo a campo
+- **Bloco 4** — dois clientes com o mesmo prefixo aparecem no autocomplete;
+  duplicado no índice canônico falha com 409 durante e depois da rotação;
+  `reindex:prefixes --dry-run` roda sobre o banco real
+- **Regressão** — `verify:monitor` continua detectando transferência USDC
+  real da Polygon (3 execuções consecutivas sem falha)
+
+Verificação final: `npm run typecheck`, `npm test` (230), `npm run
+test:integration` (9), `npm run build` e `npm run migrate` verdes.
+
+### Pendências que continuam abertas
+
+Nada abaixo foi escopo do endurecimento; ficam registradas:
+
+- **`GAS_SPONSOR_PRIVATE_KEY` não configurada** — sem ela nenhum valor
+  recebido pode ser movido. O alerta `/api/alerts` reporta como crítico.
+- **Reorg em cadeia sem `finalized`** — só Polygon está coberto.
+- **Rotação do keystore do signer** — o envelope v2 cobre a PII, mas o
+  `data/keystore.json` ainda depende de recifrar à mão.
+- **Alerta de saldo baixo do patrocinador** — o alerta existe para
+  "ausente", mas a verificação de saldo exigiria chamar o provider; ficou
+  como `info` estático.
+- **Dust nativo no modo PSBT** — `sweepNativeDust` ignora a assinatura
+  manual; o POL restante fica no endereço derivado e o link vai para
+  `movido`. Fora do escopo desta rodada.
+- **Reindexação de bases existentes** — `npm run reindex:prefixes` precisa
+  ser executado nas bases que já sofreram a colisão de prefixos; a migração
+  corrige o schema, não os registros perdidos.

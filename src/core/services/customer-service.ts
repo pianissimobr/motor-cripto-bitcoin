@@ -5,6 +5,16 @@ import type { Customer } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories, StoredCustomer } from '../ports/index.js';
 
+/** E-mail ja existente: a borda HTTP mapeia `statusCode` para 409. */
+export class DuplicateCustomerEmailError extends Error {
+  readonly statusCode = 409;
+
+  constructor() {
+    super('email ja cadastrado');
+    this.name = 'DuplicateCustomerEmailError';
+  }
+}
+
 /**
  * Servico de cadastro de clientes.
  *
@@ -49,18 +59,33 @@ export class CustomerService {
       indices.length > 1 ? (indices.find((i) => i.kid !== ativo)?.bidx ?? null) : null;
     const prefixos = prefixTokens(email, this.deps.blindIndex);
 
-    const stored = await this.deps.repos.customers.create({
-      id,
-      nomeEnc,
-      emailEnc,
-      emailBidx: emailBidxAntigo ?? emailBidxAtivo,
-      emailBidxV2: emailBidxAntigo ? emailBidxAtivo : null,
-      nomeMasked: maskName(nome),
-      emailMasked: maskEmail(email),
-      status: 'ativo',
-      prefixBidxList: indices.length > 1 ? prefixos.antigos : prefixos.ativos,
-      prefixBidxListV2: indices.length > 1 ? prefixos.ativos : [],
-    });
+    // Bloco 4: o unique e garantido no banco pela coluna canonica, mas a
+    // checagem aqui evita erro de driver no caminho comum. O catch abaixo
+    // cobre a corrida entre dois cadastros simultaneos.
+    const existente = await this.deps.repos.customers.findByEmailBidx(
+      indices.map((i) => i.bidx),
+    );
+    if (existente) throw new DuplicateCustomerEmailError();
+
+    let stored: StoredCustomer;
+    try {
+      stored = await this.deps.repos.customers.create({
+        id,
+        nomeEnc,
+        emailEnc,
+        // Bloco 4: o indice ATIVO e sempre o canonico (unique no banco).
+        emailBidx: emailBidxAtivo,
+        emailBidxAnterior: emailBidxAntigo,
+        nomeMasked: maskName(nome),
+        emailMasked: maskEmail(email),
+        status: 'ativo',
+        prefixBidxList: indices.length > 1 ? prefixos.antigos : prefixos.ativos,
+        prefixBidxListV2: indices.length > 1 ? prefixos.ativos : [],
+      });
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new DuplicateCustomerEmailError();
+      throw err;
+    }
 
     await this.deps.repos.audit.record({
       ator: 'sistema',
@@ -138,6 +163,11 @@ export class CustomerService {
       criadoEm: stored.criadoEm,
     };
   }
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } };
+  return e?.code === '23505' || e?.cause?.code === '23505';
 }
 
 /** Blind indexes dos prefixos do email (3..32 caracteres). */

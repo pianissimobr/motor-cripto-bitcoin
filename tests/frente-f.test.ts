@@ -115,7 +115,7 @@ describe('F2: alertas', () => {
         nomeEnc: cipher.encrypt('C', id),
         emailEnc: cipher.encrypt(email, id),
         emailBidx: idx.compute(email),
-        emailBidxV2: null,
+        emailBidxAnterior: null,
         nomeMasked: 'C***',
         emailMasked: 'c***',
         status: 'ativo',

@@ -96,7 +96,8 @@ async function main(): Promise<void> {
         const novoNome = cipher.encrypt(nome, row.id);
         const novoEmail = cipher.encrypt(email, row.id);
 
-        // Blind index: ativo vira a coluna nova; o antigo continua para busca.
+        // Blind index: ativo vira a coluna canonica; o antigo vai para
+        // `email_bidx_anterior` e continua valendo para a busca na transicao.
         const indices = blindIndex.computeAll(normalizeEmail(email));
         const ativo = indices.find((i) => i.kid === blindIndex.activeKid)!;
         const antigo = indices.find((i) => i.kid !== blindIndex.activeKid);
@@ -111,8 +112,8 @@ async function main(): Promise<void> {
             row.id,
             novoNome,
             novoEmail,
-            antigo?.bidx ?? ativo.bidx,
-            antigo ? ativo.bidx : null,
+            ativo.bidx,
+            antigo?.bidx ?? null,
             prefixos.antigos,
             prefixos.ativos,
           );

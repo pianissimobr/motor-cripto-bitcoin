@@ -141,6 +141,34 @@ describe('P1: PII mascarada + reveal auditado', () => {
     }
   });
 
+  it('e-mail duplicado vira 409 (nao 500)', async () => {
+    const { app } = await makeApp();
+    const payload = { nome: 'Ana Lima', email: 'ana@example.com' };
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: '/api/cadastros',
+            headers: admin,
+            payload,
+          })
+        ).statusCode,
+      ).toBe(201);
+
+      const duplicado = await app.inject({
+        method: 'POST',
+        url: '/api/cadastros',
+        headers: admin,
+        payload: { nome: 'Ana Outra', email: 'ANA@example.com' },
+      });
+      expect(duplicado.statusCode).toBe(409);
+      expect(duplicado.json()).toEqual({ erro: 'email ja cadastrado' });
+    } finally {
+      await close(app);
+    }
+  });
+
   it('criacao devolve somente mascaras', async () => {
     const { app } = await makeApp();
     try {
