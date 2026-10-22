@@ -1,6 +1,7 @@
 import { getAddress } from 'ethers';
 import type { SignerMode } from '../config.js';
 import {
+  assertSignTransferInput,
   ManualSigningRequired,
   type Signer,
   type SignTransferInput,
@@ -25,6 +26,7 @@ export class PsbtSigner implements Signer {
   }
 
   buildUnsigned(input: SignTransferInput): UnsignedTransaction {
+    assertSignTransferInput(input);
     return {
       from: this.addressFor(input.index),
       to: getAddress(input.to),
@@ -42,16 +44,10 @@ export class PsbtSigner implements Signer {
     };
   }
 
-  async signTransfer(): Promise<never> {
-    throw new ManualSigningRequired({
-      from: '',
-      to: '',
-      data: '0x',
-      value: '0',
-      chainId: 0,
-      nonce: 0,
-      gasLimit: '0',
-    });
+  async signTransfer(input: SignTransferInput): Promise<never> {
+    // Fail-fast com a transacao REAL pendente de assinatura, nao um esqueleto
+    // vazio: o operador precisa do payload para assinar no hardware wallet.
+    throw new ManualSigningRequired(this.buildUnsigned(input));
   }
 
   describe(): string {

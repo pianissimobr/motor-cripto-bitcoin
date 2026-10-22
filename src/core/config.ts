@@ -11,29 +11,61 @@ const boolish = z
     typeof v === 'boolean' ? v : ['1', 'true', 'yes', 'on'].includes(v.toLowerCase()),
   );
 
-const intFromEnv = (def: number) =>
-  z
+const intFromEnv = (def: number, bounds: { min?: number; max?: number } = {}) => {
+  let schema = z.number().int();
+  if (bounds.min !== undefined) schema = schema.min(bounds.min);
+  if (bounds.max !== undefined) schema = schema.max(bounds.max);
+  return z
     .string()
     .optional()
     .transform((v) => (v === undefined || v === '' ? def : Number(v)))
-    .pipe(z.number().int());
+    .pipe(schema);
+};
 
-const floatFromEnv = (def: number) =>
-  z
+const floatFromEnv = (def: number, bounds: { min?: number; max?: number } = {}) => {
+  let schema = z.number();
+  if (bounds.min !== undefined) schema = schema.min(bounds.min);
+  if (bounds.max !== undefined) schema = schema.max(bounds.max);
+  return z
     .string()
     .optional()
     .transform((v) => (v === undefined || v === '' ? def : Number(v)))
-    .pipe(z.number());
+    .pipe(schema);
+};
+
+/**
+ * Wei vem do ambiente como string (bigint nao cabe em Number).
+ * Validar o formato aqui evita `BigInt('...')` estourar no meio do boot
+ * com mensagem opaca.
+ */
+const weiFromEnv = (def: string) =>
+  z
+    .string()
+    .default(def)
+    .refine((v) => /^\d+$/.test(v), {
+      message: 'deve ser um inteiro nao-negativo em wei (string decimal)',
+    })
+    .transform((v) => BigInt(v));
 
 export const SignerMode = z.enum(['local', 'remote', 'psbt']);
 export type SignerMode = z.infer<typeof SignerMode>;
 
-export const EnvSchema = z.object({
+export const EnvSchema = z
+  .object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: intFromEnv(4578),
+  PORT: intFromEnv(4578, { min: 1, max: 65535 }),
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
   ADMIN_TOKEN: z.string().min(16, 'ADMIN_TOKEN precisa ter ao menos 16 caracteres'),
+  // Token opcional de leitura: permite GET/HEAD sem poder mutar nada.
+  // String vazia (= desabilitado) e tratada como ausente.
+  READONLY_TOKEN: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(16, 'READONLY_TOKEN precisa ter ao menos 16 caracteres').optional(),
+  ),
+  // `trustProxy` cego deixa qualquer cliente forjar X-Forwarded-For e burlar
+  // rate limit / poluir o IP da auditoria. Default: nao confiar.
+  TRUST_PROXY: boolish.default(false),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL obrigatorio'),
   DATABASE_SSL: boolish.default(false),
@@ -57,8 +89,8 @@ export const EnvSchema = z.object({
 
   HD_XPUB: z.string().min(1, 'HD_XPUB obrigatorio (xpub de conta m/44\'/60\'/0\')'),
   HD_DERIVATION_PREFIX: z.string().default('0'),
-  HD_ACCOUNT_INDEX: intFromEnv(0),
-  HD_MAX_INDEX: intFromEnv(100_000),
+  HD_ACCOUNT_INDEX: intFromEnv(0, { min: 0 }),
+  HD_MAX_INDEX: intFromEnv(100_000, { min: 0 }),
 
   SIGNER_MODE: SignerMode.default('local'),
   SIGNER_KEYSTORE_PATH: z.string().default('./data/keystore.json'),
@@ -67,31 +99,59 @@ export const EnvSchema = z.object({
   SIGNER_REMOTE_TOKEN: z.string().optional(),
 
   GAS_SPONSOR_PRIVATE_KEY: z.string().optional(),
-  GAS_SPONSOR_AMOUNT_WEI: z.string().default('500000000000000000'),
-  GAS_SPONSOR_MIN_BALANCE_WEI: z.string().default('1000000000000000000'),
+  GAS_SPONSOR_AMOUNT_WEI: weiFromEnv('500000000000000000'),
+  GAS_SPONSOR_MIN_BALANCE_WEI: weiFromEnv('1000000000000000000'),
 
-  CONFIRMATIONS_REQUIRED: intFromEnv(10),
-  PAYMENT_TOLERANCE_PCT: floatFromEnv(1.0),
-  MONITOR_INTERVAL_MS: intFromEnv(15_000),
-  MONITOR_MAX_TOPICS: intFromEnv(200),
-  MONITOR_BLOCK_RANGE: intFromEnv(2_000),
-  MONITOR_START_BLOCK: intFromEnv(0),
+  CONFIRMATIONS_REQUIRED: intFromEnv(10, { min: 1 }),
+  PAYMENT_TOLERANCE_PCT: floatFromEnv(1.0, { min: 0, max: 100 }),
+  MONITOR_INTERVAL_MS: intFromEnv(15_000, { min: 1_000 }),
+  MONITOR_MAX_TOPICS: intFromEnv(200, { min: 1 }),
+  MONITOR_BLOCK_RANGE: intFromEnv(2_000, { min: 1 }),
+  MONITOR_START_BLOCK: intFromEnv(0, { min: 0 }),
   // C1: teto da varredura. `finalized` = so blocos com finalidade
   // (Polygon PoS tem checkpoint); `latest` = inclui blocos reescrevivel.
   MONITOR_BLOCK_TAG: z.enum(['finalized', 'latest']).default('finalized'),
   // C2: intervalo (em blocos) entre duas ancoras de hash.
-  MONITOR_ANCHOR_INTERVAL: intFromEnv(32),
+  MONITOR_ANCHOR_INTERVAL: intFromEnv(32, { min: 1 }),
 
   RAMP_BASE_URL: z.string().default('https://buy.ramp.network/'),
   RAMP_PARAM_STYLE: z.enum(['legacy', 'unified']).default('legacy'),
   RAMP_HOST_APP_NAME: z.string().default('Motor Cripto'),
   RAMP_HOST_LOGO_URL: z.string().optional(),
   RAMP_FIAT_CURRENCY: z.string().default('BRL'),
-  LINK_TTL_HOURS: intFromEnv(72),
+  LINK_TTL_HOURS: intFromEnv(72, { min: 1 }),
 
   COLD_WALLET_ADDRESS: z.string().optional(),
   COLD_WALLET_LABEL: z.string().default('Cold Wallet Principal'),
-});
+  })
+  .superRefine((env, ctx) => {
+    if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_URL) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_REMOTE_URL'],
+        message: 'SIGNER_REMOTE_URL obrigatorio quando SIGNER_MODE=remote',
+      });
+    }
+    if (env.NODE_ENV !== 'production') return;
+    if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_PASSPHRASE'],
+        message: 'SIGNER_PASSPHRASE obrigatorio em producao (keystore cifrado)',
+      });
+    }
+    if (
+      env.SIGNER_MODE === 'remote' &&
+      env.SIGNER_REMOTE_URL &&
+      !env.SIGNER_REMOTE_URL.startsWith('https://')
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_REMOTE_URL'],
+        message: 'SIGNER_REMOTE_URL precisa ser https em producao',
+      });
+    }
+  });
 
 export type Env = z.infer<typeof EnvSchema>;
 
@@ -148,7 +208,16 @@ function buildCrypto(env: Env): AppConfig['crypto'] {
 
 export type AppConfig = {
   env: Env;
-  server: { port: number; host: string; logLevel: string; adminToken: string; isProduction: boolean };
+  server: {
+    port: number;
+    host: string;
+    logLevel: string;
+    adminToken: string;
+    /** Token opcional so-leitura (GET/HEAD). */
+    readonlyToken?: string;
+    trustProxy: boolean;
+    isProduction: boolean;
+  };
   database: { url: string; ssl: boolean };
   crypto: {
     /** E1/E2: chaves de cifragem por id + chave ativa. */
@@ -232,6 +301,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       host: env.HOST,
       logLevel: env.LOG_LEVEL,
       adminToken: env.ADMIN_TOKEN,
+      readonlyToken: env.READONLY_TOKEN,
+      trustProxy: env.TRUST_PROXY,
       isProduction: env.NODE_ENV === 'production',
     },
     database: { url: env.DATABASE_URL, ssl: env.DATABASE_SSL },
@@ -251,8 +322,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     gasSponsor: {
       privateKey: env.GAS_SPONSOR_PRIVATE_KEY,
-      amountWei: BigInt(env.GAS_SPONSOR_AMOUNT_WEI),
-      minBalanceWei: BigInt(env.GAS_SPONSOR_MIN_BALANCE_WEI),
+      amountWei: env.GAS_SPONSOR_AMOUNT_WEI,
+      minBalanceWei: env.GAS_SPONSOR_MIN_BALANCE_WEI,
     },
     chain: {
       confirmationsRequired: env.CONFIRMATIONS_REQUIRED,

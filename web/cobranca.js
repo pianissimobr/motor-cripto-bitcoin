@@ -4,7 +4,6 @@ import {
   escapeHtml,
   fmtBRL,
   fmtDate,
-  maskEmail,
   setupAuth,
   statusBadge,
   toast,
@@ -98,22 +97,30 @@ function renderSugestoes(clientes) {
     sugestoes.classList.remove('show');
     return;
   }
+  // PII mascarada por padrao: o email completo so vem no clique (auditado).
   sugestoes.innerHTML = clientes
     .map(
       (c) =>
-        `<li data-id="${escapeHtml(c.id)}" data-email="${escapeHtml(c.email)}">` +
+        `<li data-id="${escapeHtml(c.id)}">` +
         `<strong>${escapeHtml(c.nome)}</strong>` +
-        `<span class="m"> &nbsp;${escapeHtml(c.emailMasked || maskEmail(c.email))}</span></li>`,
+        `<span class="m"> &nbsp;${escapeHtml(c.emailMasked || '')}</span></li>`,
     )
     .join('');
   sugestoes.classList.add('show');
   sugestoes.querySelectorAll('li').forEach((li) => {
-    li.addEventListener('click', () => {
-      clienteSelecionado = { id: li.dataset.id, email: li.dataset.email };
-      emailInput.value = li.dataset.email;
+    li.addEventListener('click', async () => {
       sugestoes.classList.remove('show');
-      el('clienteSelecionado').textContent = `Cliente: ${li.dataset.email}`;
-      el('clienteSelecionado').className = 'ok-msg';
+      try {
+        const full = await api(
+          `/api/cadastros/${encodeURIComponent(li.dataset.id)}?reveal=true`,
+        );
+        clienteSelecionado = { id: full.id, email: full.email };
+        emailInput.value = full.email;
+        el('clienteSelecionado').textContent = `Cliente: ${full.email}`;
+        el('clienteSelecionado').className = 'ok-msg';
+      } catch (err) {
+        toast(err.message, 'err');
+      }
     });
   });
 }
@@ -156,7 +163,9 @@ el('gerar').addEventListener('click', async () => {
   button.textContent = 'Gerando...';
   try {
     const body = { valor: valorTexto, rampProfileId, coldWalletId, coldWalletAddress };
-    if (email) body.email = email;
+    // Cliente selecionado vai por id (o email nao trafega em claro).
+    if (clienteSelecionado && clienteSelecionado.id) body.clienteId = clienteSelecionado.id;
+    else if (email) body.email = email;
 
     const link = await api('/api/links', { method: 'POST', body: JSON.stringify(body) });
     linkAtual = link;

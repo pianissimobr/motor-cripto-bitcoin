@@ -7,12 +7,15 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
  */
 export type AuthOptions = {
   adminToken: string;
+  /** Token opcional que so pode ler (GET/HEAD). */
+  readonlyToken?: string | undefined;
   /** Rotas publicas (ex.: health). */
   publicPaths?: string[];
 };
 
 export function createAuthHook(options: AuthOptions) {
   const publicPaths = new Set(options.publicPaths ?? ['/api/health', '/health']);
+  const readonlyToken = options.readonlyToken;
 
   return async function authHook(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const path = request.url.split('?')[0] ?? '';
@@ -27,10 +30,15 @@ export function createAuthHook(options: AuthOptions) {
       return;
     }
     const provided = header.slice(7).trim();
-    if (!safeCompare(provided, options.adminToken)) {
-      await reply.code(403).send({ erro: 'token de acesso invalido' });
-      return;
-    }
+
+    if (safeCompare(provided, options.adminToken)) return;
+
+    const isRead = request.method === 'GET' || request.method === 'HEAD';
+    if (readonlyToken && isRead && safeCompare(provided, readonlyToken)) return;
+
+    await reply.code(403).send({
+      erro: isRead ? 'token de acesso invalido' : 'token sem permissao de escrita',
+    });
   };
 }
 

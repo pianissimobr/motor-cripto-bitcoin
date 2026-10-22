@@ -1,10 +1,12 @@
 import { getAddress, keccak256 } from 'ethers';
 import type { SignerMode } from '../config.js';
-import type {
-  SignedTransaction,
-  Signer,
-  SignTransferInput,
-  UnsignedTransaction,
+import {
+  assertSignTransferInput,
+  isHexData,
+  type SignedTransaction,
+  type Signer,
+  type SignTransferInput,
+  type UnsignedTransaction,
 } from './signer.js';
 
 /**
@@ -33,6 +35,7 @@ export class RemoteSigner implements Signer {
   }
 
   buildUnsigned(input: SignTransferInput): UnsignedTransaction {
+    assertSignTransferInput(input);
     return {
       from: this.addressFor(input.index),
       to: getAddress(input.to),
@@ -51,6 +54,7 @@ export class RemoteSigner implements Signer {
   }
 
   async signTransfer(input: SignTransferInput): Promise<SignedTransaction> {
+    assertSignTransferInput(input);
     const url = `${this.options.url.replace(/\/$/, '')}/sign`;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.options.token) headers.authorization = `Bearer ${this.options.token}`;
@@ -67,8 +71,8 @@ export class RemoteSigner implements Signer {
       throw new Error(`signer remoto respondeu ${response.status}: ${body.slice(0, 200)}`);
     }
     const payload = (await response.json()) as { rawTransaction?: string };
-    if (!payload.rawTransaction) {
-      throw new Error('signer remoto nao devolveu rawTransaction');
+    if (!payload.rawTransaction || !isHexData(payload.rawTransaction) || payload.rawTransaction === '0x') {
+      throw new Error('signer remoto devolveu rawTransaction invalido');
     }
     return {
       rawTransaction: payload.rawTransaction,

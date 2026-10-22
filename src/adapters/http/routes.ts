@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
 import { collectAlerts } from '../../core/alerts.js';
 import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
+import type { Customer } from '../../core/domain/types.js';
 import type { Motor } from '../../core/index.js';
 import type { Logger } from '../../core/logger.js';
 
@@ -60,6 +61,27 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   const configGas = options.gasSponsor ?? { minBalanceWei: 0n, enabled: false };
   const gasSponsorAtivo = configGas.enabled;
 
+  const revealPedido = (request: FastifyRequest): boolean => {
+    const raw = (request.query as { reveal?: unknown } | undefined)?.reveal;
+    return raw === 'true' || raw === '1' || raw === true;
+  };
+
+  /** PII so sai em claro com pedido explicito; o pedido fica auditado. */
+  const auditarReveal = async (
+    request: FastifyRequest,
+    entidadeId: string | null,
+    quantidade: number,
+  ): Promise<void> => {
+    await motor.repos.audit.record({
+      ator: 'api',
+      acao: 'pii.revelado',
+      entidade: 'cadastro',
+      entidadeId,
+      ip: request.ip,
+      detalhes: { quantidade, rota: request.url.split('?')[0] },
+    });
+  };
+
   /* ---------------------------------------------------------------- */
   /* Health + status                                                   */
   /* ---------------------------------------------------------------- */
@@ -106,13 +128,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       ip: request.ip,
       detalhes: { emailMasked: customer.emailMasked },
     });
-    return reply.code(201).send({
-      id: customer.id,
-      nome: customer.nome,
-      emailMasked: customer.emailMasked,
-      nomeMasked: customer.nomeMasked,
-      criadoEm: customer.criadoEm,
-    });
+    // PII nao volta em claro na criacao: quem chamou ja conhece o que enviou.
+    return reply.code(201).send(serializeCustomer(customer, false));
   });
 
   app.get('/api/cadastros', async (request) => {
@@ -120,35 +137,44 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       .object({
         email: z.string().optional(),
         q: z.string().optional(),
+        reveal: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(100).default(20),
         offset: z.coerce.number().int().min(0).default(0),
       })
       .parse(request.query);
 
+    const reveal = revealPedido(request);
+
     if (query.email) {
       const found = await motor.customers.findByEmail(query.email);
-      return { total: found ? 1 : 0, clientes: found ? [found] : [] };
+      if (!found) return { total: 0, clientes: [] };
+      if (reveal) await auditarReveal(request, found.id, 1);
+      return { total: 1, clientes: [serializeCustomer(found, reveal)] };
     }
+    // Autocomplete dispara a cada tecla: aqui nunca se revela PII em claro,
+    // senao a cadeia de auditoria (com lock) viraria gargalo.
     if (query.q) {
       const found = await motor.customers.search(query.q, query.limit);
-      return { total: found.length, clientes: found };
+      return {
+        total: found.length,
+        clientes: found.map((c) => serializeCustomer(c, false)),
+      };
     }
     const clientes = await motor.customers.list(query.limit, query.offset);
-    return { total: await motor.customers.count(), clientes };
+    if (reveal) await auditarReveal(request, null, clientes.length);
+    return {
+      total: await motor.customers.count(),
+      clientes: clientes.map((c) => serializeCustomer(c, reveal)),
+    };
   });
 
   app.get('/api/cadastros/:id', async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const reveal = revealPedido(request);
     const customer = await motor.customers.get(id);
     if (!customer) return reply.code(404).send({ erro: 'cliente nao encontrado' });
-    return {
-      id: customer.id,
-      nome: customer.nome,
-      email: customer.email,
-      emailMasked: customer.emailMasked,
-      status: customer.status,
-      criadoEm: customer.criadoEm,
-    };
+    if (reveal) await auditarReveal(request, customer.id, 1);
+    return serializeCustomer(customer, reveal);
   });
 
   /* ---------------------------------------------------------------- */
@@ -451,4 +477,20 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
 function reply400(erro: string) {
   return { erro };
+}
+
+/**
+ * Saida de cliente mascarada por padrao. `email` acompanha a revelacao para
+ * que o front consiga montar a busca exata; sem reveal fica `null`.
+ */
+function serializeCustomer(customer: Customer, reveal: boolean) {
+  return {
+    id: customer.id,
+    nome: reveal ? customer.nome : customer.nomeMasked,
+    email: reveal ? customer.email : null,
+    nomeMasked: customer.nomeMasked,
+    emailMasked: customer.emailMasked,
+    status: customer.status,
+    criadoEm: customer.criadoEm,
+  };
 }

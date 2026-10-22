@@ -86,19 +86,27 @@ function renderSugestoes(clientes) {
     sugestoes.classList.remove('show');
     return;
   }
+  // PII mascarada por padrao: o email completo so vem no clique (auditado).
   sugestoes.innerHTML = clientes
     .map(
       (c) =>
-        `<li data-email="${escapeHtml(c.email)}"><strong>${escapeHtml(c.nome)}</strong>` +
-        `<span class="m"> &nbsp;${escapeHtml(c.emailMasked || maskEmail(c.email))}</span></li>`,
+        `<li data-id="${escapeHtml(c.id)}"><strong>${escapeHtml(c.nome)}</strong>` +
+        `<span class="m"> &nbsp;${escapeHtml(c.emailMasked || '')}</span></li>`,
     )
     .join('');
   sugestoes.classList.add('show');
   sugestoes.querySelectorAll('li').forEach((li) => {
-    li.addEventListener('click', () => {
-      buscaInput.value = li.dataset.email;
+    li.addEventListener('click', async () => {
       sugestoes.classList.remove('show');
-      consultar(li.dataset.email);
+      try {
+        const full = await api(
+          `/api/cadastros/${encodeURIComponent(li.dataset.id)}?reveal=true`,
+        );
+        buscaInput.value = full.email;
+        consultar(full.email);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
     });
   });
 }
@@ -106,7 +114,7 @@ function renderSugestoes(clientes) {
 async function consultar(valor) {
   resultado.innerHTML = '';
   try {
-    const data = await api(`/api/cadastros?email=${encodeURIComponent(valor)}`);
+    const data = await api(`/api/cadastros?email=${encodeURIComponent(valor)}&reveal=true`);
     const clientes = data.clientes || [];
     if (!clientes.length) {
       resultado.innerHTML = '<div class="hint">Nenhum cadastro encontrado.</div>';

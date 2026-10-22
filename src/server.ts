@@ -1,80 +1,17 @@
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import Fastify from 'fastify';
-import helmet from '@fastify/helmet';
-import rateLimit from '@fastify/rate-limit';
-import fastifyStatic from '@fastify/static';
 import { bootstrap } from './bootstrap.js';
-import { createAuthHook } from './adapters/http/auth.js';
-import { registerRoutes } from './adapters/http/routes.js';
+import { buildHttpApp } from './adapters/http/app.js';
 
 /**
  * Servidor HTTP do motor.
  *
- * - autentica por Bearer token (exceto health)
- * - rate limit por IP
- * - serve as duas paginas web estaticas
- * - helmet para cabecalhos de seguranca
+ * A montagem da aplicacao vive em `adapters/http/app.ts` (testavel); aqui
+ * ficam o boot, o `listen` e o encerramento gracioso.
  */
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const webRoot = join(__dirname, '..', 'web');
 
 async function main(): Promise<void> {
   const { config, logger, motor, close } = await bootstrap();
 
-  const app = Fastify({
-    logger: false,
-    trustProxy: true,
-    bodyLimit: 64 * 1024,
-  });
-
-  await app.register(helmet, {
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:'],
-        connectSrc: ["'self'"],
-        formAction: ["'self'"],
-        frameAncestors: ["'none'"],
-        objectSrc: ["'none'"],
-        baseUri: ["'self'"],
-      },
-    },
-    referrerPolicy: { policy: 'no-referrer' },
-    frameguard: { action: 'deny' },
-  });
-
-  await app.register(rateLimit, {
-    max: 120,
-    timeWindow: '1 minute',
-    errorResponseBuilder: () => ({ erro: 'rate limit excedido' }),
-  });
-
-  app.addHook('onRequest', createAuthHook({ adminToken: config.server.adminToken }));
-
-  await app.register(fastifyStatic, {
-    root: webRoot,
-    prefix: '/',
-    index: ['index.html'],
-    // arquivos estaticos nao exigem token (o HTML so chama a API com token)
-    decorateReply: false,
-  });
-
-  await registerRoutes(app, {
-    motor,
-    logger,
-    gasSponsor: {
-      minBalanceWei: config.gasSponsor.minBalanceWei,
-      enabled: Boolean(config.gasSponsor.privateKey),
-    },
-  });
-
-  app.get('/', async (_request, reply) => {
-    return reply.redirect('/cadastro.html');
-  });
+  const app = await buildHttpApp({ motor, logger, config });
 
   await app.listen({ port: config.server.port, host: config.server.host });
   logger.info(

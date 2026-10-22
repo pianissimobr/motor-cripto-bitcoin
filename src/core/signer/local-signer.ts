@@ -2,11 +2,12 @@ import { Transaction, Wallet, getAddress, keccak256 } from 'ethers';
 import type { SignerMode } from '../config.js';
 import { HdWallet } from '../hd/hd-wallet.js';
 import { decryptKeystore, readKeystoreFile } from '../hd/keystore.js';
-import type {
-  SignedTransaction,
-  Signer,
-  SignTransferInput,
-  UnsignedTransaction,
+import {
+  assertSignTransferInput,
+  type SignedTransaction,
+  type Signer,
+  type SignTransferInput,
+  type UnsignedTransaction,
 } from './signer.js';
 
 /**
@@ -53,6 +54,7 @@ export class LocalSigner implements Signer {
   }
 
   buildUnsigned(input: SignTransferInput): UnsignedTransaction {
+    assertSignTransferInput(input);
     const from = getAddress(this.addressFor(input.index));
     return {
       from,
@@ -72,6 +74,7 @@ export class LocalSigner implements Signer {
   }
 
   async signTransfer(input: SignTransferInput): Promise<SignedTransaction> {
+    assertSignTransferInput(input);
     const wallet = new Wallet(this.privateKeyFor(input.index));
     const tx = {
       to: getAddress(input.to),
