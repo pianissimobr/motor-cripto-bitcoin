@@ -135,6 +135,8 @@ export {
 } from './domain/link-state.js';
 export { BlockchainMonitor } from './chain/monitor.js';
 export { ReorgDetector } from './chain/reorg-detector.js';
+export { qrCodeSvg, svgToDataUri, QrCodeError } from './qrcode.js';
+export { collectAlerts, type Alerta, type AlertaNivel } from './alerts.js';
 export { Sweeper } from './chain/sweeper.js';
 export { GasSponsor } from './chain/gas-sponsor.js';
 export { HdWallet } from './hd/hd-wallet.js';

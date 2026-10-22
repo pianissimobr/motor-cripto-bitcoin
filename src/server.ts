@@ -63,7 +63,14 @@ async function main(): Promise<void> {
     decorateReply: false,
   });
 
-  await registerRoutes(app, { motor, logger });
+  await registerRoutes(app, {
+    motor,
+    logger,
+    gasSponsor: {
+      minBalanceWei: config.gasSponsor.minBalanceWei,
+      enabled: Boolean(config.gasSponsor.privateKey),
+    },
+  });
 
   app.get('/', async (_request, reply) => {
     return reply.redirect('/cadastro.html');

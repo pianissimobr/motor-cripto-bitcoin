@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
+import { collectAlerts } from '../../core/alerts.js';
+import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
 import type { Motor } from '../../core/index.js';
 import type { Logger } from '../../core/logger.js';
 
@@ -49,10 +51,14 @@ const coldWalletSchema = z.object({
 export type RouteOptions = {
   motor: Motor;
   logger: Logger;
+  /** Saldo minimo do patrocinador de gas (para o alerta). */
+  gasSponsor?: { minBalanceWei: bigint; enabled: boolean };
 };
 
 export async function registerRoutes(app: FastifyInstance, options: RouteOptions): Promise<void> {
   const { motor, logger } = options;
+  const configGas = options.gasSponsor ?? { minBalanceWei: 0n, enabled: false };
+  const gasSponsorAtivo = configGas.enabled;
 
   /* ---------------------------------------------------------------- */
   /* Health + status                                                   */
@@ -174,16 +180,27 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       ip: request.ip,
     });
 
+    // F1: QR gerado no servidor (a tela so embute o SVG).
+    let qr: { svg: string; dataUri: string } | null = null;
+    try {
+      const svg = await qrCodeSvg(link.rampUrl);
+      qr = { svg, dataUri: svgToDataUri(svg) };
+    } catch (err) {
+      logger.warn({ err, linkId: link.id }, 'falha ao gerar QR do link');
+    }
+
     logger.info({ linkId: link.id }, 'link gerado via API');
     return reply.code(201).send({
       id: link.id,
       rampUrl: link.rampUrl,
       enderecoDeposito: link.enderecoDeposito,
+      carteiraFria: link.carteiraFriaEndereco,
       valor: centsToFiat(link.valorFiatCentavos),
       moeda: link.moedaFiat,
       asset: link.asset,
       chain: link.chain,
       status: link.status,
+      qrcodeDataUri: qr?.dataUri ?? null,
       expiraEm: link.expiraEm,
       criadoEm: link.criadoEm,
     });
@@ -235,6 +252,24 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
         criadoEm: c.criadoEm,
       })),
     };
+  });
+
+  /** F1: o QR como SVG puro, para <img> ou download. */
+  app.get('/api/links/:id/qrcode.svg', async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const link = await motor.links.get(id);
+    if (!link) return reply.code(404).send({ erro: 'link nao encontrado' });
+    try {
+      const svg = await qrCodeSvg(link.rampUrl);
+      return reply
+        .header('content-type', 'image/svg+xml; charset=utf-8')
+        .header('cache-control', 'private, max-age=300')
+        .header('content-disposition', 'inline; filename="link-pagamento.svg"')
+        .send(svg);
+    } catch (err) {
+      if (err instanceof QrCodeError) return reply.code(422).send({ erro: err.message });
+      throw err;
+    }
   });
 
   app.get('/api/links', async (request) => {
@@ -367,6 +402,26 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       detalhes: { chain: wallet.chain },
     });
     return reply.code(201).send({ id: wallet.id, label: wallet.label });
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* Alertas (F2)                                                      */
+  /* ---------------------------------------------------------------- */
+
+  app.get('/api/alerts', async () => {
+    const alertas = await collectAlerts({
+      repos: motor.repos,
+      logger,
+      gasSponsorMinBalanceWei: configGas.minBalanceWei,
+      gasSponsorConfigured: gasSponsorAtivo,
+    });
+    return {
+      total: alertas.length,
+      critico: alertas.filter((a) => a.nivel === 'critico').length,
+      atencao: alertas.filter((a) => a.nivel === 'atencao').length,
+      info: alertas.filter((a) => a.nivel === 'info').length,
+      alertas,
+    };
   });
 
   /* ---------------------------------------------------------------- */

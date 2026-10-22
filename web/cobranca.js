@@ -165,6 +165,7 @@ el('gerar').addEventListener('click', async () => {
     iniciarPolling(link.id);
     await carregarLinks();
     toast('Link de cobranca gerado', 'ok');
+    carregarAlertas();
   } catch (err) {
     errorBox.textContent = err.message;
     toast(err.message, 'err');
@@ -176,6 +177,7 @@ el('gerar').addEventListener('click', async () => {
 
 function renderResultado(link) {
   el('resultCard').style.display = 'block';
+  // F1: o QR vem pronto do servidor (data URI) - nada de lib no browser.
   const perfil = perfilSelecionado;
   const taxa = perfil && perfil.taxaTokenPorFiatBaseUnits
     ? baseUnitsToDecimal(perfil.taxaTokenPorFiatBaseUnits, perfil.decimals)
@@ -199,6 +201,19 @@ function renderResultado(link) {
     <div class="field">
       <div class="k">Valor</div>
       <div class="v">${escapeHtml(link.valor)} ${escapeHtml(link.moeda)} ${taxa ? `~ ${escapeHtml(taxa)} ${escapeHtml(link.asset)} por 1,00` : ''}</div>
+    </div>
+    ${
+      link.qrcodeDataUri
+        ? `<div class="field">
+            <div class="k">QR code do link</div>
+            <div class="qr-box"><img src="${escapeHtml(link.qrcodeDataUri)}" alt="QR code do link de pagamento"></div>
+            <div class="hint">Aponte a camera para o QR: o cliente paga direto pelo celular.</div>
+          </div>`
+        : ''
+    }
+    <div class="field">
+      <div class="k">Carteira de destino (sweep)</div>
+      <div class="v">${escapeHtml(link.carteiraFria || '-')}</div>
     </div>
     <div class="field">
       <div class="k">ID do link</div>
@@ -344,5 +359,57 @@ async function carregarLinks() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Alertas (F2)                                                       */
+/* ------------------------------------------------------------------ */
+
+async function carregarAlertas() {
+  const badge = el('alertBadge');
+  const card = el('alertasCard');
+  const box = el('alertas');
+  if (!badge || !card || !box) return;
+  try {
+    const data = await api('/api/alerts');
+    const total = data.critico + data.atencao;
+    badge.textContent = total > 0 ? String(total) : '0';
+    badge.className = `alert-badge ${total > 0 ? (data.critico > 0 ? 'critico' : 'atencao') : 'zero'}`;
+    badge.title = `${data.critico} critico(s), ${data.atencao} atencao(oes)`;
+
+    if (!data.alertas || data.alertas.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = 'block';
+    box.innerHTML = data.alertas
+      .map((a) => {
+        const meta = [];
+        if (a.linkId) meta.push(`link ${a.linkId.slice(0, 8)}`);
+        if (a.detalhe && a.detalhe.recebidoBaseUnits) {
+          meta.push(`recebido ${a.detalhe.recebidoBaseUnits}`);
+        }
+        if (a.detalhe && a.detalhe.variavel) meta.push(a.detalhe.variavel);
+        return `<div class="alert-item ${escapeHtml(a.nivel)}">
+            <div class="a-title">${escapeHtml(a.titulo)}</div>
+            <div class="a-desc">${escapeHtml(a.descricao)}</div>
+            ${meta.length ? `<div class="a-meta">${escapeHtml(meta.join(' | '))}</div>` : ''}
+          </div>`;
+      })
+      .join('');
+  } catch (err) {
+    if (err.status !== 401 && err.status !== 403) {
+      badge.className = 'alert-badge atencao';
+      badge.textContent = '!';
+    }
+  }
+}
+
+el('alertBadge').addEventListener('click', () => {
+  const card = el('alertasCard');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
 carregarReferencias();
 carregarLinks();
+carregarAlertas();
+// Alertas mudam sozinhos: um link pode virar 'parcial' ou 'pago_sem_gas'.
+setInterval(carregarAlertas, 30_000);

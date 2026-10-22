@@ -21,6 +21,7 @@
       <input id="token-input" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" spellcheck="false">
       <button id="token-save" class="small">Conectar</button>
       <span id="auth-state" class="auth-state">sem token</span>
+      <span id="alertBadge" class="alert-badge zero" title="Alertas operacionais">0</span>
     </div>
   </header>
 
@@ -84,6 +85,11 @@
     <section class="card" id="listaCard" style="margin-top:20px">
       <h2>Links recentes</h2>
       <div id="lista"></div>
+    </section>
+
+    <section class="card" id="alertasCard" style="margin-top:20px; display:none">
+      <h2>Alertas operacionais</h2>
+      <div id="alertas"></div>
     </section>
   </main>
 
