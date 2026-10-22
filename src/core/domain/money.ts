@@ -77,10 +77,25 @@ export function divRound(a: bigint, b: bigint): bigint {
 }
 
 /**
+ * Teto da tolerancia, em percentual.
+ *
+ * A propriedade de teste encontrou o problema: com `tolerancePct=100`, a
+ * formula pura aceitaria um pagamento ate 2x o esperado - o dobro do valor.
+ * Isso e matematicamente correto, mas e um erro de negocio: nenhum motor de
+ * pagamento deve aceitar o dobro como "dentro da tolerancia".
+ *
+ * O teto de 50% ainda absorve variacao cambial grande e pagamento parcial
+ * proposital, sem nunca liberar o dobro. Configuracoes acima disso sao
+ * cortadas de proposito.
+ */
+export const TOLERANCE_MAX_PCT = 50;
+
+/**
  * Percentual de tolerancia aplicado em base units.
  *
- * `tolerancePct` e um percentual (1 = 1%). A aritmetica e feita em bigint
- * com 4 casas de precisao no percentual para nao perder divisao inteira.
+ * `tolerancePct` e um percentual (1 = 1%), limitado a TOLERANCE_MAX_PCT.
+ * A aritmetica e feita em bigint com 4 casas de precisao no percentual
+ * para nao perder divisao inteira (e nunca passa por float).
  */
 export function withinTolerance(
   expected: bigint,
@@ -89,8 +104,9 @@ export function withinTolerance(
 ): boolean {
   if (expected <= 0n) return received >= 0n;
   const diff = received >= expected ? received - expected : expected - received;
-  // limit = expected * pct / 100, com pct escalado por 10.000
-  const scaled = BigInt(Math.round(tolerancePct * 10_000));
+
+  const pct = Math.min(Math.max(tolerancePct, 0), TOLERANCE_MAX_PCT);
+  const scaled = BigInt(Math.round(pct * 10_000));
   const limit = (expected * scaled) / 1_000_000n;
   return diff <= limit;
 }

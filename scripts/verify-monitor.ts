@@ -33,14 +33,18 @@ async function main(): Promise<void> {
   })('polygon');
 
   console.log('1) buscando transferencia real de USDC na Polygon...');
-  const head = await rpc.getBlockNumber();
+  // O motor varre ate `finalized` (MONITOR_BLOCK_TAG). Se procurassemos a
+  // amostra perto do `latest` e ela caisse entre finalized e latest, o
+  // monitor nunca a veria. Por isso buscamos DENTRO da janela finalizada.
+  const finalized = await rpc.getBlock('finalized').catch(() => null);
+  const head = finalized?.number ?? (await rpc.getBlockNumber());
   let sample: { transactionHash: string; blockNumber: number; topics: readonly string[]; data: string } | null = null;
 
   // O RPC publico limita a faixa de blocos; vasculha janelas cada vez
   // menores ate encontrar uma transferencia.
   for (const janela of [20, 10, 5]) {
     for (let tentativas = 0; tentativas < 6 && !sample; tentativas++) {
-      const to = head - tentativas * janela;
+      const to = head - tentativas * janela - 1;
       const from = to - janela + 1;
       try {
         const encontrados = await rpc.getLogs({
