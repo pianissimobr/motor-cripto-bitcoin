@@ -10,6 +10,7 @@
  * precisa de uma transicao explicita para isso.
  */
 
+import { ConflictError } from './errors.js';
 import type { LinkStatus } from './types.js';
 
 export const LINK_TRANSITIONS: Record<LinkStatus, readonly LinkStatus[]> = {
@@ -30,7 +31,7 @@ export function canTransition(from: LinkStatus, to: LinkStatus): boolean {
   return LINK_TRANSITIONS[from].includes(to);
 }
 
-export class IllegalTransitionError extends Error {
+export class IllegalTransitionError extends ConflictError {
   constructor(
     public readonly from: LinkStatus,
     public readonly to: LinkStatus,
@@ -38,8 +39,8 @@ export class IllegalTransitionError extends Error {
     super(
       `transicao de status invalida: ${from} -> ${to}. ` +
         `Permitidas a partir de ${from}: ${LINK_TRANSITIONS[from].join(', ')}`,
+      'transicao_invalida',
     );
-    this.name = 'IllegalTransitionError';
   }
 }
 

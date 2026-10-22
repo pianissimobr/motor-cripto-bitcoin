@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { checksumAddress } from '../domain/address.js';
+import { NotFoundError, ValidationError } from '../domain/errors.js';
 import { HD_INDEX_SCOPE } from '../hd/index-scope.js';
 import { divRound } from '../domain/money.js';
 import type { PaymentLink, RampProfile } from '../domain/types.js';
@@ -39,17 +40,17 @@ export class LinkService {
     const { repos } = this.deps;
 
     if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
-      throw new Error('valor de cobranca deve ser um inteiro positivo (em centavos)');
+      throw new ValidationError('valor de cobranca deve ser um inteiro positivo (em centavos)');
     }
     if (input.amountCents > 100_000_000) {
-      throw new Error('valor de cobranca acima do limite permitido');
+      throw new ValidationError('valor de cobranca acima do limite permitido');
     }
 
     const customer = await repos.customers.findById(input.clienteId);
-    if (!customer) throw new Error('cliente nao encontrado');
+    if (!customer) throw new NotFoundError('cliente nao encontrado');
 
     const profile = await repos.rampProfiles.findById(input.rampProfileId);
-    if (!profile) throw new Error('perfil de integracao Ramp nao encontrado');
+    if (!profile) throw new NotFoundError('perfil de integracao Ramp nao encontrado');
 
     const destino = await this.resolveColdWallet(input, profile);
 
@@ -57,48 +58,63 @@ export class LinkService {
     // perfil Ramp. Usar `profile.id` fazia dois perfis derivarem o mesmo
     // endereco (indice 0 em ambos).
     const index = await repos.indices.allocate(HD_INDEX_SCOPE, this.deps.maxIndex);
-    const enderecoDeposito = checksumAddress(this.deps.hdWallet.deriveAddress(index));
-    const caminhoDerivacao = this.deps.hdWallet.fullPath(index);
 
-    const taxa = profile.taxaTokenPorFiatBaseUnits;
-    const expectedBaseUnits =
-      taxa && taxa > 0n
-        ? divRound(taxa * BigInt(input.amountCents), 100n)
-        : null;
+    let link: PaymentLink;
+    try {
+      const enderecoDeposito = checksumAddress(this.deps.hdWallet.deriveAddress(index));
+      const caminhoDerivacao = this.deps.hdWallet.fullPath(index);
 
-    const rampUrl = buildRampLink({
-      profile,
-      depositAddress: enderecoDeposito,
-      amountCents: input.amountCents,
-      paymentId: randomUUID(),
-      finalUrl: input.finalUrl ?? null,
-    });
+      const taxa = profile.taxaTokenPorFiatBaseUnits;
+      const expectedBaseUnits =
+        taxa && taxa > 0n
+          ? divRound(taxa * BigInt(input.amountCents), 100n)
+          : null;
 
-    const expiraEm = new Date(Date.now() + this.deps.ttlHours * 3600_000);
+      const rampUrl = buildRampLink({
+        profile,
+        depositAddress: enderecoDeposito,
+        amountCents: input.amountCents,
+        paymentId: randomUUID(),
+        finalUrl: input.finalUrl ?? null,
+      });
 
-    const link = await repos.links.create({
-      clienteId: customer.id,
-      rampProfileId: profile.id,
-      chain: profile.chain,
-      asset: profile.asset,
-      tokenContract: profile.tokenContract,
-      decimals: profile.decimals,
-      moedaFiat: profile.fiatCurrency,
-      valorFiatCentavos: input.amountCents,
-      valorFiatUnidades: Math.round(input.amountCents),
-      taxaTokenPorFiatBaseUnits: taxa,
-      expectedBaseUnits,
-      indiceHd: index,
-      caminhoDerivacao,
-      enderecoDeposito,
-      // A1: o destino do sweep fica gravado no link. A UI e o sweeper
-      // passam a concordar, e a escolha do operador fica auditavel.
-      carteiraFriaId: destino.id,
-      carteiraFriaEndereco: destino.endereco,
-      rampUrl,
-      status: 'aguardando',
-      expiraEm,
-    });
+      const expiraEm = new Date(Date.now() + this.deps.ttlHours * 3600_000);
+
+      link = await repos.links.create({
+        clienteId: customer.id,
+        rampProfileId: profile.id,
+        chain: profile.chain,
+        asset: profile.asset,
+        tokenContract: profile.tokenContract,
+        decimals: profile.decimals,
+        moedaFiat: profile.fiatCurrency,
+        valorFiatCentavos: input.amountCents,
+        valorFiatUnidades: Math.round(input.amountCents),
+        taxaTokenPorFiatBaseUnits: taxa,
+        expectedBaseUnits,
+        indiceHd: index,
+        caminhoDerivacao,
+        enderecoDeposito,
+        // A1: o destino do sweep fica gravado no link. A UI e o sweeper
+        // passam a concordar, e a escolha do operador fica auditavel.
+        carteiraFriaId: destino.id,
+        carteiraFriaEndereco: destino.endereco,
+        rampUrl,
+        status: 'aguardando',
+        expiraEm,
+      });
+    } catch (err) {
+      // O indice foi reservado antes da criacao. Sem devolve-lo, cada falha
+      // (URL invalida, banco fora etc.) queimaria um endereco para sempre.
+      // O release so apaga a reserva se ela ainda nao tiver link.
+      await repos.indices.release(HD_INDEX_SCOPE, index).catch((releaseErr: unknown) => {
+        this.deps.logger.warn(
+          { err: releaseErr, indiceHd: index },
+          'falha ao liberar indice HD apos erro na criacao do link',
+        );
+      });
+      throw err;
+    }
 
     await repos.audit.record({
       ator: input.actor ?? 'sistema',
@@ -112,7 +128,7 @@ export class LinkService {
         asset: profile.asset,
         valorFiatCentavos: input.amountCents,
         indiceHd: index,
-        enderecoDeposito,
+        enderecoDeposito: link.enderecoDeposito,
         carteiraFria: destino.endereco,
       },
       ip: input.ip ?? null,
@@ -135,9 +151,9 @@ export class LinkService {
   ): Promise<{ id: string | null; endereco: string }> {
     if (input.coldWalletId) {
       const wallet = await this.deps.repos.coldWallets.findById(input.coldWalletId);
-      if (!wallet) throw new Error('carteira fria nao encontrada');
+      if (!wallet) throw new NotFoundError('carteira fria nao encontrada');
       if (wallet.chain.toLowerCase() !== profile.chain.toLowerCase()) {
-        throw new Error(
+        throw new ValidationError(
           `carteira fria da chain "${wallet.chain}" incompativel com o perfil "${profile.chain}"`,
         );
       }
@@ -145,7 +161,7 @@ export class LinkService {
     }
     if (input.coldWalletAddress) {
       if (!/^0x[a-fA-F0-9]{40}$/.test(input.coldWalletAddress)) {
-        throw new Error('endereco de carteira fria invalido');
+        throw new ValidationError('endereco de carteira fria invalido');
       }
       // Endereco livre: entra no log como destino, sem id de tabela.
       const existing = await this.deps.repos.coldWallets.findByAddress(
@@ -162,7 +178,7 @@ export class LinkService {
       (w) => w.chain.toLowerCase() === profile.chain.toLowerCase(),
     );
     if (!candidate) {
-      throw new Error(
+      throw new ValidationError(
         `nenhuma carteira fria cadastrada para a chain "${profile.chain}": ` +
           'informe coldWalletId ou coldWalletAddress',
       );
@@ -191,7 +207,7 @@ export class LinkService {
       repos.payments.listByLink(id),
       repos.transfers.findByLink(id),
     ]);
-    const credits = (await repos.credits.listAll(1000)).filter((c) => c.linkId === id);
+    const credits = await repos.credits.listByLink(id);
     return { link, payments, transfers, credits };
   }
 }

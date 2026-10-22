@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { ConflictError, ValidationError, isUniqueViolation } from '../../core/domain/errors.js';
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
 import { collectAlerts } from '../../core/alerts.js';
 import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
-import type { Customer } from '../../core/domain/types.js';
+import type { ColdWallet, Customer, RampProfile } from '../../core/domain/types.js';
 import type { Motor } from '../../core/index.js';
 import type { Logger } from '../../core/logger.js';
 
@@ -17,36 +18,67 @@ const cadastroSchema = z.object({
   email: z.string().email().max(320),
 });
 
+const chainSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(40)
+  .regex(/^[a-z0-9][a-z0-9-]*$/i, 'chain invalida');
+
+const httpUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => {
+    const protocol = new URL(value).protocol;
+    return protocol === 'https:' || protocol === 'http:';
+  }, 'URL deve usar http(s)');
+
 const linkSchema = z.object({
   clienteId: z.string().uuid().optional(),
-  email: z.string().email().optional(),
-  valor: z.union([z.string(), z.number()]),
+  email: z.string().email().max(320).optional(),
+  valor: z.union([z.string().trim().min(1).max(20), z.number()]),
   rampProfileId: z.string().uuid(),
   coldWalletId: z.string().uuid().nullish(),
   coldWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/).nullish(),
-  finalUrl: z.string().url().nullish(),
+  finalUrl: httpUrlSchema.nullish(),
 });
 
 const rampProfileSchema = z.object({
-  label: z.string().min(1).max(80),
-  chain: z.string().min(1).max(40),
-  asset: z.string().min(1).max(20),
+  label: z.string().trim().min(1).max(80),
+  chain: chainSchema,
+  asset: z
+    .string()
+    .trim()
+    .min(1)
+    .max(20)
+    .regex(/^[A-Za-z0-9._-]+$/, 'asset invalido'),
   tokenContract: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   decimals: z.number().int().min(0).max(18).default(6),
-  fiatCurrency: z.string().length(3).default('BRL'),
-  baseUrl: z.string().url(),
+  fiatCurrency: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, 'moeda fiat deve ter 3 letras')
+    .transform((value) => value.toUpperCase())
+    .default('BRL'),
+  baseUrl: httpUrlSchema,
   paramStyle: z.enum(['legacy', 'unified']).default('legacy'),
-  hostAppName: z.string().default('Motor Cripto'),
-  hostLogoUrl: z.string().url().nullish(),
-  hostApiKey: z.string().nullish(),
-  rampAssetKey: z.string().nullish(),
-  taxaTokenPorFiatBaseUnits: z.union([z.string(), z.number(), z.bigint()]).nullish(),
+  hostAppName: z.string().trim().min(1).max(80).default('Motor Cripto'),
+  hostLogoUrl: httpUrlSchema.nullish(),
+  hostApiKey: z.string().max(500).nullish(),
+  rampAssetKey: z.string().trim().max(80).nullish(),
+  // BigInt nao cabe em JSON; aceita string decimal ou numero inteiro seguro.
+  taxaTokenPorFiatBaseUnits: z
+    .union([
+      z.string().regex(/^\d+$/, 'taxa deve ser inteiro >= 0'),
+      z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      z.bigint().nonnegative(),
+    ])
+    .nullish(),
 });
 
 const coldWalletSchema = z.object({
-  label: z.string().min(1).max(80),
+  label: z.string().trim().min(1).max(80),
   address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  chain: z.string().min(1).max(40),
+  chain: chainSchema,
 });
 
 export type RouteOptions = {
@@ -89,11 +121,10 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   app.get('/api/health', async () => ({ ok: true, ts: new Date().toISOString() }));
 
   app.get('/api/motor/status', async () => {
-    const [clientes, perfis, carteiras, cursors, auditoria] = await Promise.all([
+    const [clientes, perfis, carteiras, auditoria] = await Promise.all([
       motor.repos.customers.count(),
       motor.repos.rampProfiles.list(),
       motor.repos.coldWallets.list(),
-      motor.repos.audit.list(1),
       motor.repos.audit.list(5),
     ]);
     return {
@@ -107,7 +138,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       })),
       carteirasFrias: carteiras.map((c) => ({ id: c.id, label: c.label, chain: c.chain })),
       signer: motor.signer.describe(),
-      xpubConta: motor.hdWallet.account.accountAddress,
+      // Nome do campo dizia "xpub", mas o valor sempre foi o endereco da conta.
+      enderecoConta: motor.hdWallet.account.accountAddress,
       prefixoDerivacao: motor.hdWallet.derivationPrefix,
       ultimoEventoAuditoria: auditoria[0]?.criadoEm ?? null,
     };
@@ -135,8 +167,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   app.get('/api/cadastros', async (request) => {
     const query = z
       .object({
-        email: z.string().optional(),
-        q: z.string().optional(),
+        email: z.string().email().max(320).optional(),
+        q: z.string().trim().min(1).max(64).optional(),
         reveal: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(100).default(20),
         offset: z.coerce.number().int().min(0).default(0),
@@ -183,7 +215,12 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
   app.post('/api/links', async (request, reply) => {
     const body = linkSchema.parse(request.body);
-    const amountCents = fiatToCents(body.valor);
+    let amountCents: number;
+    try {
+      amountCents = fiatToCents(body.valor);
+    } catch (err) {
+      throw new ValidationError(err instanceof Error ? err.message : 'valor invalido');
+    }
 
     let clienteId = body.clienteId;
     if (!clienteId) {
@@ -289,7 +326,13 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   app.post('/api/movimentos/:id/raw', async (request, reply) => {
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = z
-      .object({ rawTransaction: z.string().min(10).max(100_000) })
+      .object({
+        rawTransaction: z
+          .string()
+          .min(10)
+          .max(100_000)
+          .regex(/^0x(?:[0-9a-fA-F]{2})+$/, 'rawTransaction deve ser hex 0x'),
+      })
       .parse(request.body);
     const result = await motor.sweeper.submitSignedTransfer(id, body.rawTransaction);
     return reply.code(202).send(result);
@@ -344,12 +387,12 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   /* Creditos                                                          */
   /* ---------------------------------------------------------------- */
 
-  app.get('/api/creditos', async (request) => {
+  app.get('/api/creditos', async (request, reply) => {
     const query = z
       .object({ clienteId: z.string().uuid().optional() })
       .parse(request.query);
     if (!query.clienteId) {
-      return reply400('informe clienteId');
+      return reply.code(400).send({ erro: 'informe clienteId' });
     }
     const credits = await motor.repos.credits.listByCustomer(query.clienteId);
     const totalCentavos = await motor.repos.credits.sumByCustomer(query.clienteId);
@@ -400,13 +443,19 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       body.taxaTokenPorFiatBaseUnits === null || body.taxaTokenPorFiatBaseUnits === undefined
         ? null
         : BigInt(body.taxaTokenPorFiatBaseUnits);
-    const profile = await motor.repos.rampProfiles.create({
-      ...body,
-      hostLogoUrl: body.hostLogoUrl ?? null,
-      hostApiKey: body.hostApiKey ?? null,
-      rampAssetKey: body.rampAssetKey ?? null,
-      taxaTokenPorFiatBaseUnits: taxa,
-    });
+    let profile: RampProfile;
+    try {
+      profile = await motor.repos.rampProfiles.create({
+        ...body,
+        hostLogoUrl: body.hostLogoUrl ?? null,
+        hostApiKey: body.hostApiKey ?? null,
+        rampAssetKey: body.rampAssetKey ?? null,
+        taxaTokenPorFiatBaseUnits: taxa,
+      });
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new ConflictError('perfil Ramp ja cadastrado');
+      throw err;
+    }
     await motor.repos.audit.record({
       ator: 'api',
       acao: 'ramp_profile.criado',
@@ -433,7 +482,13 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
   app.post('/api/carteiras-frias', async (request, reply) => {
     const body = coldWalletSchema.parse(request.body);
-    const wallet = await motor.repos.coldWallets.create(body);
+    let wallet: ColdWallet;
+    try {
+      wallet = await motor.repos.coldWallets.create(body);
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new ConflictError('carteira fria ja cadastrada');
+      throw err;
+    }
     await motor.repos.audit.record({
       ator: 'api',
       acao: 'carteira_fria.criada',
@@ -488,10 +543,6 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       })),
     };
   });
-}
-
-function reply400(erro: string) {
-  return { erro };
 }
 
 function parseUnsignedJson(value: string | null): unknown {

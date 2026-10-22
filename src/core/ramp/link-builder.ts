@@ -1,3 +1,4 @@
+import { ValidationError } from '../domain/errors.js';
 import { centsToUnits } from '../domain/money.js';
 import type { ParamStyle, RampProfile } from '../domain/types.js';
 
@@ -16,10 +17,9 @@ import type { ParamStyle, RampProfile } from '../domain/types.js';
  * mas o motor deixa o estilo ser configurado por perfil.
  */
 
-export class RampLinkError extends Error {
+export class RampLinkError extends ValidationError {
   constructor(message: string) {
-    super(message);
-    this.name = 'RampLinkError';
+    super(message, 'ramp_link_invalido');
   }
 }
 
@@ -63,7 +63,7 @@ export function buildRampLink(input: RampLinkInput): string {
     url.searchParams.set('userAddress', depositAddress);
     url.searchParams.set('asset', profile.asset);
     url.searchParams.set('network', profile.chain);
-    url.searchParams.set('fiatValue', (amountCents / 100).toFixed(2));
+    url.searchParams.set('fiatValue', centsToDotDecimal(amountCents));
     url.searchParams.set('fiatCurrency', profile.fiatCurrency);
     url.searchParams.set('hostPaymentId', paymentId);
     if (profile.hostApiKey) url.searchParams.set('hostApiKey', profile.hostApiKey);
@@ -82,6 +82,13 @@ export function buildRampLink(input: RampLinkInput): string {
   }
 
   return url.toString();
+}
+
+/** Centavos para "123.45" sem float. */
+function centsToDotDecimal(cents: number): string {
+  const whole = Math.floor(cents / 100);
+  const fraction = String(cents % 100).padStart(2, '0');
+  return `${whole}.${fraction}`;
 }
 
 function defaultUnifiedAssetKey(chain: string, asset: string): string {

@@ -151,6 +151,20 @@ describe('P0 com Postgres real', () => {
     await expect(repos.indices.allocate('hd', 1)).rejects.toThrow(/limite de indices HD/);
   });
 
+  it('libera indice HD reservado e nunca reutiliza indice com link', async () => {
+    const a = await repos.indices.allocate('hd', 10);
+    await repos.indices.release('hd', a);
+    const b = await repos.indices.allocate('hd', 10);
+    expect(b).toBe(a);
+
+    const { clienteId, profile } = await seedBase();
+    const link = await createLink(clienteId, profile.id);
+    await repos.indices.release('hd', link.indiceHd);
+
+    const c = await repos.indices.allocate('hd', 10);
+    expect(c).toBe(link.indiceHd + 1);
+  });
+
   it('confirma pagamento e cria credito na mesma transacao (idempotente)', async () => {
     const { clienteId, profile } = await seedBase();
     const link = await createLink(clienteId, profile.id);

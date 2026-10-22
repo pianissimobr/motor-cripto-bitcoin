@@ -15,6 +15,9 @@ describe('fiatToCents', () => {
     expect(fiatToCents('150,00')).toBe(15_000);
     expect(fiatToCents('150.00')).toBe(15_000);
     expect(fiatToCents('0,01')).toBe(1);
+    // 0.29 * 100 em float da 28.999...; a conversao inteira da 29.
+    expect(fiatToCents('0,29')).toBe(29);
+    expect(fiatToCents(0.29)).toBe(29);
   });
 
   it('rejeita valores invalidos', () => {

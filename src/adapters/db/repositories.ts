@@ -865,6 +865,15 @@ class DrizzleCreditRepository implements CreditRepository {
     return rows.map(toCredit);
   }
 
+  async listByLink(linkId: string): Promise<CustomerCredit[]> {
+    const rows = await this.db
+      .select()
+      .from(creditosCliente)
+      .where(eq(creditosCliente.linkId, linkId))
+      .orderBy(desc(creditosCliente.criadoEm));
+    return rows.map(toCredit);
+  }
+
   async listAll(limit: number): Promise<CustomerCredit[]> {
     const rows = await this.db
       .select()
@@ -1294,6 +1303,26 @@ class DrizzleIndexAllocator implements IndexAllocator {
       }
     }
     throw new Error('nao foi possivel alocar indice HD apos 5 tentativas');
+  }
+
+  /**
+   * Devolve uma reserva que nunca virou link. O `link_id` e preenchido na
+   * mesma transacao que insere o link; se ele continua nulo, a reserva e
+   * seguramente descartavel. Indices ja usados nunca sao apagados.
+   */
+  async release(scope: string, indice: number): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${scope}))`);
+      await tx
+        .delete(hdIndices)
+        .where(
+          and(
+            eq(hdIndices.scope, scope),
+            eq(hdIndices.indice, indice),
+            isNull(hdIndices.linkId),
+          ),
+        );
+    });
   }
 }
 

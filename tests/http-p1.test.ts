@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildHttpApp } from '../src/adapters/http/app.js';
 import { loadConfig } from '../src/core/config.js';
 import { BlindIndex, DataCipher } from '../src/core/crypto/cipher.js';
+import { NotFoundError, ValidationError } from '../src/core/domain/errors.js';
 import { CustomerService } from '../src/core/services/customer-service.js';
 import { silentLogger } from '../src/core/logger.js';
 import type { Motor } from '../src/core/index.js';
@@ -183,6 +184,103 @@ describe('P1: PII mascarada + reveal auditado', () => {
       expect(body.nome).not.toBe('Ana Lima');
       expect(body.email).toBeNull();
       expect(body.emailMasked).toBeTruthy();
+    } finally {
+      await close(app);
+    }
+  });
+});
+
+describe('P1: validacao e erros de dominio', () => {
+  it('creditos sem clienteId retorna 400 (nao 200)', async () => {
+    const { app } = await makeApp();
+    try {
+      const resp = await app.inject({
+        method: 'GET',
+        url: '/api/creditos',
+        headers: admin,
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(resp.json()).toEqual({ erro: 'informe clienteId' });
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('taxa negativa ou fracionaria em perfil Ramp vira 400', async () => {
+    const { app } = await makeApp();
+    const base = {
+      label: 'Polygon USDC',
+      chain: 'polygon',
+      asset: 'USDC',
+      tokenContract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+      baseUrl: 'https://buy.ramp.network/',
+    };
+    try {
+      for (const taxa of ['-1', 1.5]) {
+        const resp = await app.inject({
+          method: 'POST',
+          url: '/api/ramp-profiles',
+          headers: admin,
+          payload: { ...base, taxaTokenPorFiatBaseUnits: taxa },
+        });
+        expect(resp.statusCode).toBe(400);
+      }
+
+      const ok = await app.inject({
+        method: 'POST',
+        url: '/api/ramp-profiles',
+        headers: admin,
+        payload: { ...base, taxaTokenPorFiatBaseUnits: '180000' },
+      });
+      expect(ok.statusCode).toBe(201);
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('valor invalido no link vira 400 antes de chamar o core', async () => {
+    const { app } = await makeApp();
+    try {
+      const resp = await app.inject({
+        method: 'POST',
+        url: '/api/links',
+        headers: admin,
+        payload: {
+          valor: 'abc',
+          rampProfileId: '00000000-0000-4000-8000-000000000000',
+          coldWalletAddress: '0x1111111111111111111111111111111111111111',
+        },
+      });
+      expect(resp.statusCode).toBe(400);
+      expect(resp.json().erro).toMatch(/valor invalido/);
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('NotFoundError vira 404 e ValidationError vira 400', async () => {
+    const { app } = await makeApp();
+    app.get('/api/_nao_encontrado', async () => {
+      throw new NotFoundError('nao achei');
+    });
+    app.get('/api/_invalido', async () => {
+      throw new ValidationError('dado invalido');
+    });
+    try {
+      expect(
+        (
+          await app.inject({
+            method: 'GET',
+            url: '/api/_nao_encontrado',
+            headers: admin,
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await app.inject({ method: 'GET', url: '/api/_invalido', headers: admin })
+        ).statusCode,
+      ).toBe(400);
     } finally {
       await close(app);
     }

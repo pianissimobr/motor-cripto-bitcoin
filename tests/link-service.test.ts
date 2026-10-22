@@ -1,6 +1,8 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { HDNodeWallet, Mnemonic } from 'ethers';
 import { DataCipher, BlindIndex } from '../src/core/crypto/cipher.js';
+import { NotFoundError, ValidationError } from '../src/core/domain/errors.js';
 import { HdWallet } from '../src/core/hd/hd-wallet.js';
 import { createMotor } from '../src/core/index.js';
 import { silentLogger } from '../src/core/logger.js';
@@ -188,7 +190,7 @@ describe('core do motor', () => {
         rampProfileId: ctx.profileId,
         coldWalletAddress: COLD,
       }),
-    ).rejects.toThrow(/valor de cobranca deve ser/);
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('rejeita cliente inexistente', async () => {
@@ -199,7 +201,7 @@ describe('core do motor', () => {
         rampProfileId: ctx.profileId,
         coldWalletAddress: COLD,
       }),
-    ).rejects.toThrow(/cliente nao encontrado/);
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it('rejeita carteira fria de outra chain', async () => {
@@ -220,7 +222,7 @@ describe('core do motor', () => {
         rampProfileId: ctx.profileId,
         coldWalletId: ethWallet.id,
       }),
-    ).rejects.toThrow(/incompativel/);
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('usa a carteira fria da chain do perfil quando nao informada', async () => {
@@ -234,6 +236,75 @@ describe('core do motor', () => {
       rampProfileId: ctx.profileId,
     });
     expect(link.status).toBe('aguardando');
+  });
+
+  it('libera o indice HD quando a criacao do link falha', async () => {
+    const customer = await ctx.motor.customers.create({
+      nome: 'Maria Silva',
+      email: 'maria@example.com',
+    });
+    const spy = vi
+      .spyOn(ctx.repos.links, 'create')
+      .mockRejectedValueOnce(new Error('falha simulada'));
+
+    await expect(
+      ctx.motor.links.create({
+        clienteId: customer.id,
+        amountCents: 100,
+        rampProfileId: ctx.profileId,
+        coldWalletAddress: COLD,
+      }),
+    ).rejects.toThrow(/falha simulada/);
+    spy.mockRestore();
+
+    const link = await ctx.motor.links.create({
+      clienteId: customer.id,
+      amountCents: 100,
+      rampProfileId: ctx.profileId,
+      coldWalletAddress: COLD,
+    });
+    // A reserva queimada na falha foi devolvida, entao o indice 0 volta.
+    expect(link.indiceHd).toBe(0);
+  });
+
+  it('detail traz apenas os creditos do link consultado', async () => {
+    const customer = await ctx.motor.customers.create({
+      nome: 'Maria Silva',
+      email: 'maria@example.com',
+    });
+    const a = await ctx.motor.links.create({
+      clienteId: customer.id,
+      amountCents: 100,
+      rampProfileId: ctx.profileId,
+      coldWalletAddress: COLD,
+    });
+    const b = await ctx.motor.links.create({
+      clienteId: customer.id,
+      amountCents: 200,
+      rampProfileId: ctx.profileId,
+      coldWalletAddress: COLD,
+    });
+    const creditoA = await ctx.repos.credits.create({
+      clienteId: customer.id,
+      linkId: a.id,
+      pagamentoId: randomUUID(),
+      valorBaseUnits: 1_000_000n,
+      valorCentavos: 100,
+      moeda: 'USDC',
+      status: 'liberado',
+    });
+    await ctx.repos.credits.create({
+      clienteId: customer.id,
+      linkId: b.id,
+      pagamentoId: randomUUID(),
+      valorBaseUnits: 2_000_000n,
+      valorCentavos: 200,
+      moeda: 'USDC',
+      status: 'liberado',
+    });
+
+    const detail = await ctx.motor.links.detail(a.id);
+    expect(detail?.credits.map((c) => c.id)).toEqual([creditoA.id]);
   });
 
   it('expira o link conforme o TTL', async () => {

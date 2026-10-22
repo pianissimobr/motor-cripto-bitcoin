@@ -3,16 +3,34 @@
  * em valores que viram saldo.
  */
 
-/** Converte "123,45" | "123.45" (BRL ou USD) em centavos. */
+/**
+ * Converte "123,45" | "123.45" (BRL ou USD) em centavos.
+ *
+ * A conversao e feita em inteiros: nada de `Number(x) * 100`, que pode
+ * arredondar 0,29 para 28 centavos por erro de ponto flutuante.
+ */
 export function fiatToCents(input: string | number): number {
-  const normalized =
-    typeof input === 'number' ? input.toFixed(2) : input.trim().replace(/\s/g, '').replace(',', '.');
-  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+  let raw: string;
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) {
+      throw new Error(`valor invalido: "${String(input)}" (use ate 2 casas decimais)`);
+    }
+    raw = String(input);
+  } else {
+    raw = input.trim();
+  }
+
+  const match = /^(\d+)(?:[,.](\d{1,2}))?$/.exec(raw);
+  if (!match) {
     throw new Error(`valor invalido: "${String(input)}" (use ate 2 casas decimais)`);
   }
-  const cents = Math.round(Number(normalized) * 100);
-  if (!Number.isSafeInteger(cents)) throw new Error('valor fora do intervalo seguro');
-  return cents;
+  const whole = BigInt(match[1]!);
+  const fraction = (match[2] ?? '').padEnd(2, '0');
+  const cents = whole * 100n + BigInt(fraction || '0');
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('valor fora do intervalo seguro');
+  }
+  return Number(cents);
 }
 
 /** Converte centavos para string no formato brasileiro: 12345 -> "123,45". */

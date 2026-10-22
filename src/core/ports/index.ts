@@ -209,6 +209,7 @@ export type CreateCreditInput = {
 export interface CreditRepository {
   create(input: CreateCreditInput): Promise<CustomerCredit>;
   listByCustomer(clienteId: string): Promise<CustomerCredit[]>;
+  listByLink(linkId: string): Promise<CustomerCredit[]>;
   listAll(limit: number): Promise<CustomerCredit[]>;
   sumByCustomer(clienteId: string): Promise<number>;
   findByPayment(pagamentoId: string): Promise<CustomerCredit | null>;
@@ -298,6 +299,11 @@ export interface AnchorRepository {
 export interface IndexAllocator {
   /** Aloca o proximo indice global. `maxIndex` e o maior indice permitido. */
   allocate(scope: string, maxIndex?: number): Promise<number>;
+  /**
+   * Libera uma reserva que ainda nao foi ligada a um link (rollback da
+   * criacao). Nunca apaga um indice ja usado por link.
+   */
+  release(scope: string, indice: number): Promise<void>;
 }
 
 export type RecordAuditInput = {

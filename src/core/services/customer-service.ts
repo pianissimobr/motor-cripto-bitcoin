@@ -4,14 +4,12 @@ import { maskEmail, maskName, normalizeEmail } from '../crypto/mask.js';
 import type { Customer } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories, StoredCustomer } from '../ports/index.js';
+import { ConflictError, ValidationError, isUniqueViolation } from '../domain/errors.js';
 
 /** E-mail ja existente: a borda HTTP mapeia `statusCode` para 409. */
-export class DuplicateCustomerEmailError extends Error {
-  readonly statusCode = 409;
-
+export class DuplicateCustomerEmailError extends ConflictError {
   constructor() {
-    super('email ja cadastrado');
-    this.name = 'DuplicateCustomerEmailError';
+    super('email ja cadastrado', 'email_duplicado');
   }
 }
 
@@ -41,10 +39,12 @@ export class CustomerService {
     const nome = input.nome.trim();
     const email = normalizeEmail(input.email);
 
-    if (nome.length < 2) throw new Error('nome muito curto');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('email invalido');
-    if (nome.length > 200) throw new Error('nome muito longo');
-    if (email.length > 320) throw new Error('email muito longo');
+    if (nome.length < 2) throw new ValidationError('nome muito curto');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new ValidationError('email invalido');
+    }
+    if (nome.length > 200) throw new ValidationError('nome muito longo');
+    if (email.length > 320) throw new ValidationError('email muito longo');
 
     const id = randomUUID();
     const nomeEnc = this.deps.cipher.encrypt(nome, id);
@@ -163,11 +163,6 @@ export class CustomerService {
       criadoEm: stored.criadoEm,
     };
   }
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: unknown; cause?: { code?: unknown } };
-  return e?.code === '23505' || e?.cause?.code === '23505';
 }
 
 /** Blind indexes dos prefixos do email (3..32 caracteres). */

@@ -206,6 +206,38 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 
 **Testes: 164 → 230 unitários + 9 de integração com Postgres real.**
 
+### Roadmap dos blocos 0–8
+
+| Bloco | Escopo | Status |
+|---|---|---|
+| 0 | harness/fakes e testes de regressão de sweep/reorg | concluído |
+| 1 | sweep idempotente, recuperação de in-flight, dust, gas ERC-20, saldo preso | concluído |
+| 2 | reorg, confirmação, crédito revertido, transições, reorg profundo | concluído |
+| 3 | chaves, signer, init-wallet, RemoteSigner, PSBT | concluído |
+| 4 | PII/prefixos, unique efetivo de e-mail, duplicidade, rebuild | concluído |
+| 5 | API/validações/erros, detail, índice HD | concluído |
+| 6 | operação/gas/defaults, taxa/seed, config | pendente |
+| 7 | segurança/auditoria/UI | pendente |
+| 8 | migrações, backfill, smoke e rollout | pendente |
+
+### Bloco 5 — borda HTTP, validações e erros de domínio
+
+- Hierarquia de erros de domínio com status seguro: validação vira 400,
+  recurso ausente vira 404 e conflito vira 409. `IllegalTransitionError`,
+  `RampLinkError` e e-mail duplicado passaram a usar a mesma hierarquia.
+- `/api/creditos` sem `clienteId` retorna 400 (antes devolvia 200 com corpo
+  de erro); unique de perfil Ramp e carteira fria vira 409.
+- Schemas da API validam `chain`, `asset`, moeda fiat, URL http(s), taxa
+  não negativa, `rawTransaction` hexadecimal e tamanho de `q`/`email`.
+- `links.detail` consulta `credits.listByLink` em vez de varrer os últimos
+  1000 créditos e filtrar em memória.
+- O índice HD reservado é devolvido quando a criação do link falha; o
+  `release` nunca apaga índice já ligado a um link.
+- `fiatToCents` e o builder do link Ramp convertem dinheiro com inteiros,
+  sem `Number(x) * 100` e sem `toFixed` sujeito a arredondamento.
+
+**Testes: 230 → 236 unitários + 10 de integração.**
+
 ### Bugs reais encontrados durante a execução
 
 Não foram só as correções planejadas; testes e validações ao vivo revelaram
@@ -221,6 +253,10 @@ mais problemas, todos corrigidos:
 | Unique existia só em `email_bidx`; após a rotação o token ativo ia para `email_bidx_v2` sem unique, permitindo e-mail duplicado | migration 0005 / `customer-service.ts` | ALTO |
 | E-mail duplicado virava 500 em vez de erro de domínio | `customer-service.ts` / `app.ts` | MÉDIO |
 | Prefixos já perdidos pela colisão antiga não eram recuperáveis por SQL; passaram a ter reconstrução a partir do e-mail decifrado | `scripts/reindex-prefixes.ts` | MÉDIO |
+| Cliente/perfil inexistente e valor inválido chegavam ao operador como 500, escondendo a causa | `link-service.ts` / `app.ts` | MÉDIO |
+| `/api/creditos` sem `clienteId` devolvia 200 com `{ erro }`; o cliente tratava como sucesso | `routes.ts` | BAIXO |
+| Falha ao criar o link queimava um índice HD para sempre | `link-service.ts` / `repositories.ts` | ALTO |
+| `detail` carregava 1000 créditos para devolver os do link, podendo truncar | `link-service.ts` | BAIXO |
 
 O achado da **tolerância** só apareceu porque a propriedade "nunca aceita
 pagamento dobrado" foi escrita. Nenhum caso fixo teria pego. O mesmo vale

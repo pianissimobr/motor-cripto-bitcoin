@@ -1,3 +1,4 @@
+import { NotFoundError } from '../domain/errors.js';
 import { assertTransition, IllegalTransitionError } from '../domain/link-state.js';
 import type { LinkStatus } from '../domain/types.js';
 import type { Logger } from '../logger.js';
@@ -31,7 +32,7 @@ export class LinkStateMachine {
 
   async transition(input: TransitionInput): Promise<LinkStatus> {
     const link = await this.deps.repos.links.findById(input.linkId);
-    if (!link) throw new Error(`link nao encontrado: ${input.linkId}`);
+    if (!link) throw new NotFoundError(`link nao encontrado: ${input.linkId}`);
 
     if (link.status === input.to) {
       if (input.allowSame !== false) return link.status;

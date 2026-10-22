@@ -420,6 +420,10 @@ export class FakeCreditRepository implements CreditRepository {
     return this.rows.filter((r) => r.clienteId === clienteId);
   }
 
+  async listByLink(linkId: string): Promise<CustomerCredit[]> {
+    return this.rows.filter((r) => r.linkId === linkId);
+  }
+
   async listAll(limit: number): Promise<CustomerCredit[]> {
     return this.rows.slice(0, limit);
   }
@@ -666,6 +670,12 @@ export class FakeIndexAllocator implements IndexAllocator {
     }
     this.counters.set(scope, next + 1);
     return next;
+  }
+
+  async release(scope: string, indice: number): Promise<void> {
+    // Espelha o allocator real: so a ultima reserva (o maximo) e liberada.
+    const next = this.counters.get(scope) ?? 0;
+    if (indice === next - 1) this.counters.set(scope, indice);
   }
 }
 
