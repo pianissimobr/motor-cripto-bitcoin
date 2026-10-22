@@ -254,7 +254,13 @@ export class BlockchainMonitor {
     if (!check?.reorg) return;
 
     result.reorgsDetectados++;
-    const safe = check.blocoSeguro;
+    // Reorg profundo sem ancestral na janela devolve o piso das ancoras
+    // (ou 0). Nao podemos reescrever o cursor antes de MONITOR_START_BLOCK:
+    // isso faria o proximo ciclo varrer blocos que a config excluiu.
+    const safe = Math.max(
+      check.blocoSeguro,
+      Math.max(0, this.deps.options.startBlock - 1),
+    );
 
     // C3: sem rewind o cursor fica apontando para o bloco invalido e a
     // regiao reescrita nunca e varrida de novo. As ancoras acima do ponto
@@ -283,7 +289,16 @@ export class BlockchainMonitor {
       const link = await repos.links.findById(linkId);
       if (!link) continue;
       const total = await repos.payments.sumConfirmedByLink(link.id);
-      const destino: LinkStatus = total <= 0n ? 'aguardando' : await this.linkStatusFor(link);
+      // Link expirado/revogado recebeu pagamento tardio; se o reorg derrubar
+      // esse pagamento, o link continua terminal em vez de "voltar" para
+      // aguardando (transicao ilegal e diagnostico errado).
+      const terminal = link.status === 'expirado' || link.status === 'revogado';
+      const destino: LinkStatus =
+        total <= 0n
+          ? terminal
+            ? link.status
+            : 'aguardando'
+          : await this.linkStatusFor(link);
       if (link.status === destino) continue;
       await this.deps.linkState.transition({
         linkId,
@@ -494,7 +509,12 @@ export class BlockchainMonitor {
   ): Promise<boolean> {
     const { repos } = this.deps;
     const existing = await repos.credits.findByPayment(pagamentoId);
-    if (existing) return false;
+    if (existing) {
+      if (existing.status === 'revertido') {
+        await repos.credits.restoreByPaymentIds([pagamentoId], 'liberado');
+      }
+      return false;
+    }
     await repos.credits.create(this.creditInput(link, pagamentoId, valorBaseUnits));
     return true;
   }

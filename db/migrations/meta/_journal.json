@@ -57,6 +57,20 @@
       "when": 1792699999999,
       "tag": "0007_canonical_addresses_hd",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792700000000,
+      "tag": "0008_sweep_kind_raw",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792700000001,
+      "tag": "0009_psbt_unsigned",
+      "breakpoints": true
     }
   ]
 }

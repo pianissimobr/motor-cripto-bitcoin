@@ -183,6 +183,55 @@ describe('P0 com Postgres real', () => {
     expect(second.creditCreated).toBe(false);
   });
 
+  it('re-detecta no novo bloco e restaura credito revertido por reorg', async () => {
+    const { clienteId, profile } = await seedBase();
+    const link = await createLink(clienteId, profile.id);
+    const payment = await addPayment(link.id, 4_000_000n, 3);
+    const credit = {
+      clienteId,
+      linkId: link.id,
+      pagamentoId: payment.id,
+      valorBaseUnits: payment.valorBaseUnits,
+      valorCentavos: 500,
+      moeda: 'USDC',
+      status: 'liberado' as const,
+    };
+
+    await repos.payments.confirm({
+      paymentId: payment.id,
+      confirmacoes: 10,
+      credit,
+    });
+    await repos.payments.revertAboveBlock('polygon', 99);
+    await repos.credits.revertByPaymentIds([payment.id]);
+    expect((await repos.credits.findByPayment(payment.id))?.status).toBe('revertido');
+
+    const reencontrado = await repos.payments.upsert({
+      linkId: link.id,
+      txHash: payment.txHash,
+      logIndex: payment.logIndex,
+      deAddress: payment.deAddress,
+      paraAddress: payment.paraAddress,
+      token: payment.token,
+      valorBaseUnits: payment.valorBaseUnits,
+      bloco: 105,
+      status: 'detectado',
+      detectadoEm: new Date(),
+    });
+    expect(reencontrado.bloco).toBe(105);
+    expect(reencontrado.status).toBe('detectado');
+    expect(reencontrado.confirmacoes).toBe(0);
+    expect(reencontrado.confirmadoEm).toBeNull();
+
+    await repos.payments.confirm({
+      paymentId: payment.id,
+      confirmacoes: 10,
+      credit,
+    });
+    expect((await repos.payments.findByTxHash(payment.txHash))?.status).toBe('confirmado');
+    expect((await repos.credits.findByPayment(payment.id))?.status).toBe('liberado');
+  });
+
   it('lista confirmados sem credito para recuperacao de crash', async () => {
     const { clienteId, profile } = await seedBase();
     const link = await createLink(clienteId, profile.id);
@@ -211,6 +260,60 @@ describe('P0 com Postgres real', () => {
 
     const depois = await repos.payments.listForReconciliation(10);
     expect(depois.map((p) => p.id)).not.toContain(payment.id);
+  });
+
+  it('persiste kind/raw e permite sweep e dust no mesmo nonce', async () => {
+    const { clienteId, profile } = await seedBase();
+    const link = await createLink(clienteId, profile.id);
+    const txHash = `0x${'ab'.repeat(32)}`;
+    const raw = `0x${'cd'.repeat(100)}`;
+
+    const sweep = await repos.transfers.create({
+      linkId: link.id,
+      deAddress: DEPOSIT,
+      paraAddress: COLD,
+      valorBaseUnits: 10_000_000n,
+      status: 'pendente',
+      chain: 'polygon',
+      nonce: 0,
+      kind: 'sweep',
+      txHash,
+      rawTransaction: raw,
+    });
+    expect(sweep.kind).toBe('sweep');
+    expect(sweep.rawTransaction).toBe(raw);
+
+    const dust = await repos.transfers.create({
+      linkId: link.id,
+      deAddress: DEPOSIT,
+      paraAddress: COLD,
+      valorBaseUnits: 1n,
+      status: 'pendente',
+      chain: 'polygon',
+      nonce: 0,
+      kind: 'dust',
+      txHash,
+      rawTransaction: raw,
+    });
+    expect(dust.kind).toBe('dust');
+
+    const encontrado = await repos.transfers.findByLinkKindNonce(link.id, 'sweep', 0);
+    expect(encontrado?.id).toBe(sweep.id);
+
+    await expect(
+      repos.transfers.create({
+        linkId: link.id,
+        deAddress: DEPOSIT,
+        paraAddress: COLD,
+        valorBaseUnits: 1n,
+        status: 'pendente',
+        chain: 'polygon',
+        nonce: 0,
+        kind: 'sweep',
+        txHash,
+        rawTransaction: raw,
+      }),
+    ).rejects.toThrow();
   });
 
   it('lock de sessao usa conexao dedicada e libera ao fechar', async () => {

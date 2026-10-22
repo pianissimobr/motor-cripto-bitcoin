@@ -2,7 +2,7 @@ import { getAddress, keccak256 } from 'ethers';
 import type { SignerMode } from '../config.js';
 import {
   assertSignTransferInput,
-  isHexData,
+  assertSignedTransactionMatches,
   type SignedTransaction,
   type Signer,
   type SignTransferInput,
@@ -71,12 +71,16 @@ export class RemoteSigner implements Signer {
       throw new Error(`signer remoto respondeu ${response.status}: ${body.slice(0, 200)}`);
     }
     const payload = (await response.json()) as { rawTransaction?: string };
-    if (!payload.rawTransaction || !isHexData(payload.rawTransaction) || payload.rawTransaction === '0x') {
+    if (!payload.rawTransaction) {
       throw new Error('signer remoto devolveu rawTransaction invalido');
     }
+    const tx = assertSignedTransactionMatches(
+      payload.rawTransaction,
+      this.buildUnsigned(input),
+    );
     return {
       rawTransaction: payload.rawTransaction,
-      hash: keccak256(payload.rawTransaction),
+      hash: tx.hash ?? keccak256(payload.rawTransaction),
     };
   }
 

@@ -263,10 +263,12 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       })),
       movimentos: transfers.map((t) => ({
         id: t.id,
+        kind: t.kind,
         txHash: t.txHash,
         status: t.status,
         erro: t.erro,
         valor: t.valorBaseUnits.toString(),
+        unsignedTransaction: parseUnsignedJson(t.unsignedTransaction),
         criadoEm: t.criadoEm,
       })),
       creditos: credits.map((c) => ({
@@ -278,6 +280,19 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
         criadoEm: c.criadoEm,
       })),
     };
+  });
+
+  /**
+   * PSBT: recebe o raw assinado no hardware wallet e transmite.
+   * A unsigned fica em /api/links/:id; so o admin pode submeter.
+   */
+  app.post('/api/movimentos/:id/raw', async (request, reply) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = z
+      .object({ rawTransaction: z.string().min(10).max(100_000) })
+      .parse(request.body);
+    const result = await motor.sweeper.submitSignedTransfer(id, body.rawTransaction);
+    return reply.code(202).send(result);
   });
 
   /** F1: o QR como SVG puro, para <img> ou download. */
@@ -477,6 +492,15 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
 function reply400(erro: string) {
   return { erro };
+}
+
+function parseUnsignedJson(value: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 /**

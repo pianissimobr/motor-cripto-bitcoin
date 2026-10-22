@@ -229,13 +229,19 @@ export const movimentosInternos = pgTable(
     bloco: integer('bloco'),
     /** D4: nonce do endereco derivado; garante um sweep por nonce. */
     nonce: integer('nonce'),
+    /** Separa sweep do token, dust nativo e recuperacao sintetica. */
+    kind: text('kind').notNull().default('sweep'),
+    /** Raw assinada persistida antes do broadcast (recuperacao pos-crash). */
+    rawTransaction: text('raw_transaction'),
+    /** JSON da transacao unsigned no modo PSBT. */
+    unsignedTransaction: text('unsigned_transaction'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('movimentos_internos_link_idx').on(t.linkId),
     index('movimentos_internos_status_idx').on(t.status),
     index('movimentos_internos_bloco_idx').on(t.chain, t.bloco),
-    uniqueIndex('movimentos_internos_link_nonce_uq').on(t.linkId, t.nonce),
+    uniqueIndex('movimentos_internos_link_kind_nonce_uq').on(t.linkId, t.kind, t.nonce),
   ],
 );
 

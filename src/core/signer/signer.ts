@@ -1,3 +1,4 @@
+import { getAddress, Transaction } from 'ethers';
 import type { SignerMode } from '../config.js';
 
 /**
@@ -110,6 +111,59 @@ export function assertSignTransferInput(input: SignTransferInput): void {
   ) {
     throw new InvalidSignTransfer('maxPriorityFeePerGas nao pode exceder maxFeePerGas');
   }
+}
+
+/**
+ * Confere que o raw assinado corresponde exatamente a transacao preparada.
+ * Sem isso, um signer remoto comprometido (ou um operador equivocado) pode
+ * trocar destino/valor/nonce e o motor transmitiria outra transacao.
+ */
+export function assertSignedTransactionMatches(
+  rawTransaction: string,
+  unsigned: UnsignedTransaction,
+): Transaction {
+  if (!isHexData(rawTransaction) || rawTransaction === '0x') {
+    throw new InvalidSignTransfer('rawTransaction invalido');
+  }
+
+  let tx: Transaction;
+  try {
+    tx = Transaction.from(rawTransaction);
+  } catch {
+    throw new InvalidSignTransfer('rawTransaction invalido');
+  }
+
+  if (tx.from === null) {
+    throw new InvalidSignTransfer('rawTransaction invalido: transacao sem assinatura');
+  }
+
+  const fail = (field: string): never => {
+    throw new InvalidSignTransfer(`rawTransaction invalido: ${field} nao confere`);
+  };
+
+  if (getAddress(tx.from) !== getAddress(unsigned.from)) fail('remetente');
+  if (tx.to === null || getAddress(tx.to) !== getAddress(unsigned.to)) fail('destino');
+  if (tx.data.toLowerCase() !== unsigned.data.toLowerCase()) fail('data');
+  if (tx.chainId !== BigInt(unsigned.chainId)) fail('chainId');
+  if (BigInt(tx.nonce) !== BigInt(unsigned.nonce)) fail('nonce');
+  if (tx.gasLimit !== BigInt(unsigned.gasLimit)) fail('gasLimit');
+  if (tx.value !== BigInt(unsigned.value)) fail('value');
+
+  if (unsigned.maxFeePerGas !== undefined) {
+    if (tx.maxFeePerGas === null || tx.maxFeePerGas !== BigInt(unsigned.maxFeePerGas)) {
+      fail('maxFeePerGas');
+    }
+  }
+  if (unsigned.maxPriorityFeePerGas !== undefined) {
+    if (
+      tx.maxPriorityFeePerGas === null ||
+      tx.maxPriorityFeePerGas !== BigInt(unsigned.maxPriorityFeePerGas)
+    ) {
+      fail('maxPriorityFeePerGas');
+    }
+  }
+
+  return tx;
 }
 
 export interface Signer {

@@ -95,6 +95,12 @@ export class HdWallet {
     }
     assertNonHardenedPrefix(prefix);
     const node = HDNodeWallet.fromExtendedKey(trimmed);
+    if (node.depth !== 3) {
+      throw new HdWalletError(
+        `xprv com depth ${node.depth}. Esperado depth 3 (conta BIP44 m/44'/60'/0'). ` +
+          'Use o xprv da conta, nao o master nem uma folha.',
+      );
+    }
     return new HdWallet(node, accountIndex, prefix);
   }
 

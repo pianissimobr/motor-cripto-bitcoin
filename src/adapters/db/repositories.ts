@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { checksumAddress, normalizeAddress } from '../../core/domain/address.js';
 import { HD_INDEX_SCOPE } from '../../core/hd/index-scope.js';
@@ -55,6 +55,7 @@ import type {
   Payment,
   PaymentLink,
   RampProfile,
+  TransferKind,
   TransferStatus,
 } from '../../core/domain/types.js';
 
@@ -567,21 +568,29 @@ class DrizzlePaymentRepository implements PaymentRepository {
 
     if (existing.length > 0) {
       const row = existing[0]!;
-      // Mantem o status mais avancado (detectado < confirmado).
-      const nextStatus =
-        row.status === 'confirmado' ? 'confirmado' : input.status;
-      if (nextStatus !== row.status) {
-        const [updated] = await this.db
-          .update(linksPagos)
-          .set({
-            status: nextStatus,
-            ...(nextStatus === 'confirmado' ? { confirmadoEm: new Date() } : {}),
-          })
-          .where(eq(linksPagos.id, row.id))
-          .returning();
-        return toPayment(updated ?? row);
-      }
-      return toPayment(row);
+      // Pagamento ja confirmado nao e reescrito por uma varredura normal;
+      // reorgs passam por revertAboveBlock antes de a regiao ser relida.
+      if (row.status === 'confirmado') return toPayment(row);
+
+      // Re-deteccao (inclusive depois de um reorg) precisa atualizar o
+      // bloco e os dados on-chain. Antes o registro ficava preso no bloco
+      // antigo e a nova confirmacao calculava errado.
+      const [updated] = await this.db
+        .update(linksPagos)
+        .set({
+          status: input.status,
+          bloco: input.bloco,
+          valorBaseUnits: input.valorBaseUnits,
+          deAddress: normalizeAddress(input.deAddress),
+          paraAddress: normalizeAddress(input.paraAddress),
+          token: input.token,
+          detectadoEm: input.detectadoEm,
+          confirmacoes: input.status === 'confirmado' ? row.confirmacoes : 0,
+          confirmadoEm: input.status === 'confirmado' ? new Date() : null,
+        })
+        .where(eq(linksPagos.id, row.id))
+        .returning();
+      return toPayment(updated ?? row);
     }
 
     const [row] = await this.db
@@ -650,6 +659,25 @@ class DrizzlePaymentRepository implements PaymentRepository {
           .onConflictDoNothing()
           .returning({ id: creditosCliente.id });
         creditCreated = inserted.length > 0;
+        if (!creditCreated) {
+          // Reorg seguido de nova inclusao: o credito existe, mas foi
+          // marcado como revertido. Restaura-lo e tao importante quanto
+          // criar; sem isso o pagamento confirma e o cliente fica sem saldo.
+          await tx
+            .update(creditosCliente)
+            .set({
+              status: input.credit.status,
+              valorBaseUnits: input.credit.valorBaseUnits,
+              valorCentavos: input.credit.valorCentavos,
+              moeda: input.credit.moeda,
+            })
+            .where(
+              and(
+                eq(creditosCliente.pagamentoId, input.credit.pagamentoId),
+                eq(creditosCliente.status, 'revertido'),
+              ),
+            );
+        }
       }
 
       return { payment: toPayment(updated), creditCreated };
@@ -858,6 +886,24 @@ class DrizzleCreditRepository implements CreditRepository {
       .returning({ id: creditosCliente.id });
     return rows.length;
   }
+
+  async restoreByPaymentIds(
+    pagamentoIds: string[],
+    status: CreditStatus,
+  ): Promise<number> {
+    if (pagamentoIds.length === 0) return 0;
+    const rows = await this.db
+      .update(creditosCliente)
+      .set({ status })
+      .where(
+        and(
+          inArray(creditosCliente.pagamentoId, pagamentoIds),
+          eq(creditosCliente.status, 'revertido'),
+        ),
+      )
+      .returning({ id: creditosCliente.id });
+    return rows.length;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -877,6 +923,9 @@ function toTransfer(row: typeof movimentosInternos.$inferSelect): InternalTransf
     chain: row.chain,
     bloco: row.bloco,
     nonce: row.nonce,
+    kind: row.kind as TransferKind,
+    rawTransaction: row.rawTransaction,
+    unsignedTransaction: row.unsignedTransaction,
     criadoEm: row.criadoEm,
   };
 }
@@ -898,6 +947,9 @@ class DrizzleTransferRepository implements TransferRepository {
         chain: input.chain,
         bloco: input.bloco ?? null,
         nonce: input.nonce ?? null,
+        kind: input.kind ?? 'sweep',
+        rawTransaction: input.rawTransaction ?? null,
+        unsignedTransaction: input.unsignedTransaction ?? null,
       })
       .returning();
     if (!row) throw new Error('falha ao registrar movimento interno');
@@ -909,7 +961,14 @@ class DrizzleTransferRepository implements TransferRepository {
     patch: Partial<
       Pick<
         InternalTransfer,
-        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+        | 'status'
+        | 'txHash'
+        | 'erro'
+        | 'valorBaseUnits'
+        | 'paraAddress'
+        | 'bloco'
+        | 'rawTransaction'
+        | 'unsignedTransaction'
       >
     >,
   ): Promise<void> {
@@ -932,6 +991,12 @@ class DrizzleTransferRepository implements TransferRepository {
             }
           : {}),
         ...(patch.bloco !== undefined ? { bloco: patch.bloco } : {}),
+        ...(patch.rawTransaction !== undefined
+          ? { rawTransaction: patch.rawTransaction }
+          : {}),
+        ...(patch.unsignedTransaction !== undefined
+          ? { unsignedTransaction: patch.unsignedTransaction }
+          : {}),
       })
       .where(eq(movimentosInternos.id, id));
   }
@@ -946,11 +1011,55 @@ class DrizzleTransferRepository implements TransferRepository {
     return Boolean(row);
   }
 
+  async findByLinkKindNonce(
+    linkId: string,
+    kind: TransferKind,
+    nonce: number,
+  ): Promise<InternalTransfer | null> {
+    const [row] = await this.db
+      .select()
+      .from(movimentosInternos)
+      .where(
+        and(
+          eq(movimentosInternos.linkId, linkId),
+          eq(movimentosInternos.kind, kind),
+          eq(movimentosInternos.nonce, nonce),
+        ),
+      )
+      .limit(1);
+    return row ? toTransfer(row) : null;
+  }
+
+  async listInFlight(limit: number): Promise<InternalTransfer[]> {
+    const rows = await this.db
+      .select()
+      .from(movimentosInternos)
+      .where(
+        and(
+          inArray(movimentosInternos.status, ['pendente', 'patrocinado', 'enviado']),
+          or(
+            isNotNull(movimentosInternos.rawTransaction),
+            isNotNull(movimentosInternos.txHash),
+          ),
+        ),
+      )
+      .orderBy(asc(movimentosInternos.criadoEm))
+      .limit(limit);
+    return rows.map(toTransfer);
+  }
+
   /** C5: um sweep cujo bloco caiu no reorg precisa ser refeito. */
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {
     const rows = await this.db
       .update(movimentosInternos)
-      .set({ status: 'pendente', txHash: null, bloco: null, erro: 'reorg: refazer sweep' })
+      .set({
+        status: 'pendente',
+        txHash: null,
+        rawTransaction: null,
+        unsignedTransaction: null,
+        bloco: null,
+        erro: 'reorg: refazer sweep',
+      })
       .where(
         and(
           eq(movimentosInternos.chain, chain),
@@ -960,6 +1069,15 @@ class DrizzleTransferRepository implements TransferRepository {
       )
       .returning({ id: movimentosInternos.id });
     return rows.length;
+  }
+
+  async findById(id: string): Promise<InternalTransfer | null> {
+    const [row] = await this.db
+      .select()
+      .from(movimentosInternos)
+      .where(eq(movimentosInternos.id, id))
+      .limit(1);
+    return row ? toTransfer(row) : null;
   }
 
   async findByLink(linkId: string): Promise<InternalTransfer[]> {

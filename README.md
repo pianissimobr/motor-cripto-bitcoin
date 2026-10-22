@@ -243,7 +243,8 @@ Base: `http://localhost:4578`. Todas as rotas `/api/*` exigem `Authorization: Be
 | GET | `/api/cadastros?q=` | busca por prefixo (autocomplete) |
 | GET | `/api/cadastros/:id` | detalhe do cliente |
 | POST | `/api/links` | `{ email \| clienteId, valor, rampProfileId, coldWalletId \| coldWalletAddress }` |
-| GET | `/api/links/:id` | link + pagamentos + movimentos + creditos |
+| GET | `/api/links/:id` | link + pagamentos + movimentos + creditos (inclui unsigned PSBT) |
+| POST | `/api/movimentos/:id/raw` | PSBT: submete o raw assinado (somente admin) |
 | GET | `/api/links?clienteId=` | links do cliente |
 | GET | `/api/creditos?clienteId=` | creditos do cliente |
 | GET/POST | `/api/ramp-profiles` | perfis de integracao Ramp (o "id do ramp") |

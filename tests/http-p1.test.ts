@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { buildHttpApp } from '../src/adapters/http/app.js';
@@ -37,7 +37,7 @@ async function makeApp(overrides: NodeJS.ProcessEnv = {}) {
     config,
     serveStatic: false,
   });
-  return { app, customers, repos, config };
+  return { app, customers, repos, config, motor };
 }
 
 const admin = { authorization: `Bearer ${'a'.repeat(32)}` };
@@ -223,6 +223,51 @@ describe('P1: trustProxy configuravel', () => {
         headers: { ...admin, 'x-forwarded-for': '203.0.113.7' },
       });
       expect(resp.json().ip).toBe('203.0.113.7');
+    } finally {
+      await close(app);
+    }
+  });
+});
+
+describe('P1: submissao manual de raw PSBT', () => {
+  it('so admin submete e o corpo e validado antes do sweeper', async () => {
+    const { app, motor } = await makeApp();
+    const submit = vi.fn(async () => ({
+      id: '00000000-0000-4000-8000-000000000000',
+      txHash: '0x' + 'ab'.repeat(32),
+      status: 'enviado' as const,
+    }));
+    (motor as unknown as { sweeper: unknown }).sweeper = { submitSignedTransfer: submit };
+    const id = '00000000-0000-4000-8000-000000000000';
+    const raw = '0x' + 'ab'.repeat(100);
+
+    try {
+      const negado = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${id}/raw`,
+        headers: readonly,
+        payload: { rawTransaction: raw },
+      });
+      expect(negado.statusCode).toBe(403);
+
+      const invalido = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${id}/raw`,
+        headers: admin,
+        payload: { rawTransaction: 'curto' },
+      });
+      expect(invalido.statusCode).toBe(400);
+      expect(submit).not.toHaveBeenCalled();
+
+      const ok = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${id}/raw`,
+        headers: admin,
+        payload: { rawTransaction: raw },
+      });
+      expect(ok.statusCode).toBe(202);
+      expect(submit).toHaveBeenCalledWith(id, raw);
+      expect(ok.json().status).toBe('enviado');
     } finally {
       await close(app);
     }

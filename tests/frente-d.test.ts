@@ -33,6 +33,7 @@ function makeProvider(opts: {
   nativeBalance: bigint;
   noncePending?: number;
   nonceLatest?: number;
+  tokenNativeAfter?: bigint;
   dustNativeAfter?: bigint;
 }) {
   const estado = {
@@ -66,6 +67,9 @@ function makeProvider(opts: {
       // Transfer de token zera o saldo; envio nativo (dust) reduz o nativo.
       if (raw.length > 10 && estado.tokenBalance > 0n) {
         estado.tokenBalance = 0n;
+        if (opts.tokenNativeAfter !== undefined) {
+          estado.nativeBalance = opts.tokenNativeAfter;
+        }
       } else {
         estado.nativeBalance = opts.dustNativeAfter ?? 0n;
       }
@@ -287,11 +291,12 @@ describe('D2: devolve o gas nativo residual', () => {
   it('nao manda dust quando o saldo e menor que a reserva de gas', async () => {
     const ctx = setup();
     const link = await seedLink(ctx);
-    // Nativo curto: da para pagar o gas do token (21000 * 1 gwei ~ 2,1e13)
-    // mas nao sobra o bastante depois da reserva de 1,5x.
+    // O gas do token e pago com 1e18; depois sobra 3e13, menos que a reserva
+    // de 1,5x para o dust (3,15e13).
     const provider = makeProvider({
       tokenBalance: 10_000_000n,
-      nativeBalance: 30_000_000_000_000n, // 3e13
+      nativeBalance: 10n ** 18n,
+      tokenNativeAfter: 30_000_000_000_000n,
     });
     const sweeper = makeSweeper(ctx, provider);
 

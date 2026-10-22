@@ -20,7 +20,8 @@ import {
  * que forem enviados para os enderecos derivados.
  *
  * Uso:
- *   npm run wallet:init -- --passphrase <senha> [--path ./data/keystore.json] [--show-seed]
+ *   npm run wallet:init -- --passphrase <senha> [--path ./data/keystore.json] \
+ *     [--account-index 0] [--prefix 0] [--show-seed]
  */
 
 function arg(name: string, fallback?: string): string | undefined {
@@ -47,8 +48,14 @@ const keystorePath = arg('path', './data/keystore.json')!;
 const accountIndex = Number(arg('account-index', '0') ?? 0);
 const derivationPrefix = arg('prefix', '0')!;
 
+if (!Number.isInteger(accountIndex) || accountIndex < 0) {
+  console.error(`\n--account-index invalido: "${arg('account-index')}" (use inteiro >= 0)\n`);
+  process.exit(1);
+}
+
 const mnemonic = Mnemonic.fromEntropy(randomBytes(32));
-const accountNode = HDNodeWallet.fromMnemonic(mnemonic, "m/44'/60'/0'");
+const accountPath = `m/44'/60'/${accountIndex}'`;
+const accountNode = HDNodeWallet.fromMnemonic(mnemonic, accountPath);
 const xpub = accountNode.neuter().extendedKey;
 const xprv = accountNode.extendedKey;
 

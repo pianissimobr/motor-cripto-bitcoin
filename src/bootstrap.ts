@@ -126,6 +126,7 @@ function createSigner(config: AppConfig, hdWallet: HdWallet, logger: Logger): Si
         );
       }
       const signer = LocalSigner.fromKeystoreFile(config.signer.keystorePath, passphrase);
+      signer.verifyMatches(hdWallet);
       logger.info({ signer: signer.describe() }, 'signer local carregado');
       return signer;
     }

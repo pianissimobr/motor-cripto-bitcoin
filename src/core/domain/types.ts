@@ -151,6 +151,13 @@ export type CustomerCredit = {
   criadoEm: Date;
 };
 
+/**
+ * Tipo do movimento interno. Separa o sweep principal do token, o retorno
+ * de gas nativo (dust) e a recuperacao sintetica de um sweep que chegou a
+ * ser transmitido mas nao foi registrado antes de um crash.
+ */
+export type TransferKind = 'sweep' | 'dust' | 'recovery';
+
 export type InternalTransfer = {
   id: string;
   linkId: string;
@@ -165,6 +172,11 @@ export type InternalTransfer = {
   bloco: number | null;
   /** D4: nonce do endereco derivado neste sweep. */
   nonce: number | null;
+  kind: TransferKind;
+  /** Raw assinada, persistida antes do broadcast para recuperacao. */
+  rawTransaction: string | null;
+  /** JSON da transacao unsigned no modo PSBT, aguardando assinatura manual. */
+  unsignedTransaction: string | null;
   criadoEm: Date;
 };
 

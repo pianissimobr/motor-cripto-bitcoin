@@ -81,6 +81,7 @@ async function main(): Promise<void> {
             resgatados: sweepResult.resgatados,
             falhas: sweepResult.falhas,
             aguardandoGas: sweepResult.aguardandoGas,
+            aguardandoAssinatura: sweepResult.aguardandoAssinatura,
           },
           'ciclo do sweeper',
         );

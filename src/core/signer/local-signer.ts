@@ -44,6 +44,25 @@ export class LocalSigner implements Signer {
     return this.wallet.deriveAddress(index);
   }
 
+  /**
+   * Garante que o xprv do keystore e o xpub usado para criacao de links sao
+   * a mesma conta HD. Sem essa checagem, a API poderia gerar enderecos de
+   * deposito que o signer local nao consegue mover.
+   */
+  verifyMatches(hdWallet: HdWallet): void {
+    if (
+      getAddress(this.wallet.account.accountAddress) !==
+        getAddress(hdWallet.account.accountAddress) ||
+      this.wallet.deriveAddress(0) !== hdWallet.deriveAddress(0) ||
+      this.wallet.derivationPrefix !== hdWallet.derivationPrefix ||
+      this.wallet.accountIndex !== hdWallet.accountIndex
+    ) {
+      throw new Error(
+        'keystore local nao corresponde ao HD_XPUB/HD_ACCOUNT_INDEX configurado',
+      );
+    }
+  }
+
   privateKeyFor(index: number): string {
     let key = this.privateKeys.get(index);
     if (!key) {

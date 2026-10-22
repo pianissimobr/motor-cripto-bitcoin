@@ -12,6 +12,7 @@ import type {
   Payment,
   PaymentLink,
   RampProfile,
+  TransferKind,
   TransferStatus,
 } from '../domain/types.js';
 
@@ -206,6 +207,8 @@ export interface CreditRepository {
   findByPayment(pagamentoId: string): Promise<CustomerCredit | null>;
   /** C4: reverte os creditos ligados a pagamentos revogados. */
   revertByPaymentIds(pagamentoIds: string[]): Promise<number>;
+  /** Reorg revertido: reativa um credito que havia sido revogado. */
+  restoreByPaymentIds(pagamentoIds: string[], status: CreditStatus): Promise<number>;
 }
 
 export type CreateTransferInput = {
@@ -223,6 +226,9 @@ export type CreateTransferInput = {
    * sweeps com o mesmo nonce (seriam a mesma transacao logica).
    */
   nonce?: number | null;
+  kind?: TransferKind;
+  rawTransaction?: string | null;
+  unsignedTransaction?: string | null;
 };
 
 export interface TransferRepository {
@@ -232,16 +238,32 @@ export interface TransferRepository {
     patch: Partial<
       Pick<
         InternalTransfer,
-        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+        | 'status'
+        | 'txHash'
+        | 'erro'
+        | 'valorBaseUnits'
+        | 'paraAddress'
+        | 'bloco'
+        | 'rawTransaction'
+        | 'unsignedTransaction'
       >
     >,
   ): Promise<void>;
+  findById(id: string): Promise<InternalTransfer | null>;
   findByLink(linkId: string): Promise<InternalTransfer[]>;
   listByStatus(status: TransferStatus, limit: number): Promise<InternalTransfer[]>;
   /** C5: marca como 'pendente' os sweeps cujo bloco caiu no reorg. */
   revertAboveBlock(chain: string, bloco: number): Promise<number>;
   /** D4: ja existe um movimento registrado para este (link, nonce)? */
   existsByNonce(linkId: string, nonce: number): Promise<boolean>;
+  /** Idempotencia real: (link, tipo, nonce). */
+  findByLinkKindNonce(
+    linkId: string,
+    kind: TransferKind,
+    nonce: number,
+  ): Promise<InternalTransfer | null>;
+  /** Movimentos transmitidos/em assinatura que precisam ser retomados. */
+  listInFlight(limit: number): Promise<InternalTransfer[]>;
 }
 
 export interface CursorRepository {

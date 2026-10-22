@@ -58,6 +58,16 @@ describe('HdWallet', () => {
     expect(() => HdWallet.fromAccountXpub(leaf.neuter().extendedKey)).toThrow(/depth 5/);
   });
 
+  it('rejeita xprv master (depth 0)', () => {
+    const master = HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(MNEMONIC), 'm');
+    expect(() => HdWallet.fromAccountXprv(master.extendedKey)).toThrow(/depth 0/);
+  });
+
+  it('rejeita xprv de folha (depth 5)', () => {
+    const leaf = HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(MNEMONIC));
+    expect(() => HdWallet.fromAccountXprv(leaf.extendedKey)).toThrow(/depth 5/);
+  });
+
   it('rejeita prefixo de derivacao hardened', () => {
     expect(() => HdWallet.fromAccountXpub(xpub, "0'")).toThrow(/hardened/);
   });

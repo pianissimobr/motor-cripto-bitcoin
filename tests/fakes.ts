@@ -265,10 +265,16 @@ export class FakePaymentRepository implements PaymentRepository {
       (r) => r.txHash === input.txHash && r.logIndex === input.logIndex,
     );
     if (existing) {
-      if (input.status === 'confirmado' && existing.status !== 'confirmado') {
-        existing.status = 'confirmado';
-        existing.confirmadoEm = new Date();
-      }
+      if (existing.status === 'confirmado') return existing;
+      existing.status = input.status;
+      existing.bloco = input.bloco;
+      existing.valorBaseUnits = input.valorBaseUnits;
+      existing.deAddress = input.deAddress;
+      existing.paraAddress = input.paraAddress;
+      existing.token = input.token;
+      existing.detectadoEm = input.detectadoEm;
+      existing.confirmacoes = input.status === 'confirmado' ? existing.confirmacoes : 0;
+      existing.confirmadoEm = input.status === 'confirmado' ? new Date() : null;
       return existing;
     }
     const row: Payment = {
@@ -307,6 +313,11 @@ export class FakePaymentRepository implements PaymentRepository {
       if (!existing) {
         await this.credits.create(input.credit);
         creditCreated = true;
+      } else if (existing.status === 'revertido') {
+        await this.credits.restoreByPaymentIds(
+          [input.credit.pagamentoId],
+          input.credit.status,
+        );
       }
     }
     return { payment: { ...row }, creditCreated };
@@ -420,6 +431,21 @@ export class FakeCreditRepository implements CreditRepository {
     }
     return n;
   }
+
+  async restoreByPaymentIds(
+    pagamentoIds: string[],
+    status: CustomerCredit['status'],
+  ): Promise<number> {
+    const set = new Set(pagamentoIds);
+    let n = 0;
+    for (const r of this.rows) {
+      if (set.has(r.pagamentoId) && r.status === 'revertido') {
+        r.status = status;
+        n++;
+      }
+    }
+    return n;
+  }
 }
 
 export class FakeTransferRepository implements TransferRepository {
@@ -438,6 +464,9 @@ export class FakeTransferRepository implements TransferRepository {
       chain: input.chain,
       bloco: input.bloco ?? null,
       nonce: input.nonce ?? null,
+      kind: input.kind ?? 'sweep',
+      rawTransaction: input.rawTransaction ?? null,
+      unsignedTransaction: input.unsignedTransaction ?? null,
       criadoEm: new Date(),
     };
     this.rows.push(row);
@@ -449,7 +478,14 @@ export class FakeTransferRepository implements TransferRepository {
     patch: Partial<
       Pick<
         InternalTransfer,
-        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+        | 'status'
+        | 'txHash'
+        | 'erro'
+        | 'valorBaseUnits'
+        | 'paraAddress'
+        | 'bloco'
+        | 'rawTransaction'
+        | 'unsignedTransaction'
       >
     >,
   ): Promise<void> {
@@ -461,6 +497,29 @@ export class FakeTransferRepository implements TransferRepository {
     return this.rows.some((r) => r.linkId === linkId && r.nonce === nonce);
   }
 
+  async findByLinkKindNonce(
+    linkId: string,
+    kind: InternalTransfer['kind'],
+    nonce: number,
+  ): Promise<InternalTransfer | null> {
+    return (
+      this.rows.find(
+        (r) => r.linkId === linkId && r.kind === kind && r.nonce === nonce,
+      ) ?? null
+    );
+  }
+
+  async listInFlight(limit: number): Promise<InternalTransfer[]> {
+    return this.rows
+      .filter(
+        (r) =>
+          ['pendente', 'patrocinado', 'enviado'].includes(r.status) &&
+          (r.rawTransaction !== null || r.txHash !== null),
+      )
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {
     let n = 0;
     for (const r of this.rows) {
@@ -470,11 +529,22 @@ export class FakeTransferRepository implements TransferRepository {
         r.bloco > bloco &&
         ['enviado', 'confirmado', 'patrocinado'].includes(r.status)
       ) {
-        Object.assign(r, { status: 'pendente', txHash: null, bloco: null, erro: 'reorg: refazer sweep' });
+        Object.assign(r, {
+          status: 'pendente',
+          txHash: null,
+          rawTransaction: null,
+          unsignedTransaction: null,
+          bloco: null,
+          erro: 'reorg: refazer sweep',
+        });
         n++;
       }
     }
     return n;
+  }
+
+  async findById(id: string): Promise<InternalTransfer | null> {
+    return this.rows.find((r) => r.id === id) ?? null;
   }
 
   async findByLink(linkId: string): Promise<InternalTransfer[]> {

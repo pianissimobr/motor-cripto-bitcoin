@@ -1,13 +1,18 @@
-import { Contract, type Provider } from 'ethers';
+import { Contract, getAddress, keccak256, type Provider, type Transaction } from 'ethers';
 import { encodeTransfer, ERC20_ABI } from './erc20.js';
 import { GasSponsor } from './gas-sponsor.js';
 import { withinTolerance } from '../domain/money.js';
-import type { PaymentLink } from '../domain/types.js';
+import type { InternalTransfer, PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { LinkStateMachine } from '../services/link-state-machine.js';
 import type { MotorRepositories } from '../ports/index.js';
 import { providerChainId, type ProviderFactory } from './provider.js';
-import { ManualSigningRequired, type Signer } from '../signer/signer.js';
+import {
+  assertSignedTransactionMatches,
+  ManualSigningRequired,
+  type Signer,
+  type UnsignedTransaction,
+} from '../signer/signer.js';
 
 /**
  * Sweeper: move os tokens recebidos do endereco derivado (temporario) para a
@@ -41,10 +46,23 @@ export type SweepResult = {
   movidos: number;
   falhas: number;
   aguardandoGas: number;
+  /** PSBT: movimentos com unsigned persistida aguardando assinatura manual. */
+  aguardandoAssinatura: number;
   /** A5: links resgatados por saldo preso (sweep reorgado / falho). */
   resgatados: number;
   erros: string[];
 };
+
+/** Erro de submissao manual com status HTTP seguro para a borda. */
+export class TransferSubmissionError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: 400 | 404 | 409,
+  ) {
+    super(message);
+    this.name = 'TransferSubmissionError';
+  }
+}
 
 export type SweeperDeps = {
   repos: MotorRepositories;
@@ -72,6 +90,7 @@ export class Sweeper {
       movidos: 0,
       falhas: 0,
       aguardandoGas: 0,
+      aguardandoAssinatura: 0,
       resgatados: 0,
       erros: [],
     };
@@ -95,6 +114,7 @@ export class Sweeper {
             const outcome = await this.sweepLink(link.id);
             if (outcome === 'movido') result.movidos++;
             if (outcome === 'aguardando_gas') result.aguardandoGas++;
+            if (outcome === 'aguardando_assinatura') result.aguardandoAssinatura++;
           } catch (err) {
             result.falhas++;
             const message = err instanceof Error ? err.message : String(err);
@@ -232,35 +252,43 @@ export class Sweeper {
     return 'pago';
   }
 
-  private async sweepLink(linkId: string): Promise<'movido' | 'aguardando_gas' | 'ignorado'> {
+  private async sweepLink(
+    linkId: string,
+  ): Promise<'movido' | 'aguardando_gas' | 'aguardando_assinatura' | 'ignorado'> {
     const { repos, logger } = this.deps;
     const link = await repos.links.findById(linkId);
     if (!link) return 'ignorado';
     if (!(SWEEPABLE_STATUSES as readonly string[]).includes(link.status)) return 'ignorado';
 
     const provider = this.deps.providerFactory(link.chain);
+
+    // Recuperacao pos-crash: a raw assinada e o txHash sao gravados antes do
+    // broadcast. Se o processo caiu depois de transmitir, retomamos a MESMA
+    // transacao em vez de assinar outra com o mesmo nonce.
+    const retomado = await this.resumeInFlight(link, provider);
+    if (retomado !== 'none') return retomado;
+
     const token = new Contract(link.tokenContract, ERC20_ABI, provider);
     const balanceOf = token.getFunction('balanceOf');
-
     const saldo = (await balanceOf(link.enderecoDeposito)) as bigint;
+
     if (saldo <= 0n) {
-      // A2: saldo zero NAO e falta de gas. "pago_sem_gas" significa
-      // "recebeu, mas nao consegue pagar o proprio gas" -- usar esse status
-      // aqui dava um diagnostico errado ao operador.
-      // O status do link fica intacto para o proximo ciclo tentar de novo.
-      logger.debug({ linkId: link.id }, 'saldo zero no endereco derivado: nada a mover');
-      return 'ignorado';
+      // O token pode ter saido, mas o registro do sweep nao foi concluido.
+      // Se houver evidencia on-chain (nonce consumido / sweep confirmado),
+      // fecha o link sem criar uma transacao nova.
+      return this.recoverZeroBalanceSweep(link, provider);
     }
 
     const feeData = await provider.getFeeData();
     const maxFeePerGas = feeData.maxFeePerGas ?? undefined;
     const gasPrice = feeData.gasPrice ?? undefined;
-    if (!maxFeePerGas && !gasPrice) {
+    const feePerGas = maxFeePerGas ?? gasPrice;
+    if (!feePerGas) {
       throw new Error('RPC nao retornou informacao de preco de gas');
     }
 
     // D3: se ja existe uma transacao pendente a partir do endereco derivado,
-    // criar outracompetiria pelo mesmo nonce e poderia SUBSTITUIR o sweep
+    // criar outra competiria pelo mesmo nonce e poderia SUBSTITUIR o sweep
     // anterior. O caminho seguro e esperar o mempool limpar.
     const noncePendente = await provider.getTransactionCount(
       link.enderecoDeposito,
@@ -278,67 +306,107 @@ export class Sweeper {
       return 'ignorado';
     }
 
-    // D4: idempotencia por (link, nonce). Se ja houve sweep com este nonce,
-    // nao criamos outro registro nem outra transacao.
-    const jaSwepeado = await repos.transfers.findByLink(link.id);
-    const sweepDesteNonce = jaSwepeado.find(
-      (t) =>
-        t.status !== 'falhou' &&
-        t.txHash !== null &&
-        t.txHash !== '0x',
-    );
-    if (sweepDesteNonce) {
-      logger.debug(
-        { linkId: link.id, txHash: sweepDesteNonce.txHash },
-        'link ja tem sweep registrado: nao duplicar',
-      );
-      return 'ignorado';
+    const carteiraFria = await this.resolveColdWallet(link);
+    const data = encodeTransfer(carteiraFria, saldo);
+
+    let gasLimit = 120_000n;
+    try {
+      const estimate = await provider.estimateGas({
+        from: link.enderecoDeposito,
+        to: link.tokenContract,
+        data,
+        value: 0n,
+      });
+      gasLimit = (estimate * 120n) / 100n;
+    } catch {
+      // usa o limite padrao
     }
 
-    const sponsor = this.deps.gasSponsor;
-
-    // Reutiliza a MESMA linha para (link, nonce). Criar outra estourava o
-    // unique `movimentos_internos_link_nonce_uq` em toda retentativa apos
-    // falha antes do broadcast.
-    const existente = (await repos.transfers.findByLink(link.id)).find(
-      (t) => t.nonce === nonceConfirmado,
+    // D4 real: a chave e (link, tipo, nonce). Um dust no mesmo nonce do
+    // token nao pode mais bloquear um sweep futuro.
+    const existente = await repos.transfers.findByLinkKindNonce(
+      link.id,
+      'sweep',
+      nonceConfirmado,
     );
-    let transfer;
+    let transfer: InternalTransfer;
     if (existente) {
+      if (existente.status === 'confirmado') {
+        logger.debug(
+          { linkId: link.id, nonce: nonceConfirmado },
+          'sweep deste nonce ja confirmado: nao duplicar',
+        );
+        return 'ignorado';
+      }
+
+      // PSBT: a unsigned ja foi gerada e o operador precisa assina-la. Nao
+      // regerar a cada ciclo (o operador perderia o payload valido).
+      if (
+        existente.unsignedTransaction &&
+        existente.valorBaseUnits === saldo &&
+        existente.paraAddress.toLowerCase() === carteiraFria.toLowerCase()
+      ) {
+        try {
+          const unsigned = JSON.parse(existente.unsignedTransaction) as UnsignedTransaction;
+          if (
+            unsigned.chainId === providerChainId(provider) &&
+            unsigned.nonce === nonceConfirmado
+          ) {
+            logger.info(
+              { linkId: link.id, transferId: existente.id, nonce: nonceConfirmado },
+              'sweep aguardando assinatura manual (PSBT)',
+            );
+            return 'aguardando_assinatura';
+          }
+        } catch {
+          logger.warn(
+            { linkId: link.id, transferId: existente.id },
+            'unsigned PSBT invalida no banco; sera regenerada',
+          );
+        }
+      }
+
       await repos.transfers.update(existente.id, {
         status: 'pendente',
         txHash: null,
+        rawTransaction: null,
+        unsignedTransaction: null,
         erro: null,
         valorBaseUnits: saldo,
-        paraAddress: '',
+        paraAddress: carteiraFria,
         bloco: null,
       });
       transfer = {
         ...existente,
-        status: 'pendente' as const,
+        status: 'pendente',
         txHash: null,
+        rawTransaction: null,
+        unsignedTransaction: null,
         erro: null,
         valorBaseUnits: saldo,
-        paraAddress: '',
+        paraAddress: carteiraFria,
         bloco: null,
       };
     } else {
       transfer = await repos.transfers.create({
         linkId: link.id,
         deAddress: link.enderecoDeposito,
-        paraAddress: '',
+        paraAddress: carteiraFria,
         valorBaseUnits: saldo,
         status: 'pendente',
         chain: link.chain,
         bloco: null,
         nonce: nonceConfirmado,
+        kind: 'sweep',
       });
     }
 
     try {
-      const needsGas = (await provider.getBalance(link.enderecoDeposito)) < BigInt(21000) * (maxFeePerGas ?? gasPrice ?? 0n);
-      if (needsGas) {
-        if (!sponsor.enabled) {
+      const gasCost = gasLimit * feePerGas;
+      let saldoNativo = await provider.getBalance(link.enderecoDeposito);
+
+      if (saldoNativo < gasCost) {
+        if (!this.deps.gasSponsor.enabled) {
           await repos.transfers.update(transfer.id, {
             status: 'pendente',
             erro: 'sem gas sponsor configurado: o endereco derivado nao tem saldo nativo para pagar o gas',
@@ -350,14 +418,15 @@ export class Sweeper {
             actor: 'sweeper',
           });
           logger.error(
-            { linkId: link.id },
+            { linkId: link.id, gasCost: gasCost.toString(), saldoNativo: saldoNativo.toString() },
             'gas sponsor nao configurado (GAS_SPONSOR_PRIVATE_KEY ausente)',
           );
           return 'aguardando_gas';
         }
+
         let sponsored: boolean;
         try {
-          sponsored = await sponsor.ensureGas(provider, link.enderecoDeposito, {
+          sponsored = await this.deps.gasSponsor.ensureGas(provider, link.enderecoDeposito, {
             maxFeePerGas,
             gasPrice,
           });
@@ -379,27 +448,30 @@ export class Sweeper {
         if (sponsored) {
           await repos.transfers.update(transfer.id, { status: 'patrocinado' });
         }
+        saldoNativo = await provider.getBalance(link.enderecoDeposito);
+        if (saldoNativo < gasCost) {
+          const mensagem = `gas insuficiente apos patrocinio: precisa ${gasCost.toString()}, tem ${saldoNativo.toString()}`;
+          await repos.transfers.update(transfer.id, { status: 'falhou', erro: mensagem });
+          await this.deps.linkState.transition({
+            linkId: link.id,
+            to: 'pago_sem_gas',
+            reason: mensagem,
+            actor: 'sweeper',
+          });
+          logger.error({ linkId: link.id, gasCost: gasCost.toString(), saldoNativo: saldoNativo.toString() }, mensagem);
+          return 'aguardando_gas';
+        }
       }
 
-      const carteiraFria = await this.resolveColdWallet(link);
-      await repos.transfers.update(transfer.id, { paraAddress: carteiraFria });
-
-      const nonce = await provider.getTransactionCount(link.enderecoDeposito, 'pending');
+      const nonce = await provider.getTransactionCount(link.enderecoDeposito, 'latest');
+      if (nonce !== nonceConfirmado) {
+        logger.debug(
+          { linkId: link.id, nonceEsperado: nonceConfirmado, nonceAtual: nonce },
+          'nonce mudou durante o sweep: aguardando proximo ciclo',
+        );
+        return 'ignorado';
+      }
       const chainId = providerChainId(provider);
-      const data = encodeTransfer(carteiraFria, saldo);
-
-      let gasLimit = 120_000n;
-      try {
-        const estimate = await provider.estimateGas({
-          from: link.enderecoDeposito,
-          to: link.tokenContract,
-          data,
-          value: 0n,
-        });
-        gasLimit = (estimate * 120n) / 100n;
-      } catch {
-        // usa o limite padrao
-      }
 
       const signed = await this.deps.signer.signTransfer({
         index: link.indiceHd,
@@ -413,32 +485,43 @@ export class Sweeper {
         maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? undefined,
       });
 
+      // Persiste a raw ANTES do broadcast. Se o processo morrer agora, o
+      // proximo ciclo retoma exatamente esta transacao.
+      const txHash = keccak256(signed.rawTransaction);
+      await repos.transfers.update(transfer.id, {
+        status: 'pendente',
+        txHash,
+        rawTransaction: signed.rawTransaction,
+        erro: null,
+      });
+
       const tx = await provider.broadcastTransaction(signed.rawTransaction);
       await repos.transfers.update(transfer.id, {
         status: 'enviado',
         txHash: tx.hash,
+        rawTransaction: signed.rawTransaction,
       });
       logger.info({ linkId: link.id, txHash: tx.hash, valor: saldo.toString() }, 'sweep enviado');
 
-      const receipt = await tx.wait(1, 120_000);
-      if (receipt && receipt.status === 1) {
-        // C5: guarda o bloco para saber depois se o sweep caiu num reorg.
-        await repos.transfers.update(transfer.id, {
-          status: 'confirmado',
-          bloco: receipt.blockNumber,
-        });
+      let receipt: Awaited<ReturnType<typeof tx.wait>>;
+      try {
+        receipt = await tx.wait(1, 120_000);
+      } catch (err) {
+        // Timeout nao significa falha: a tx pode confirmar depois. Mantem
+        // 'enviado' + raw para a recuperacao do proximo ciclo.
+        logger.warn(
+          { err, linkId: link.id, txHash: tx.hash },
+          'sweep transmitido mas ainda sem recibo; sera retomado',
+        );
+        return 'ignorado';
+      }
 
-        // D2: o gas sponsor mandou POL para o endereco derivado; sobra um
-        // pouco. Sem isso, cada link deixa poeira de nativo para sempre.
-        await this.sweepNativeDust(link, provider, receipt, maxFeePerGas ?? gasPrice ?? 0n);
-
-        await this.deps.linkState.transition({
-          linkId: link.id,
-          to: 'movido',
-          reason: `sweep ${tx.hash} confirmado no bloco ${receipt.blockNumber}`,
-          actor: 'sweeper',
-        });
-        logger.info({ linkId: link.id, txHash: tx.hash }, 'sweep confirmado');
+      if (!receipt) {
+        logger.warn({ linkId: link.id, txHash: tx.hash }, 'sweep sem recibo; sera retomado');
+        return 'ignorado';
+      }
+      if (receipt.status === 1) {
+        await this.finalizeSweep(link, transfer, receipt, provider, feePerGas);
         return 'movido';
       }
 
@@ -451,15 +534,345 @@ export class Sweeper {
       if (err instanceof ManualSigningRequired) {
         await repos.transfers.update(transfer.id, {
           status: 'pendente',
+          rawTransaction: null,
+          unsignedTransaction: JSON.stringify(err.unsigned),
           erro: 'assinatura manual necessaria',
         });
-        logger.warn({ linkId: link.id }, 'transfer aguardando assinatura manual');
-        return 'aguardando_gas';
+        logger.warn(
+          { linkId: link.id, transferId: transfer.id },
+          'transfer aguardando assinatura manual',
+        );
+        return 'aguardando_assinatura';
       }
       const message = err instanceof Error ? err.message : String(err);
       await repos.transfers.update(transfer.id, { status: 'falhou', erro: message.slice(0, 500) });
       throw err;
     }
+  }
+
+  /**
+   * Submete o raw assinado de uma unsigned PSBT. Valida que a assinatura
+   * corresponde exatamente ao payload persistido antes de transmitir.
+   */
+  async submitSignedTransfer(
+    transferId: string,
+    rawTransaction: string,
+  ): Promise<{ id: string; txHash: string; status: 'enviado' }> {
+    const { repos, logger } = this.deps;
+    const transfer = await repos.transfers.findById(transferId);
+    if (!transfer) {
+      throw new TransferSubmissionError('movimento nao encontrado', 404);
+    }
+    if (transfer.kind !== 'sweep' || !transfer.unsignedTransaction) {
+      throw new TransferSubmissionError(
+        'movimento nao esta aguardando assinatura manual',
+        409,
+      );
+    }
+    if (transfer.status !== 'pendente') {
+      throw new TransferSubmissionError('movimento nao esta aguardando assinatura manual', 409);
+    }
+
+    const link = await repos.links.findById(transfer.linkId);
+    if (!link) throw new TransferSubmissionError('link do movimento nao encontrado', 404);
+    if (!(SWEEPABLE_STATUSES as readonly string[]).includes(link.status)) {
+      throw new TransferSubmissionError('link nao esta em estado de sweep', 409);
+    }
+
+    let unsigned: UnsignedTransaction;
+    try {
+      unsigned = JSON.parse(transfer.unsignedTransaction) as UnsignedTransaction;
+    } catch {
+      throw new TransferSubmissionError('unsigned PSBT invalida', 409);
+    }
+
+    let expectedFrom: string;
+    try {
+      expectedFrom = getAddress(this.deps.signer.addressFor(link.indiceHd));
+      if (getAddress(unsigned.from) !== expectedFrom) {
+        throw new Error('remetente da unsigned nao corresponde ao indice do link');
+      }
+    } catch (err) {
+      throw new TransferSubmissionError(
+        `unsigned PSBT invalida: ${err instanceof Error ? err.message : String(err)}`,
+        409,
+      );
+    }
+
+    let tx: Transaction;
+    try {
+      tx = assertSignedTransactionMatches(rawTransaction, unsigned);
+    } catch (err) {
+      throw new TransferSubmissionError(
+        err instanceof Error ? err.message : String(err),
+        400,
+      );
+    }
+
+    const provider = this.deps.providerFactory(link.chain);
+    const chainId = providerChainId(provider);
+    if (unsigned.chainId !== chainId) {
+      throw new TransferSubmissionError('unsigned PSBT pertence a outra chain', 409);
+    }
+
+    const [latest, pending] = await Promise.all([
+      provider.getTransactionCount(link.enderecoDeposito, 'latest'),
+      provider.getTransactionCount(link.enderecoDeposito, 'pending'),
+    ]);
+    if (pending > latest) {
+      throw new TransferSubmissionError('ja existe transacao pendente para este endereco', 409);
+    }
+    if (tx.nonce !== latest) {
+      throw new TransferSubmissionError(
+        `nonce da unsigned (${tx.nonce}) nao corresponde ao nonce atual (${latest})`,
+        409,
+      );
+    }
+
+    const txHash = tx.hash ?? keccak256(rawTransaction);
+    await repos.transfers.update(transfer.id, {
+      status: 'pendente',
+      txHash,
+      rawTransaction,
+      unsignedTransaction: null,
+      erro: null,
+    });
+
+    try {
+      const sent = await provider.broadcastTransaction(rawTransaction);
+      await repos.transfers.update(transfer.id, {
+        status: 'enviado',
+        txHash: sent.hash,
+        rawTransaction,
+        unsignedTransaction: null,
+        erro: null,
+      });
+      await repos.audit.record({
+        ator: 'admin',
+        acao: 'sweep.raw_submetido',
+        entidade: 'movimento',
+        entidadeId: transfer.id,
+        detalhes: {
+          linkId: link.id,
+          txHash: sent.hash,
+          nonce: tx.nonce,
+          chain: link.chain,
+        },
+      });
+      logger.info(
+        { linkId: link.id, transferId: transfer.id, txHash: sent.hash },
+        'raw PSBT submetido',
+      );
+      return { id: transfer.id, txHash: sent.hash, status: 'enviado' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await repos.transfers.update(transfer.id, {
+        status: 'pendente',
+        txHash,
+        rawTransaction,
+        unsignedTransaction: null,
+        erro: `falha ao transmitir raw: ${message}`.slice(0, 500),
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Retoma um sweep ja assinado/transmitido. Retorna 'none' quando nao ha
+   * nada em voo e o fluxo normal pode seguir.
+   */
+  private async resumeInFlight(
+    link: PaymentLink,
+    provider: Provider,
+  ): Promise<'none' | 'movido' | 'ignorado'> {
+    const { repos, logger } = this.deps;
+    const transfer = (await repos.transfers.findByLink(link.id))
+      .filter(
+        (t) =>
+          t.kind === 'sweep' &&
+          ['pendente', 'patrocinado', 'enviado'].includes(t.status) &&
+          (t.rawTransaction !== null || t.txHash !== null),
+      )
+      .at(-1);
+    if (!transfer) return 'none';
+
+    let receipt: Awaited<ReturnType<Provider['getTransactionReceipt']>> = null;
+    if (transfer.txHash) {
+      try {
+        receipt = await provider.getTransactionReceipt(transfer.txHash);
+      } catch (err) {
+        logger.warn({ err, linkId: link.id }, 'falha ao consultar recibo do sweep; tentando rebroadcast');
+      }
+    }
+
+    if (!receipt && transfer.rawTransaction) {
+      try {
+        const tx = await provider.broadcastTransaction(transfer.rawTransaction);
+        await repos.transfers.update(transfer.id, {
+          status: 'enviado',
+          txHash: tx.hash,
+          rawTransaction: transfer.rawTransaction,
+          erro: null,
+        });
+        receipt = await tx.wait(1, 120_000);
+      } catch (err) {
+        const hash = transfer.txHash ?? keccak256(transfer.rawTransaction);
+        try {
+          receipt = await provider.getTransactionReceipt(hash);
+        } catch {
+          receipt = null;
+        }
+        if (!receipt) {
+          logger.warn(
+            { err, linkId: link.id, txHash: hash },
+            'sweep em voo ainda nao confirmou; aguardando',
+          );
+          return 'ignorado';
+        }
+      }
+    }
+
+    if (!receipt) {
+      logger.debug({ linkId: link.id, txHash: transfer.txHash }, 'sweep em voo sem recibo');
+      return 'ignorado';
+    }
+    if (receipt.status !== 1) {
+      await repos.transfers.update(transfer.id, {
+        status: 'falhou',
+        erro: 'transacao revertida',
+      });
+      logger.error({ linkId: link.id, txHash: transfer.txHash }, 'sweep em voo revertido');
+      return 'ignorado';
+    }
+
+    const feeData = await provider.getFeeData();
+    const feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice ?? 0n;
+    await this.finalizeSweep(link, transfer, receipt, provider, feePerGas);
+    return 'movido';
+  }
+
+  /**
+   * Saldo zero pode significar que o sweep saiu, mas o registro nao foi
+   * fechado (crash entre broadcast e update, por exemplo). So fecha o link
+   * quando ha evidencia: sweep confirmado no banco ou nonce consumido sem
+   * registro correspondente. Caso contrario, nao inventa movimento.
+   */
+  private async recoverZeroBalanceSweep(
+    link: PaymentLink,
+    provider: Provider,
+  ): Promise<'movido' | 'ignorado'> {
+    const { repos, logger } = this.deps;
+    const transfers = await repos.transfers.findByLink(link.id);
+    const sweeps = transfers.filter((t) => t.kind === 'sweep');
+    const confirmado = sweeps.filter((t) => t.status === 'confirmado').at(-1);
+    if (confirmado) {
+      await this.ensureMovido(
+        link,
+        `sweep ${confirmado.txHash ?? 'sem hash'} ja confirmado`,
+      );
+      return 'movido';
+    }
+
+    const maiorNonceRegistrado = sweeps.reduce(
+      (max, t) => (t.nonce !== null && t.nonce > max ? t.nonce : max),
+      -1,
+    );
+    const nonceAtual = Number(
+      await provider.getTransactionCount(link.enderecoDeposito, 'latest'),
+    );
+    if (nonceAtual <= Math.max(maiorNonceRegistrado, 0)) {
+      logger.debug(
+        { linkId: link.id, nonceAtual, maiorNonceRegistrado },
+        'saldo zero sem evidencia de sweep transmitido',
+      );
+      return 'ignorado';
+    }
+
+    const nonceRecuperado = nonceAtual - 1;
+    const recuperacaoExistente = await repos.transfers.findByLinkKindNonce(
+      link.id,
+      'recovery',
+      nonceRecuperado,
+    );
+    if (recuperacaoExistente) {
+      await this.ensureMovido(link, 'recuperacao sintetica ja registrada');
+      return 'movido';
+    }
+
+    const total = await repos.payments.sumConfirmedByLink(link.id);
+    const valor = total > 0n ? total : (link.expectedBaseUnits ?? 0n);
+    await repos.transfers.create({
+      linkId: link.id,
+      deAddress: link.enderecoDeposito,
+      paraAddress: '',
+      valorBaseUnits: valor,
+      status: 'confirmado',
+      chain: link.chain,
+      bloco: null,
+      nonce: nonceRecuperado,
+      kind: 'recovery',
+      txHash: null,
+      rawTransaction: null,
+      erro: 'recuperacao sintetica: saldo zero e nonce consumido sem registro de sweep',
+    });
+    await repos.audit.record({
+      ator: 'worker',
+      acao: 'sweep.recuperacao_sintetica',
+      entidade: 'link',
+      entidadeId: link.id,
+      detalhes: {
+        nonce: nonceRecuperado,
+        valorBaseUnits: valor.toString(),
+        token: link.tokenContract,
+        chain: link.chain,
+        motivo: 'saldo zero e nonce consumido sem sweep confirmado no banco',
+      },
+    });
+    logger.warn(
+      { linkId: link.id, nonce: nonceRecuperado, valor: valor.toString() },
+      'sweep recuperado sinteticamente (sem txHash)',
+    );
+    await this.ensureMovido(link, 'saldo zero e nonce consumido: sweep recuperado sinteticamente');
+    return 'movido';
+  }
+
+  private async finalizeSweep(
+    link: PaymentLink,
+    transfer: InternalTransfer,
+    receipt: { status: number | null; blockNumber: number; gasUsed: bigint },
+    provider: Provider,
+    feePerGas: bigint,
+  ): Promise<void> {
+    const { repos, logger } = this.deps;
+    await repos.transfers.update(transfer.id, {
+      status: 'confirmado',
+      bloco: receipt.blockNumber,
+      erro: null,
+    });
+
+    // D2: o gas sponsor mandou POL para o endereco derivado; sobra um
+    // pouco. Sem isso, cada link deixa poeira de nativo para sempre.
+    await this.sweepNativeDust(link, provider, receipt, feePerGas);
+
+    await this.ensureMovido(
+      link,
+      `sweep ${transfer.txHash ?? 'sem hash'} confirmado no bloco ${receipt.blockNumber}`,
+    );
+    logger.info(
+      { linkId: link.id, txHash: transfer.txHash, bloco: receipt.blockNumber },
+      'sweep confirmado',
+    );
+  }
+
+  private async ensureMovido(link: PaymentLink, reason: string): Promise<void> {
+    const atual = await this.deps.repos.links.findById(link.id);
+    if (!atual || atual.status === 'movido') return;
+    await this.deps.linkState.transition({
+      linkId: link.id,
+      to: 'movido',
+      reason,
+      actor: 'sweeper',
+    });
   }
 
   /**
@@ -495,7 +908,9 @@ export class Sweeper {
       }
 
       const destino = await this.resolveColdWallet(link);
-      const nonce = await provider.getTransactionCount(link.enderecoDeposito, 'pending');
+      const nonce = Number(
+        await provider.getTransactionCount(link.enderecoDeposito, 'pending'),
+      );
       const chainId = providerChainId(provider);
       const gasLimit = 21_000n;
 
@@ -510,28 +925,83 @@ export class Sweeper {
         maxFeePerGas: maxFeePerGas > 0n ? maxFeePerGas : undefined,
       });
 
-      const tx = await provider.broadcastTransaction(signed.rawTransaction);
-      const dustReceipt = await tx.wait(1, 60_000);
+      const existente = await repos.transfers.findByLinkKindNonce(link.id, 'dust', nonce);
+      if (existente && existente.status !== 'falhou') {
+        logger.debug(
+          { linkId: link.id, nonce, txHash: existente.txHash },
+          'dust deste nonce ja registrado: nao duplicar',
+        );
+        return;
+      }
 
-      await repos.transfers.create({
-        linkId: link.id,
-        deAddress: link.enderecoDeposito,
-        paraAddress: destino,
-        valorBaseUnits: aEnviar,
-        txHash: tx.hash,
-        status: 'confirmado',
-        chain: link.chain,
-        bloco: dustReceipt?.blockNumber ?? null,
-        nonce: Number(nonce) + 1,
-        erro: 'retorno de gas nativo (dust)',
-      });
+      const txHash = keccak256(signed.rawTransaction);
+      if (existente) {
+        await repos.transfers.update(existente.id, {
+          status: 'pendente',
+          txHash,
+          rawTransaction: signed.rawTransaction,
+          valorBaseUnits: aEnviar,
+          paraAddress: destino,
+          bloco: null,
+          erro: 'retorno de gas nativo (dust)',
+        });
+      } else {
+        await repos.transfers.create({
+          linkId: link.id,
+          deAddress: link.enderecoDeposito,
+          paraAddress: destino,
+          valorBaseUnits: aEnviar,
+          txHash,
+          status: 'pendente',
+          chain: link.chain,
+          bloco: null,
+          nonce,
+          kind: 'dust',
+          rawTransaction: signed.rawTransaction,
+          erro: 'retorno de gas nativo (dust)',
+        });
+      }
+
+      const tx = await provider.broadcastTransaction(signed.rawTransaction);
+      await repos.transfers.update(
+        existente?.id ?? (await repos.transfers.findByLinkKindNonce(link.id, 'dust', nonce))!.id,
+        { status: 'enviado', txHash: tx.hash, rawTransaction: signed.rawTransaction },
+      );
+
+      let dustReceipt: Awaited<ReturnType<typeof tx.wait>>;
+      try {
+        dustReceipt = await tx.wait(1, 60_000);
+      } catch (err) {
+        logger.warn(
+          { err, linkId: link.id, txHash: tx.hash },
+          'dust transmitido mas sem recibo (token ja esta seguro)',
+        );
+        return;
+      }
+
+      const dust = await repos.transfers.findByLinkKindNonce(link.id, 'dust', nonce);
+      if (dust) {
+        await repos.transfers.update(dust.id, {
+          status: dustReceipt?.status === 1 ? 'confirmado' : 'falhou',
+          bloco: dustReceipt?.blockNumber ?? null,
+          erro:
+            dustReceipt?.status === 1
+              ? 'retorno de gas nativo (dust)'
+              : 'transacao de dust revertida',
+        });
+      }
 
       logger.debug(
-        { linkId: link.id, txHash: tx.hash, valor: aEnviar.toString(), gasUsed: receipt.gasUsed.toString() },
+        {
+          linkId: link.id,
+          txHash: tx.hash,
+          valor: aEnviar.toString(),
+          gasUsed: receipt.gasUsed.toString(),
+        },
         'gas nativo residual devolvido para a carteira fria',
       );
     } catch (err) {
-      // Falha aqui e cosmética: o token ja esta seguro na carteira fria.
+      // Falha aqui e cosmetica: o token ja esta seguro na carteira fria.
       // Nao vale falhar o sweep por causa de poeira.
       logger.warn(
         { err, linkId: link.id },
