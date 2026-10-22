@@ -697,6 +697,7 @@ function toTransfer(row: typeof movimentosInternos.$inferSelect): InternalTransf
     erro: row.erro,
     chain: row.chain,
     bloco: row.bloco,
+    nonce: row.nonce,
     criadoEm: row.criadoEm,
   };
 }
@@ -717,6 +718,7 @@ class DrizzleTransferRepository implements TransferRepository {
         erro: input.erro ?? null,
         chain: input.chain,
         bloco: input.bloco ?? null,
+        nonce: input.nonce ?? null,
       })
       .returning();
     if (!row) throw new Error('falha ao registrar movimento interno');
@@ -745,6 +747,16 @@ class DrizzleTransferRepository implements TransferRepository {
         ...(patch.bloco !== undefined ? { bloco: patch.bloco } : {}),
       })
       .where(eq(movimentosInternos.id, id));
+  }
+
+  /** D4: existe sweep registrado para este (link, nonce)? */
+  async existsByNonce(linkId: string, nonce: number): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: movimentosInternos.id })
+      .from(movimentosInternos)
+      .where(and(eq(movimentosInternos.linkId, linkId), eq(movimentosInternos.nonce, nonce)))
+      .limit(1);
+    return Boolean(row);
   }
 
   /** C5: um sweep cujo bloco caiu no reorg precisa ser refeito. */

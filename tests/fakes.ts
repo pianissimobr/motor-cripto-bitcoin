@@ -354,6 +354,7 @@ export class FakeTransferRepository implements TransferRepository {
       erro: input.erro ?? null,
       chain: input.chain,
       bloco: input.bloco ?? null,
+      nonce: input.nonce ?? null,
       criadoEm: new Date(),
     };
     this.rows.push(row);
@@ -371,6 +372,10 @@ export class FakeTransferRepository implements TransferRepository {
   ): Promise<void> {
     const row = this.rows.find((r) => r.id === id);
     if (row) Object.assign(row, patch);
+  }
+
+  async existsByNonce(linkId: string, nonce: number): Promise<boolean> {
+    return this.rows.some((r) => r.linkId === linkId && r.nonce === nonce);
   }
 
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {

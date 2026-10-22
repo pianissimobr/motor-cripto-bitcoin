@@ -216,12 +216,15 @@ export const movimentosInternos = pgTable(
     /** C5: chain e bloco do sweep, para detectar se ele caiu num reorg. */
     chain: text('chain').notNull().default('polygon'),
     bloco: integer('bloco'),
+    /** D4: nonce do endereco derivado; garante um sweep por nonce. */
+    nonce: integer('nonce'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('movimentos_internos_link_idx').on(t.linkId),
     index('movimentos_internos_status_idx').on(t.status),
     index('movimentos_internos_bloco_idx').on(t.chain, t.bloco),
+    uniqueIndex('movimentos_internos_link_nonce_uq').on(t.linkId, t.nonce),
   ],
 );
 

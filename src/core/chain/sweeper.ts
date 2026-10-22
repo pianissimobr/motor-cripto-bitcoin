@@ -4,6 +4,7 @@ import { GasSponsor } from './gas-sponsor.js';
 import { withinTolerance } from '../domain/money.js';
 import type { PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
+import type { LinkStateMachine } from '../services/link-state-machine.js';
 import type { MotorRepositories } from '../ports/index.js';
 import { providerChainId, type ProviderFactory } from './provider.js';
 import { ManualSigningRequired, type Signer } from '../signer/signer.js';
@@ -50,6 +51,8 @@ export type SweeperDeps = {
   providerFactory: ProviderFactory;
   signer: Signer;
   gasSponsor: GasSponsor;
+  /** A4: mudancas de status passam pela maquina de estados. */
+  linkState: LinkStateMachine;
   logger: Logger;
   options: SweeperOptions;
 };
@@ -214,6 +217,42 @@ export class Sweeper {
       throw new Error('RPC nao retornou informacao de preco de gas');
     }
 
+    // D3: se ja existe uma transacao pendente a partir do endereco derivado,
+    // criar outracompetiria pelo mesmo nonce e poderia SUBSTITUIR o sweep
+    // anterior. O caminho seguro e esperar o mempool limpar.
+    const noncePendente = await provider.getTransactionCount(
+      link.enderecoDeposito,
+      'pending',
+    );
+    const nonceConfirmado = await provider.getTransactionCount(
+      link.enderecoDeposito,
+      'latest',
+    );
+    if (noncePendente > nonceConfirmado) {
+      logger.debug(
+        { linkId: link.id, noncePendente, nonceConfirmado },
+        'sweep ja em andamento (nonce pendente): aguardando',
+      );
+      return 'ignorado';
+    }
+
+    // D4: idempotencia por (link, nonce). Se ja houve sweep com este nonce,
+    // nao criamos outro registro nem outra transacao.
+    const jaSwepeado = await repos.transfers.findByLink(link.id);
+    const sweepDesteNonce = jaSwepeado.find(
+      (t) =>
+        t.status !== 'falhou' &&
+        t.txHash !== null &&
+        t.txHash !== '0x',
+    );
+    if (sweepDesteNonce) {
+      logger.debug(
+        { linkId: link.id, txHash: sweepDesteNonce.txHash },
+        'link ja tem sweep registrado: nao duplicar',
+      );
+      return 'ignorado';
+    }
+
     const sponsor = this.deps.gasSponsor;
 
     const transfer = await repos.transfers.create({
@@ -224,6 +263,7 @@ export class Sweeper {
       status: 'pendente',
       chain: link.chain,
       bloco: null,
+      nonce: nonceConfirmado,
     });
 
     try {
@@ -234,17 +274,39 @@ export class Sweeper {
             status: 'pendente',
             erro: 'sem gas sponsor configurado: o endereco derivado nao tem saldo nativo para pagar o gas',
           });
-          await repos.links.updateStatus(link.id, 'pago_sem_gas');
+          await this.deps.linkState.transition({
+            linkId: link.id,
+            to: 'pago_sem_gas',
+            reason: 'endereco derivado sem saldo nativo e sem gas sponsor configurado',
+            actor: 'sweeper',
+          });
           logger.error(
             { linkId: link.id },
             'gas sponsor nao configurado (GAS_SPONSOR_PRIVATE_KEY ausente)',
           );
           return 'aguardando_gas';
         }
-        const sponsored = await sponsor.ensureGas(provider, link.enderecoDeposito, {
-          maxFeePerGas,
-          gasPrice,
-        });
+        let sponsored: boolean;
+        try {
+          sponsored = await sponsor.ensureGas(provider, link.enderecoDeposito, {
+            maxFeePerGas,
+            gasPrice,
+          });
+        } catch (err) {
+          // D5: o patrocinador pode estar sem saldo. Isso e operacional
+          // (recarregar), nao um bug do link: o status correto e
+          // 'pago_sem_gas' e o erro fica registrado para o operador agir.
+          const mensagem = err instanceof Error ? err.message : String(err);
+          await repos.transfers.update(transfer.id, { status: 'falhou', erro: mensagem });
+          await this.deps.linkState.transition({
+            linkId: link.id,
+            to: 'pago_sem_gas',
+            reason: `gas sponsor sem saldo: ${mensagem}`,
+            actor: 'sweeper',
+          });
+          logger.error({ linkId: link.id, motivo: mensagem }, 'patrocinio de gas falhou');
+          return 'aguardando_gas';
+        }
         if (sponsored) {
           await repos.transfers.update(transfer.id, { status: 'patrocinado' });
         }
@@ -296,7 +358,17 @@ export class Sweeper {
           status: 'confirmado',
           bloco: receipt.blockNumber,
         });
-        await repos.links.updateStatus(link.id, 'movido');
+
+        // D2: o gas sponsor mandou POL para o endereco derivado; sobra um
+        // pouco. Sem isso, cada link deixa poeira de nativo para sempre.
+        await this.sweepNativeDust(link, provider, receipt, maxFeePerGas ?? gasPrice ?? 0n);
+
+        await this.deps.linkState.transition({
+          linkId: link.id,
+          to: 'movido',
+          reason: `sweep ${tx.hash} confirmado no bloco ${receipt.blockNumber}`,
+          actor: 'sweeper',
+        });
         logger.info({ linkId: link.id, txHash: tx.hash }, 'sweep confirmado');
         return 'movido';
       }
@@ -318,6 +390,84 @@ export class Sweeper {
       const message = err instanceof Error ? err.message : String(err);
       await repos.transfers.update(transfer.id, { status: 'falhou', erro: message.slice(0, 500) });
       throw err;
+    }
+  }
+
+  /**
+   * D2: devolve o gas nativo restante para a carteira fria.
+   *
+   * O patrocinador mandou ~0,5 POL para o endereco derivado pagar o gas do
+   * `transfer`. Sobra quase tudo. Sem esta limpeza, cada link deixa poeira
+   * de nativo presa num enderece que ninguem mais vai usar.
+   *
+   * Reserva: o proprio envio custa gas, entao mandamos `saldo - reserva`.
+   */
+  private async sweepNativeDust(
+    link: PaymentLink,
+    provider: Provider,
+    receipt: { gasUsed: bigint },
+    maxFeePerGas: bigint,
+  ): Promise<void> {
+    const { repos, logger } = this.deps;
+    try {
+      const saldo = await provider.getBalance(link.enderecoDeposito);
+      if (saldo <= 0n) return;
+
+      // Reserva para o proprio envio + margem de 50%.
+      const custoEnvio = BigInt(21_000) * maxFeePerGas;
+      const reserva = (custoEnvio * 150n) / 100n;
+      const aEnviar = saldo - reserva;
+      if (aEnviar <= 0n) {
+        logger.debug(
+          { linkId: link.id, saldo: saldo.toString() },
+          'saldo nativo menor que a reserva: dust fica no endereco',
+        );
+        return;
+      }
+
+      const destino = await this.resolveColdWallet(link);
+      const nonce = await provider.getTransactionCount(link.enderecoDeposito, 'pending');
+      const chainId = providerChainId(provider);
+      const gasLimit = 21_000n;
+
+      const signed = await this.deps.signer.signTransfer({
+        index: link.indiceHd,
+        to: destino,
+        data: '0x',
+        value: aEnviar,
+        chainId,
+        nonce,
+        gasLimit,
+        maxFeePerGas: maxFeePerGas > 0n ? maxFeePerGas : undefined,
+      });
+
+      const tx = await provider.broadcastTransaction(signed.rawTransaction);
+      const dustReceipt = await tx.wait(1, 60_000);
+
+      await repos.transfers.create({
+        linkId: link.id,
+        deAddress: link.enderecoDeposito,
+        paraAddress: destino,
+        valorBaseUnits: aEnviar,
+        txHash: tx.hash,
+        status: 'confirmado',
+        chain: link.chain,
+        bloco: dustReceipt?.blockNumber ?? null,
+        nonce: Number(nonce) + 1,
+        erro: 'retorno de gas nativo (dust)',
+      });
+
+      logger.debug(
+        { linkId: link.id, txHash: tx.hash, valor: aEnviar.toString(), gasUsed: receipt.gasUsed.toString() },
+        'gas nativo residual devolvido para a carteira fria',
+      );
+    } catch (err) {
+      // Falha aqui e cosmética: o token ja esta seguro na carteira fria.
+      // Nao vale falhar o sweep por causa de poeira.
+      logger.warn(
+        { err, linkId: link.id },
+        'nao foi possivel devolver o gas nativo residual (token ja esta seguro)',
+      );
     }
   }
 

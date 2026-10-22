@@ -146,6 +146,7 @@ async function makeSweeper(ctx: Ctx, provider: unknown) {
       describe: () => 'fake',
     },
     gasSponsor: { enabled: false, address: null, balance: async () => 0n, ensureGas: async () => false } as never,
+    linkState: ctx.motor.linkState,
     logger: silentLogger,
     options: {
       gasSponsorAmountWei: 1n,

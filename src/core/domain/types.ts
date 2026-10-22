@@ -163,6 +163,8 @@ export type InternalTransfer = {
   /** C5: chain e bloco do sweep (null enquanto pendente de minacao). */
   chain: string;
   bloco: number | null;
+  /** D4: nonce do endereco derivado neste sweep. */
+  nonce: number | null;
   criadoEm: Date;
 };
 

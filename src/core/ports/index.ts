@@ -189,6 +189,11 @@ export type CreateTransferInput = {
   erro?: string | null;
   chain: string;
   bloco?: number | null;
+  /**
+   * D4: nonce do endereco derivado. Um mesmo link nunca pode ter dois
+   * sweeps com o mesmo nonce (seriam a mesma transacao logica).
+   */
+  nonce?: number | null;
 };
 
 export interface TransferRepository {
@@ -206,6 +211,8 @@ export interface TransferRepository {
   listByStatus(status: TransferStatus, limit: number): Promise<InternalTransfer[]>;
   /** C5: marca como 'pendente' os sweeps cujo bloco caiu no reorg. */
   revertAboveBlock(chain: string, bloco: number): Promise<number>;
+  /** D4: ja existe um movimento registrado para este (link, nonce)? */
+  existsByNonce(linkId: string, nonce: number): Promise<boolean>;
 }
 
 export interface CursorRepository {

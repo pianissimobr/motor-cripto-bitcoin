@@ -101,6 +101,7 @@ export function createMotor(options: MotorOptions): Motor {
     providerFactory: options.providerFactory,
     signer: options.signer,
     gasSponsor: options.gasSponsor,
+    linkState,
     logger,
     options: {
       gasSponsorAmountWei: options.sweeper?.gasSponsorAmountWei ?? 500_000_000_000_000_000n,
