@@ -27,6 +27,11 @@ export const cadastros = pgTable(
     nomeEnc: text('nome_enc').notNull(),
     emailEnc: text('email_enc').notNull(),
     emailBidx: text('email_bidx').notNull(),
+    /**
+     * E3: indice na versao 2 da chave. Durante a rotacao, a busca consulta
+     * os dois; ao final, `email_bidx` e redundante e pode sair.
+     */
+    emailBidxV2: text('email_bidx_v2'),
     nomeMasked: text('nome_masked').notNull(),
     emailMasked: text('email_masked').notNull(),
     status: text('status').notNull().default('ativo'),
@@ -42,6 +47,11 @@ export const cadastrosPrefixos = pgTable(
   'cadastros_prefixos',
   {
     prefixBidx: text('prefix_bidx').notNull(),
+    /**
+     * E3: versao 2 do token de prefixo. Como o primary key e (prefix_bidx),
+     * o token v2 entra como linha separada e nao colide com o antigo.
+     */
+    prefixBidxV2: text('prefix_bidx_v2'),
     clienteId: uuid('cliente_id')
       .notNull()
       .references(() => cadastros.id, { onDelete: 'cascade' }),
@@ -49,6 +59,7 @@ export const cadastrosPrefixos = pgTable(
   (t) => [
     primaryKey({ columns: [t.prefixBidx] }),
     index('cadastros_prefixos_cliente_idx').on(t.clienteId),
+    index('cadastros_prefixos_v2_idx').on(t.prefixBidxV2),
   ],
 );
 

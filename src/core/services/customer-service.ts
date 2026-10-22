@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DataCipher } from '../crypto/cipher.js';
+import { BlindIndex, DataCipher } from '../crypto/cipher.js';
 import { maskEmail, maskName, normalizeEmail } from '../crypto/mask.js';
 import type { Customer } from '../domain/types.js';
 import type { Logger } from '../logger.js';
@@ -22,7 +22,7 @@ export class CustomerService {
     private readonly deps: {
       repos: MotorRepositories;
       cipher: DataCipher;
-      blindIndex: { compute(value: string): string };
+      blindIndex: BlindIndex;
       logger: Logger;
     },
   ) {}
@@ -39,18 +39,27 @@ export class CustomerService {
     const id = randomUUID();
     const nomeEnc = this.deps.cipher.encrypt(nome, id);
     const emailEnc = this.deps.cipher.encrypt(email, id);
-    const emailBidx = this.deps.blindIndex.compute(email);
-    const prefixBidxList = prefixTokens(email, this.deps.blindIndex);
+
+    // E3: escreve com a chave ativa e, se houver chave anterior em
+    // rotacao, tambem no indice antigo (para a busca continuar valendo).
+    const indices = this.deps.blindIndex.computeAll(email);
+    const ativo = this.deps.blindIndex.activeKid;
+    const emailBidxAtivo = indices.find((i) => i.kid === ativo)?.bidx ?? indices[0]!.bidx;
+    const emailBidxAntigo =
+      indices.length > 1 ? (indices.find((i) => i.kid !== ativo)?.bidx ?? null) : null;
+    const prefixos = prefixTokens(email, this.deps.blindIndex);
 
     const stored = await this.deps.repos.customers.create({
       id,
       nomeEnc,
       emailEnc,
-      emailBidx,
+      emailBidx: emailBidxAntigo ?? emailBidxAtivo,
+      emailBidxV2: emailBidxAntigo ? emailBidxAtivo : null,
       nomeMasked: maskName(nome),
       emailMasked: maskEmail(email),
       status: 'ativo',
-      prefixBidxList,
+      prefixBidxList: indices.length > 1 ? prefixos.antigos : prefixos.ativos,
+      prefixBidxListV2: indices.length > 1 ? prefixos.ativos : [],
     });
 
     await this.deps.repos.audit.record({
@@ -73,8 +82,10 @@ export class CustomerService {
 
   /** Busca exata por email (blind index do email completo). */
   async findByEmail(email: string): Promise<Customer | null> {
-    const bidx = this.deps.blindIndex.compute(normalizeEmail(email));
-    const stored = await this.deps.repos.customers.findByEmailBidx(bidx);
+    const bidxes = this.deps.blindIndex
+      .computeAll(normalizeEmail(email))
+      .map((i) => i.bidx);
+    const stored = await this.deps.repos.customers.findByEmailBidx(bidxes);
     if (!stored) return null;
     return this.toCustomer(stored);
   }
@@ -83,9 +94,9 @@ export class CustomerService {
   async search(emailPrefix: string, limit = 10): Promise<Customer[]> {
     const normalized = normalizeEmail(emailPrefix);
     if (normalized.length < 3) return [];
-    const bidx = this.deps.blindIndex.compute(normalized);
+    const bidxes = this.deps.blindIndex.computeAll(normalized).map((i) => i.bidx);
     const stored = await this.deps.repos.customers.searchByEmailPrefixBidx(
-      bidx,
+      bidxes,
       Math.min(limit, 50),
     );
     return stored.map((s) => this.toCustomer(s));
@@ -132,14 +143,18 @@ export class CustomerService {
 /** Blind indexes dos prefixos do email (3..32 caracteres). */
 function prefixTokens(
   email: string,
-  blindIndex: { compute(value: string): string },
-): string[] {
+  blindIndex: { computeAll(value: string): Array<{ kid: string; bidx: string }>; activeKid: string },
+): { ativos: string[]; antigos: string[] } {
   const max = Math.min(email.length, 32);
-  const tokens: string[] = [];
+  const ativos: string[] = [];
+  const antigos: string[] = [];
   for (let len = 3; len <= max; len++) {
-    tokens.push(blindIndex.compute(email.slice(0, len)));
+    for (const { kid, bidx } of blindIndex.computeAll(email.slice(0, len))) {
+      if (kid === blindIndex.activeKid) ativos.push(bidx);
+      else antigos.push(bidx);
+    }
   }
-  return tokens;
+  return { ativos, antigos };
 }
 
 export { maskEmail, maskName, normalizeEmail };

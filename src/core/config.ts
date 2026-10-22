@@ -40,6 +40,20 @@ export const EnvSchema = z.object({
 
   DATA_ENCRYPTION_KEY: z.string().min(1, 'DATA_ENCRYPTION_KEY obrigatorio (32 bytes base64)'),
   DATA_INDEX_KEY: z.string().min(1, 'DATA_INDEX_KEY obrigatorio (32 bytes base64)'),
+  // E2: keyring de cifragem. JSON { "k1": "<b64 32>", "k2": "<b64 32>" }.
+  // Opcional: se ausente, usa DATA_ENCRYPTION_KEY como chave unica "k1".
+  KEYRING: z.string().optional(),
+  DATA_ACTIVE_KID: z.string().default('k1'),
+  DATA_LEGACY_KID: z.string().optional(),
+  // E3: chave do blind index em versao 2 (rotacao do indice).
+  DATA_INDEX_KEY_V2: z.string().optional(),
+  DATA_INDEX_ACTIVE_V2: z.string().default('v2'),
+  DATA_INDEX_LOOKUP_BOTH: z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((v) =>
+      v === undefined ? true : typeof v === 'boolean' ? v : v !== 'false' && v !== '0',
+    ),
 
   HD_XPUB: z.string().min(1, 'HD_XPUB obrigatorio (xpub de conta m/44\'/60\'/0\')'),
   HD_DERIVATION_PREFIX: z.string().default('0'),
@@ -81,13 +95,74 @@ export const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 
+/**
+ * E1/E2: monta o keyring a partir do ambiente.
+ *
+ * Se KEYRING existir, usa ele (rotacao). Senao, cai para DATA_ENCRYPTION_KEY
+ * como chave unica "k1" - que e o estado antes da rotacao.
+ */
+function buildCrypto(env: Env): AppConfig['crypto'] {
+  let keyring: Record<string, Buffer>;
+  if (env.KEYRING && env.KEYRING.trim().length > 0) {
+    let parsed: Record<string, string>;
+    try {
+      parsed = JSON.parse(env.KEYRING) as Record<string, string>;
+    } catch {
+      throw new Error('KEYRING precisa ser JSON: { "k1": "<base64>", "k2": "<base64>" }');
+    }
+    keyring = {};
+    for (const [kid, b64] of Object.entries(parsed)) {
+      keyring[kid] = decodeKey(b64, `KEYRING.${kid}`);
+    }
+  } else {
+    keyring = { k1: decodeKey(env.DATA_ENCRYPTION_KEY, 'DATA_ENCRYPTION_KEY') };
+  }
+
+  const activeKid = env.DATA_ACTIVE_KID;
+  if (!keyring[activeKid]) {
+    throw new Error(
+      `DATA_ACTIVE_KID="${activeKid}" nao existe no keyring (disponiveis: ${Object.keys(keyring).join(', ')})`,
+    );
+  }
+  const legacyKid = env.DATA_LEGACY_KID ?? Object.keys(keyring)[0]!;
+  if (!keyring[legacyKid]) {
+    throw new Error(`DATA_LEGACY_KID="${legacyKid}" nao existe no keyring`);
+  }
+
+  const indexKey = decodeKey(env.DATA_INDEX_KEY, 'DATA_INDEX_KEY');
+  const indexKeyV2 = env.DATA_INDEX_KEY_V2
+    ? decodeKey(env.DATA_INDEX_KEY_V2, 'DATA_INDEX_KEY_V2')
+    : null;
+
+  return {
+    keyring,
+    activeKid,
+    legacyKid,
+    dataKey: keyring[legacyKid]!,
+    indexKey,
+    indexKeyV2,
+    indexKidV2: env.DATA_INDEX_ACTIVE_V2,
+    indexLookupBoth: env.DATA_INDEX_LOOKUP_BOTH,
+  };
+}
+
 export type AppConfig = {
   env: Env;
   server: { port: number; host: string; logLevel: string; adminToken: string; isProduction: boolean };
   database: { url: string; ssl: boolean };
   crypto: {
+    /** E1/E2: chaves de cifragem por id + chave ativa. */
+    keyring: Record<string, Buffer>;
+    activeKid: string;
+    legacyKid: string;
+    /** Compatibilidade: chave unica (primeira do keyring). */
     dataKey: Buffer;
+    /** Blind index: chave atual e, na rotacao, tambem a anterior. */
     indexKey: Buffer;
+    indexKeyV2: Buffer | null;
+    indexKidV2: string;
+    /** Consulta nas duas chaves durante a transicao. */
+    indexLookupBoth: boolean;
   };
   hd: {
     xpub: string;
@@ -160,10 +235,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       isProduction: env.NODE_ENV === 'production',
     },
     database: { url: env.DATABASE_URL, ssl: env.DATABASE_SSL },
-    crypto: {
-      dataKey: decodeKey(env.DATA_ENCRYPTION_KEY, 'DATA_ENCRYPTION_KEY'),
-      indexKey: decodeKey(env.DATA_INDEX_KEY, 'DATA_INDEX_KEY'),
-    },
+    crypto: buildCrypto(env),
     hd: {
       xpub: env.HD_XPUB,
       derivationPrefix: env.HD_DERIVATION_PREFIX,

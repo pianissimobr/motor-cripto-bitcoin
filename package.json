@@ -20,7 +20,8 @@
     "wallet:init": "tsx scripts/init-wallet.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify:monitor": "tsx scripts/verify-monitor.ts"
+    "verify:monitor": "tsx scripts/verify-monitor.ts",
+    "rotate:keys": "tsx scripts/rotate-keys.ts"
   },
   "dependencies": {
     "@fastify/helmet": "13.0.2",

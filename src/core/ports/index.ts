@@ -30,19 +30,28 @@ export type CreateCustomerInput = {
   nomeEnc: Buffer;
   emailEnc: Buffer;
   emailBidx: string;
+  /** E3: indice na versao 2 (null enquanto a rotacao nao alcanca este cadastro). */
+  emailBidxV2: string | null;
   nomeMasked: string;
   emailMasked: string;
   status?: CustomerStatus;
   /** Blind indexes dos prefixos do email (3..N chars) para busca parcial. */
   prefixBidxList: string[];
+  /** E3: prefixos na versao 2. */
+  prefixBidxListV2: string[];
 };
 
-/** Cliente como esta armazenado (cifrado). */
+/**
+ * Cliente como esta armazenado (cifrado).
+ * `emailBidx` = versao ativa do indice; `emailBidxAnterior` = a versao
+ * antiga, mantida durante a rotacao para a busca continuar funcionando.
+ */
 export type StoredCustomer = {
   id: string;
   nomeEnc: Buffer;
   emailEnc: Buffer;
   emailBidx: string;
+  emailBidxAnterior: string | null;
   nomeMasked: string;
   emailMasked: string;
   status: CustomerStatus;
@@ -52,12 +61,24 @@ export type StoredCustomer = {
 export interface CustomerRepository {
   create(input: CreateCustomerInput): Promise<StoredCustomer>;
   findById(id: string): Promise<StoredCustomer | null>;
-  /** Busca exata via blind index do email completo. */
-  findByEmailBidx(emailBidx: string): Promise<StoredCustomer | null>;
-  /** Busca por prefixo via tokens de prefixo (blind index por prefixo). */
-  searchByEmailPrefixBidx(prefixBidx: string, limit: number): Promise<StoredCustomer[]>;
+  /** E3: busca exata em qualquer versao do indice ativo. */
+  findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null>;
+  /** E3: busca por prefixo em qualquer versao do indice ativo. */
+  searchByEmailPrefixBidx(prefixBidxes: string[], limit: number): Promise<StoredCustomer[]>;
   list(limit: number, offset: number): Promise<StoredCustomer[]>;
   count(): Promise<number>;
+  /** E4: linhas paginadas para a re-cifragem em lote. */
+  listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]>;
+  /** E4: grava os blobs cifrados novamente. */
+  updateEncrypted(
+    id: string,
+    nomeEnc: Buffer,
+    emailEnc: Buffer,
+    emailBidx: string,
+    emailBidxV2: string | null,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
+  ): Promise<void>;
 }
 
 export type CreateRampProfileInput = {

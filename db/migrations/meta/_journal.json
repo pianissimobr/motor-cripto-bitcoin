@@ -36,6 +36,20 @@
       "when": 1792694153971,
       "tag": "0004_sweep_nonce",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792694413945,
+      "tag": "0005_index_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792694458678,
+      "tag": "0006_prefix_bidx_v2_len",
+      "breakpoints": true
     }
   ]
 }

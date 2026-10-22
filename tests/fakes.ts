@@ -49,6 +49,7 @@ export class FakeCustomerRepository implements CustomerRepository {
       nomeEnc: input.nomeEnc,
       emailEnc: input.emailEnc,
       emailBidx: input.emailBidx,
+      emailBidxAnterior: input.emailBidxV2 ? input.emailBidx : null,
       nomeMasked: input.nomeMasked,
       emailMasked: input.emailMasked,
       status: input.status ?? 'ativo',
@@ -63,12 +64,57 @@ export class FakeCustomerRepository implements CustomerRepository {
     return r ? { ...r } : null;
   }
 
-  async findByEmailBidx(emailBidx: string): Promise<StoredCustomer | null> {
-    return this.rows.find((r) => r.emailBidx === emailBidx) ?? null;
+  /** Guardamos tambem o indice anterior para simular a rotacao. */
+  private readonly anteriores = new Map<string, string>();
+
+  async findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null> {
+    const r = this.rows.find(
+      (c) =>
+        emailBidxes.includes(c.emailBidx) ||
+        (c.emailBidxAnterior !== null && emailBidxes.includes(c.emailBidxAnterior)),
+    );
+    return r ? { ...r } : null;
   }
 
-  async searchByEmailPrefixBidx(prefixBidx: string, limit: number): Promise<StoredCustomer[]> {
-    return this.rows.filter((r) => r.emailBidx.startsWith(prefixBidx)).slice(0, limit);
+  async searchByEmailPrefixBidx(
+    prefixBidxes: string[],
+    limit: number,
+  ): Promise<StoredCustomer[]> {
+    const out: StoredCustomer[] = [];
+    for (const c of this.rows) {
+      const algum =
+        prefixBidxes.some((b) => c.emailBidx.startsWith(b)) ||
+        (c.emailBidxAnterior !== null &&
+          prefixBidxes.some((b) => c.emailBidxAnterior!.startsWith(b)));
+      if (algum) out.push({ ...c });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  async listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]> {
+    const sorted = this.rows.slice().sort((a, b) => a.id.localeCompare(b.id));
+    const inicio = afterId
+      ? Math.max(0, sorted.findIndex((r) => r.id > afterId))
+      : 0;
+    return sorted.slice(inicio, inicio + limit).map((r) => ({ ...r }));
+  }
+
+  async updateEncrypted(
+    id: string,
+    nomeEnc: Buffer,
+    emailEnc: Buffer,
+    emailBidx: string,
+    emailBidxV2: string | null,
+    _prefixBidxList: string[],
+    _prefixBidxListV2: string[],
+  ): Promise<void> {
+    const r = this.rows.find((x) => x.id === id);
+    if (!r) return;
+    r.nomeEnc = nomeEnc;
+    r.emailEnc = emailEnc;
+    r.emailBidx = emailBidxV2 ?? emailBidx;
+    r.emailBidxAnterior = emailBidxV2 ? emailBidx : null;
   }
 
   async list(limit: number, offset: number): Promise<StoredCustomer[]> {

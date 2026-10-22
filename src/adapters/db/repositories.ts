@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import type { Database } from './client.js';
 import {
@@ -78,7 +78,8 @@ function toStoredCustomer(row: typeof cadastros.$inferSelect): StoredCustomer {
     id: row.id,
     nomeEnc: dec(row.nomeEnc),
     emailEnc: dec(row.emailEnc),
-    emailBidx: row.emailBidx,
+    emailBidx: row.emailBidxV2 ?? row.emailBidx,
+    emailBidxAnterior: row.emailBidxV2 ? row.emailBidx : null,
     nomeMasked: row.nomeMasked,
     emailMasked: row.emailMasked,
     status: row.status as CustomerStatus,
@@ -98,6 +99,7 @@ class DrizzleCustomerRepository implements CustomerRepository {
           nomeEnc: enc(input.nomeEnc),
           emailEnc: enc(input.emailEnc),
           emailBidx: input.emailBidx,
+          emailBidxV2: input.emailBidxV2,
           nomeMasked: input.nomeMasked,
           emailMasked: input.emailMasked,
           status: input.status ?? 'ativo',
@@ -105,15 +107,17 @@ class DrizzleCustomerRepository implements CustomerRepository {
         .returning();
       if (!row) throw new Error('falha ao inserir cadastro');
 
-      if (input.prefixBidxList.length > 0) {
+      const prefixos = [
+        ...input.prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
+        ...input.prefixBidxListV2.map((prefixBidx) => ({
+          prefixBidx: `v2:${prefixBidx}`,
+          prefixBidxV2: prefixBidx,
+        })),
+      ];
+      if (prefixos.length > 0) {
         await tx
           .insert(cadastrosPrefixos)
-          .values(
-            input.prefixBidxList.map((prefixBidx) => ({
-              prefixBidx,
-              clienteId: input.id,
-            })),
-          )
+          .values(prefixos.map((p) => ({ ...p, clienteId: input.id })))
           .onConflictDoNothing();
       }
       return toStoredCustomer(row);
@@ -125,24 +129,103 @@ class DrizzleCustomerRepository implements CustomerRepository {
     return row ? toStoredCustomer(row) : null;
   }
 
-  async findByEmailBidx(emailBidx: string): Promise<StoredCustomer | null> {
+  /**
+   * E3: busca exata tolerante a rotacao.
+   *
+   * Consulta as DUAS colunas (ativa e anterior) em vez de `coalesce`:
+   * durante a transicao o indice procurado pode ser o novo enquanto a linha
+   * ainda guarda o antigo em `email_bidx` (e vice-versa).
+   */
+  async findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null> {
+    if (emailBidxes.length === 0) return null;
     const [row] = await this.db
       .select()
       .from(cadastros)
-      .where(eq(cadastros.emailBidx, emailBidx))
+      .where(
+        or(
+          inArray(cadastros.emailBidxV2, emailBidxes),
+          inArray(cadastros.emailBidx, emailBidxes),
+        ),
+      )
       .limit(1);
     return row ? toStoredCustomer(row) : null;
   }
 
-  async searchByEmailPrefixBidx(prefixBidx: string, limit: number): Promise<StoredCustomer[]> {
+  async searchByEmailPrefixBidx(
+    prefixBidxes: string[],
+    limit: number,
+  ): Promise<StoredCustomer[]> {
+    if (prefixBidxes.length === 0) return [];
+    // Os tokens v2 sao gravados com prefixo "v2:" para nao colidir no PK.
+    const chaves = [
+      ...prefixBidxes.map((b) => b),
+      ...prefixBidxes.map((b) => `v2:${b}`),
+    ];
     const rows = await this.db
       .select({ c: cadastros })
       .from(cadastrosPrefixos)
       .innerJoin(cadastros, eq(cadastrosPrefixos.clienteId, cadastros.id))
-      .where(eq(cadastrosPrefixos.prefixBidx, prefixBidx))
+      .where(inArray(cadastrosPrefixos.prefixBidx, chaves))
       .orderBy(asc(cadastros.criadoEm))
       .limit(limit);
-    return rows.map((r) => toStoredCustomer(r.c));
+    const vistos = new Set<string>();
+    const saida: StoredCustomer[] = [];
+    for (const r of rows) {
+      if (vistos.has(r.c.id)) continue;
+      vistos.add(r.c.id);
+      saida.push(toStoredCustomer(r.c));
+    }
+    return saida;
+  }
+
+  /** E4: pagina por id para a re-cifragem em lote. */
+  async listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]> {
+    const rows = afterId
+      ? await this.db
+          .select()
+          .from(cadastros)
+          .where(gt(cadastros.id, afterId))
+          .orderBy(asc(cadastros.id))
+          .limit(limit)
+      : await this.db
+          .select()
+          .from(cadastros)
+          .orderBy(asc(cadastros.id))
+          .limit(limit);
+    return rows.map(toStoredCustomer);
+  }
+
+  /** E4: regrava os blobs e os indices. */
+  async updateEncrypted(
+    id: string,
+    nomeEnc: Buffer,
+    emailEnc: Buffer,
+    emailBidx: string,
+    emailBidxV2: string | null,
+    prefixBidxList: string[],
+    prefixBidxListV2: string[],
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(cadastros)
+        .set({ nomeEnc: enc(nomeEnc), emailEnc: enc(emailEnc), emailBidx, emailBidxV2 })
+        .where(eq(cadastros.id, id));
+
+      await tx.delete(cadastrosPrefixos).where(eq(cadastrosPrefixos.clienteId, id));
+      const prefixos = [
+        ...prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
+        ...prefixBidxListV2.map((prefixBidx) => ({
+          prefixBidx: `v2:${prefixBidx}`,
+          prefixBidxV2: prefixBidx,
+        })),
+      ];
+      if (prefixos.length > 0) {
+        await tx
+          .insert(cadastrosPrefixos)
+          .values(prefixos.map((p) => ({ ...p, clienteId: id })))
+          .onConflictDoNothing();
+      }
+    });
   }
 
   async list(limit: number, offset: number): Promise<StoredCustomer[]> {
