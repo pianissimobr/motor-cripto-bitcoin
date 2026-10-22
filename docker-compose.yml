@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: motor_cripto_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: motor
+      POSTGRES_PASSWORD: motor_dev_password
+      POSTGRES_DB: motor_cripto
+    ports:
+      - "5432:5432"
+    volumes:
+      - motor_cripto_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motor -d motor_cripto"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  motor_cripto_pgdata:

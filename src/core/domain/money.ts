@@ -1,0 +1,96 @@
+/**
+ * Aritmetica de dinheiro em inteiros. Sem float, sem `toFixed`, sem `parseFloat`
+ * em valores que viram saldo.
+ */
+
+/** Converte "123,45" | "123.45" (BRL ou USD) em centavos. */
+export function fiatToCents(input: string | number): number {
+  const normalized =
+    typeof input === 'number' ? input.toFixed(2) : input.trim().replace(/\s/g, '').replace(',', '.');
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+    throw new Error(`valor invalido: "${String(input)}" (use ate 2 casas decimais)`);
+  }
+  const cents = Math.round(Number(normalized) * 100);
+  if (!Number.isSafeInteger(cents)) throw new Error('valor fora do intervalo seguro');
+  return cents;
+}
+
+/** Converte centavos para string no formato brasileiro: 12345 -> "123,45". */
+export function centsToFiat(cents: number): string {
+  const sign = cents < 0 ? '-' : '';
+  const abs = Math.abs(cents);
+  return `${sign}${Math.floor(abs / 100)},${String(abs % 100).padStart(2, '0')}`;
+}
+
+/**
+ * Centavos -> unidades ISO-4217 em unidades minimas ("minor units").
+ *
+ * ATENCAO: a Ramp usa "unidades" no mesmo sentido de unidades minimas:
+ * "10.00" EUR -> "1000". Logo 15.000 centavos (R$ 150,00) = "15000".
+ */
+export function centsToUnits(cents: number): string {
+  return String(cents);
+}
+
+/** Unidades ISO-4217 (minimas) -> centavos. "10000" -> 10000 centavos. */
+export function unitsToCents(units: string): number {
+  if (!/^\d+$/.test(units)) throw new Error(`unidades invalidas: "${units}"`);
+  const cents = Number(units);
+  if (!Number.isSafeInteger(cents)) throw new Error('valor fora do intervalo seguro');
+  return cents;
+}
+
+/** Base units -> string decimal, sem float. 1000000n (6 decimais) -> "1". */
+export function baseUnitsToDecimal(value: bigint, decimals: number): string {
+  if (decimals === 0) return value.toString();
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(decimals);
+  const whole = abs / divisor;
+  const fraction = abs % divisor;
+  const fractionStr = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return `${negative ? '-' : ''}${whole}${fractionStr ? `.${fractionStr}` : ''}`;
+}
+
+/** String decimal -> base units, sem float. "1.5" (6 decimais) -> 1500000n. */
+export function decimalToBaseUnits(input: string, decimals: number): bigint {
+  const normalized = input.trim().replace(',', '.');
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    throw new Error(`valor decimal invalido: "${input}"`);
+  }
+  const [whole = '0', fraction = ''] = normalized.split('.');
+  if (fraction.length > decimals) {
+    throw new Error(`valor com mais de ${decimals} casas decimais: "${input}"`);
+  }
+  const padded = fraction.padEnd(decimals, '0');
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(padded || '0');
+}
+
+/** Divisao inteira com arredondamento (half-up), sem float. */
+export function divRound(a: bigint, b: bigint): bigint {
+  if (b === 0n) throw new Error('divisao por zero');
+  const negative = (a < 0n) !== (b < 0n);
+  const absA = a < 0n ? -a : a;
+  const absB = b < 0n ? -b : b;
+  const result = (absA * 2n + absB) / (absB * 2n);
+  return negative ? -result : result;
+}
+
+/**
+ * Percentual de tolerancia aplicado em base units.
+ *
+ * `tolerancePct` e um percentual (1 = 1%). A aritmetica e feita em bigint
+ * com 4 casas de precisao no percentual para nao perder divisao inteira.
+ */
+export function withinTolerance(
+  expected: bigint,
+  received: bigint,
+  tolerancePct: number,
+): boolean {
+  if (expected <= 0n) return received >= 0n;
+  const diff = received >= expected ? received - expected : expected - received;
+  // limit = expected * pct / 100, com pct escalado por 10.000
+  const scaled = BigInt(Math.round(tolerancePct * 10_000));
+  const limit = (expected * scaled) / 1_000_000n;
+  return diff <= limit;
+}
