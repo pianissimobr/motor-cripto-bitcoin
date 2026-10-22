@@ -1,5 +1,7 @@
-import { and, asc, count, desc, eq, gt, inArray, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
+import { checksumAddress, normalizeAddress } from '../../core/domain/address.js';
+import { HD_INDEX_SCOPE } from '../../core/hd/index-scope.js';
 import type { Database } from './client.js';
 import {
   cadastrosPrefixos,
@@ -68,6 +70,21 @@ const AUDIT_LOCK_ID = 7_315_902_411;
 
 const enc = (buf: Buffer): string => buf.toString('base64');
 const dec = (value: string): Buffer => Buffer.from(value, 'base64');
+
+/**
+ * O driver `postgres.js` devolve `numeric`/`bigint` do Postgres como string
+ * (mesmo para `sum(integer)` e `count(*)`). Sem a conversao explicita,
+ * `total <= 0n` compara string com bigint e lanca em runtime.
+ */
+function toBigInt(value: bigint | string | number | null | undefined): bigint {
+  if (value === null || value === undefined) return 0n;
+  return typeof value === 'bigint' ? value : BigInt(value);
+}
+
+function toNumber(value: bigint | string | number | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  return typeof value === 'number' ? value : Number(value);
+}
 
 /* ------------------------------------------------------------------ */
 /* Customers                                                           */
@@ -240,7 +257,7 @@ class DrizzleCustomerRepository implements CustomerRepository {
 
   async count(): Promise<number> {
     const [row] = await this.db.select({ n: count() }).from(cadastros);
-    return row?.n ?? 0;
+    return toNumber(row?.n);
   }
 }
 
@@ -252,9 +269,9 @@ function toRampProfile(row: typeof rampProfiles.$inferSelect): RampProfile {
   return {
     id: row.id,
     label: row.label,
-    chain: row.chain,
+    chain: row.chain.toLowerCase(),
     asset: row.asset,
-    tokenContract: row.tokenContract,
+    tokenContract: row.tokenContract.toLowerCase(),
     decimals: row.decimals,
     fiatCurrency: row.fiatCurrency,
     baseUrl: row.baseUrl,
@@ -276,9 +293,9 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
       .insert(rampProfiles)
       .values({
         label: input.label,
-        chain: input.chain,
+        chain: input.chain.toLowerCase(),
         asset: input.asset,
-        tokenContract: input.tokenContract,
+        tokenContract: normalizeAddress(input.tokenContract),
         decimals: input.decimals,
         fiatCurrency: input.fiatCurrency,
         baseUrl: input.baseUrl,
@@ -320,7 +337,8 @@ function toColdWallet(row: typeof carteirasFrias.$inferSelect): ColdWallet {
   return {
     id: row.id,
     label: row.label,
-    address: row.address,
+    // Armazenado lowercase; exibido em checksum EIP-55.
+    address: checksumAddress(row.address),
     chain: row.chain,
     criadoEm: row.criadoEm,
   };
@@ -332,7 +350,11 @@ class DrizzleColdWalletRepository implements ColdWalletRepository {
   async create(input: CreateColdWalletInput): Promise<ColdWallet> {
     const [row] = await this.db
       .insert(carteirasFrias)
-      .values({ label: input.label, address: input.address, chain: input.chain })
+      .values({
+        label: input.label,
+        address: normalizeAddress(input.address),
+        chain: input.chain.toLowerCase(),
+      })
       .returning();
     if (!row) throw new Error('falha ao criar carteira fria');
     return toColdWallet(row);
@@ -351,7 +373,7 @@ class DrizzleColdWalletRepository implements ColdWalletRepository {
     const [row] = await this.db
       .select()
       .from(carteirasFrias)
-      .where(eq(carteirasFrias.address, address.toLowerCase()))
+      .where(eq(carteirasFrias.address, normalizeAddress(address)))
       .limit(1);
     return row ? toColdWallet(row) : null;
   }
@@ -376,7 +398,6 @@ function toPaymentLink(row: typeof linksGerados.$inferSelect): PaymentLink {
     rampProfileId: row.rampProfileId,
     chain: row.chain,
     asset: row.asset,
-    tokenContract: row.tokenContract,
     decimals: row.decimals,
     moedaFiat: row.moedaFiat,
     valorFiatCentavos: row.valorFiatCentavos,
@@ -385,9 +406,13 @@ function toPaymentLink(row: typeof linksGerados.$inferSelect): PaymentLink {
     expectedBaseUnits: row.expectedBaseUnits,
     indiceHd: row.indiceHd,
     caminhoDerivacao: row.caminhoDerivacao,
-    enderecoDeposito: row.enderecoDeposito,
+    // Armazenado lowercase; exibido em checksum EIP-55.
+    enderecoDeposito: checksumAddress(row.enderecoDeposito),
     carteiraFriaId: row.carteiraFriaId,
-    carteiraFriaEndereco: row.carteiraFriaEndereco,
+    carteiraFriaEndereco: row.carteiraFriaEndereco
+      ? checksumAddress(row.carteiraFriaEndereco)
+      : null,
+    tokenContract: row.tokenContract.toLowerCase(),
     rampUrl: row.rampUrl,
     status: row.status as LinkStatus,
     expiraEm: row.expiraEm,
@@ -407,7 +432,7 @@ class DrizzleLinkRepository implements LinkRepository {
           rampProfileId: input.rampProfileId,
           chain: input.chain,
           asset: input.asset,
-          tokenContract: input.tokenContract,
+          tokenContract: normalizeAddress(input.tokenContract),
           decimals: input.decimals,
           moedaFiat: input.moedaFiat,
           valorFiatCentavos: input.valorFiatCentavos,
@@ -416,9 +441,11 @@ class DrizzleLinkRepository implements LinkRepository {
           expectedBaseUnits: input.expectedBaseUnits,
           indiceHd: input.indiceHd,
           caminhoDerivacao: input.caminhoDerivacao,
-          enderecoDeposito: input.enderecoDeposito,
+          enderecoDeposito: normalizeAddress(input.enderecoDeposito),
           carteiraFriaId: input.carteiraFriaId,
-          carteiraFriaEndereco: input.carteiraFriaEndereco,
+          carteiraFriaEndereco: input.carteiraFriaEndereco
+            ? normalizeAddress(input.carteiraFriaEndereco)
+            : null,
           rampUrl: input.rampUrl,
           status: input.status,
           expiraEm: input.expiraEm,
@@ -434,7 +461,7 @@ class DrizzleLinkRepository implements LinkRepository {
         .set({ linkId: row.id })
         .where(
           and(
-            eq(hdIndices.scope, input.rampProfileId),
+            eq(hdIndices.scope, HD_INDEX_SCOPE),
             eq(hdIndices.indice, input.indiceHd),
           ),
         );
@@ -455,7 +482,7 @@ class DrizzleLinkRepository implements LinkRepository {
     const [row] = await this.db
       .select()
       .from(linksGerados)
-      .where(eq(linksGerados.enderecoDeposito, address.toLowerCase()))
+      .where(eq(linksGerados.enderecoDeposito, normalizeAddress(address)))
       .limit(1);
     return row ? toPaymentLink(row) : null;
   }
@@ -513,10 +540,10 @@ function toPayment(row: typeof linksPagos.$inferSelect): Payment {
   return {
     id: row.id,
     linkId: row.linkId,
-    txHash: row.txHash,
+    txHash: row.txHash.toLowerCase(),
     logIndex: row.logIndex,
-    deAddress: row.deAddress,
-    paraAddress: row.paraAddress,
+    deAddress: checksumAddress(row.deAddress),
+    paraAddress: checksumAddress(row.paraAddress),
     token: row.token,
     valorBaseUnits: row.valorBaseUnits,
     confirmacoes: row.confirmacoes,
@@ -531,10 +558,11 @@ class DrizzlePaymentRepository implements PaymentRepository {
   constructor(private readonly db: Database) {}
 
   async upsert(input: UpsertPaymentInput): Promise<Payment> {
+    const txHash = input.txHash.toLowerCase();
     const existing = await this.db
       .select()
       .from(linksPagos)
-      .where(and(eq(linksPagos.txHash, input.txHash), eq(linksPagos.logIndex, input.logIndex)))
+      .where(and(eq(linksPagos.txHash, txHash), eq(linksPagos.logIndex, input.logIndex)))
       .limit(1);
 
     if (existing.length > 0) {
@@ -560,10 +588,10 @@ class DrizzlePaymentRepository implements PaymentRepository {
       .insert(linksPagos)
       .values({
         linkId: input.linkId,
-        txHash: input.txHash,
+        txHash,
         logIndex: input.logIndex,
-        deAddress: input.deAddress,
-        paraAddress: input.paraAddress,
+        deAddress: normalizeAddress(input.deAddress),
+        paraAddress: normalizeAddress(input.paraAddress),
         token: input.token,
         valorBaseUnits: input.valorBaseUnits,
         bloco: input.bloco,
@@ -578,14 +606,54 @@ class DrizzlePaymentRepository implements PaymentRepository {
       const [again] = await this.db
         .select()
         .from(linksPagos)
-        .where(
-          and(eq(linksPagos.txHash, input.txHash), eq(linksPagos.logIndex, input.logIndex)),
-        )
+        .where(and(eq(linksPagos.txHash, txHash), eq(linksPagos.logIndex, input.logIndex)))
         .limit(1);
       if (again) return toPayment(again);
       throw new Error('falha ao registrar pagamento');
     }
     return toPayment(row);
+  }
+
+  /**
+   * Confirma o pagamento e cria o credito NA MESMA transacao.
+   *
+   * Separar as duas escritas abria uma janela em que um crash deixava o
+   * pagamento confirmado sem credito (dinheiro do cliente preso). O
+   * `onConflictDoNothing` do credito mantem a operacao idempotente.
+   */
+  async confirm(input: {
+    paymentId: string;
+    confirmacoes: number;
+    credit: CreateCreditInput | null;
+  }): Promise<{ payment: Payment; creditCreated: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(linksPagos)
+        .set({ status: 'confirmado', confirmadoEm: new Date(), confirmacoes: input.confirmacoes })
+        .where(eq(linksPagos.id, input.paymentId))
+        .returning();
+      if (!updated) throw new Error(`pagamento nao encontrado: ${input.paymentId}`);
+
+      let creditCreated = false;
+      if (input.credit) {
+        const inserted = await tx
+          .insert(creditosCliente)
+          .values({
+            clienteId: input.credit.clienteId,
+            linkId: input.credit.linkId,
+            pagamentoId: input.credit.pagamentoId,
+            valorBaseUnits: input.credit.valorBaseUnits,
+            valorCentavos: input.credit.valorCentavos,
+            moeda: input.credit.moeda,
+            status: input.credit.status,
+          })
+          .onConflictDoNothing()
+          .returning({ id: creditosCliente.id });
+        creditCreated = inserted.length > 0;
+      }
+
+      return { payment: toPayment(updated), creditCreated };
+    });
   }
 
   async findByTxHash(txHash: string): Promise<Payment | null> {
@@ -616,12 +684,38 @@ class DrizzlePaymentRepository implements PaymentRepository {
     return rows.map(toPayment);
   }
 
+  /**
+   * Confirmados cujo credito nao foi criado OU cujo link nao chegou ao
+   * status final. Cobre o crash entre a confirmacao e a transicao/credito.
+   */
+  async listForReconciliation(limit: number): Promise<Payment[]> {
+    const rows = await this.db
+      .select({ p: linksPagos })
+      .from(linksPagos)
+      .innerJoin(linksGerados, eq(linksPagos.linkId, linksGerados.id))
+      .leftJoin(creditosCliente, eq(creditosCliente.pagamentoId, linksPagos.id))
+      .where(
+        and(
+          eq(linksPagos.status, 'confirmado'),
+          or(
+            isNull(creditosCliente.id),
+            notInArray(linksGerados.status, ['pago', 'parcial', 'pago_sem_gas', 'movido']),
+          ),
+        ),
+      )
+      .orderBy(asc(linksPagos.bloco))
+      .limit(limit);
+    return rows.map((r) => toPayment(r.p));
+  }
+
   async sumConfirmedByLink(linkId: string): Promise<bigint> {
     const [row] = await this.db
-      .select({ total: sql<bigint>`coalesce(sum(${linksPagos.valorBaseUnits}), 0)` })
+      .select({
+        total: sql<string>`coalesce(sum(${linksPagos.valorBaseUnits}), 0)::text`,
+      })
       .from(linksPagos)
       .where(and(eq(linksPagos.linkId, linkId), eq(linksPagos.status, 'confirmado')));
-    return row?.total ?? 0n;
+    return toBigInt(row?.total);
   }
 
   async updateConfirmations(paymentId: string, confirmacoes: number): Promise<void> {
@@ -730,12 +824,14 @@ class DrizzleCreditRepository implements CreditRepository {
 
   async sumByCustomer(clienteId: string): Promise<number> {
     const [row] = await this.db
-      .select({ total: sql<number | null>`sum(${creditosCliente.valorCentavos})` })
+      .select({
+        total: sql<string>`coalesce(sum(${creditosCliente.valorCentavos}), 0)::text`,
+      })
       .from(creditosCliente)
       .where(
         and(eq(creditosCliente.clienteId, clienteId), eq(creditosCliente.status, 'liberado')),
       );
-    return row?.total ?? 0;
+    return toNumber(row?.total);
   }
 
   async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {
@@ -772,10 +868,10 @@ function toTransfer(row: typeof movimentosInternos.$inferSelect): InternalTransf
   return {
     id: row.id,
     linkId: row.linkId,
-    deAddress: row.deAddress,
-    paraAddress: row.paraAddress,
+    deAddress: checksumAddress(row.deAddress),
+    paraAddress: row.paraAddress ? checksumAddress(row.paraAddress) : row.paraAddress,
     valorBaseUnits: row.valorBaseUnits,
-    txHash: row.txHash,
+    txHash: row.txHash ? row.txHash.toLowerCase() : null,
     status: row.status as TransferStatus,
     erro: row.erro,
     chain: row.chain,
@@ -793,10 +889,10 @@ class DrizzleTransferRepository implements TransferRepository {
       .insert(movimentosInternos)
       .values({
         linkId: input.linkId,
-        deAddress: input.deAddress,
-        paraAddress: input.paraAddress,
+        deAddress: normalizeAddress(input.deAddress),
+        paraAddress: input.paraAddress ? normalizeAddress(input.paraAddress) : '',
         valorBaseUnits: input.valorBaseUnits,
-        txHash: input.txHash ?? null,
+        txHash: input.txHash ? input.txHash.toLowerCase() : null,
         status: input.status,
         erro: input.erro ?? null,
         chain: input.chain,
@@ -821,12 +917,20 @@ class DrizzleTransferRepository implements TransferRepository {
       .update(movimentosInternos)
       .set({
         ...(patch.status !== undefined ? { status: patch.status } : {}),
-        ...(patch.txHash !== undefined ? { txHash: patch.txHash } : {}),
+        ...(patch.txHash !== undefined
+          ? { txHash: patch.txHash ? patch.txHash.toLowerCase() : patch.txHash }
+          : {}),
         ...(patch.erro !== undefined ? { erro: patch.erro } : {}),
         ...(patch.valorBaseUnits !== undefined
           ? { valorBaseUnits: patch.valorBaseUnits }
           : {}),
-        ...(patch.paraAddress !== undefined ? { paraAddress: patch.paraAddress } : {}),
+        ...(patch.paraAddress !== undefined
+          ? {
+              paraAddress: patch.paraAddress
+                ? normalizeAddress(patch.paraAddress)
+                : patch.paraAddress,
+            }
+          : {}),
         ...(patch.bloco !== undefined ? { bloco: patch.bloco } : {}),
       })
       .where(eq(movimentosInternos.id, id));
@@ -1020,20 +1124,26 @@ class DrizzleAnchorRepository implements AnchorRepository {
 class DrizzleIndexAllocator implements IndexAllocator {
   constructor(private readonly db: Database) {}
 
-  async allocate(scope: string): Promise<number> {
+  async allocate(scope: string, maxIndex?: number): Promise<number> {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         return await this.db.transaction(async (tx) => {
+          // Lock global: o endereco depende so do indice, nao do perfil.
           await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${scope}))`);
           const [row] = await tx
-            .insert(hdIndices)
-            .values({
-              scope,
-              indice: sql`(select coalesce(max(indice) + 1, 0) from ${hdIndices} where scope = ${scope})`,
+            .select({
+              // Considera TODAS as linhas: bancos antigos alocavam por perfil.
+              next: sql<string>`coalesce(max(${hdIndices.indice}) + 1, 0)::text`,
             })
-            .returning();
-          if (!row) throw new Error('falha ao alocar indice HD');
-          return row.indice;
+            .from(hdIndices);
+          const next = toNumber(row?.next);
+          if (maxIndex !== undefined && next > maxIndex) {
+            throw new Error(
+              `limite de indices HD atingido: proximo=${next}, maximo=${maxIndex}`,
+            );
+          }
+          await tx.insert(hdIndices).values({ scope, indice: next });
+          return next;
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

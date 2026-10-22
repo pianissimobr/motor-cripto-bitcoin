@@ -149,7 +149,49 @@ export class Sweeper {
             const saldo = (await token.getFunction('balanceOf')(link.enderecoDeposito)) as bigint;
             if (saldo <= 0n) continue;
 
-            // Ha saldo preso: ressuscita o link para a fila de sweep.
+            // Saldo sem pagamento confirmado nao pode virar credito nem
+            // 'pago'. Isso moveria dinheiro sem lastro contabil e poderia
+            // creditar um cliente que nunca pagou. Deixa o saldo visivel
+            // para conciliacao manual.
+            const total = await repos.payments.sumConfirmedByLink(link.id);
+            if (total <= 0n) {
+              const jaSinalizado = (await repos.transfers.findByLink(link.id)).some(
+                (t) => t.erro === 'saldo sem pagamento conciliado',
+              );
+              logger.error(
+                { linkId: link.id, saldo: saldo.toString(), token: link.tokenContract },
+                'saldo preso SEM pagamento conciliado: nao sera varrido automaticamente',
+              );
+              if (!jaSinalizado) {
+                await repos.transfers.create({
+                  linkId: link.id,
+                  deAddress: link.enderecoDeposito,
+                  paraAddress: '',
+                  valorBaseUnits: saldo,
+                  status: 'falhou',
+                  erro: 'saldo sem pagamento conciliado',
+                  chain,
+                  bloco: null,
+                  nonce: null,
+                });
+                await repos.audit.record({
+                  ator: 'worker',
+                  acao: 'sweep.saldo_sem_pagamento',
+                  entidade: 'link',
+                  entidadeId: link.id,
+                  detalhes: {
+                    statusAnterior: status,
+                    saldoBaseUnits: saldo.toString(),
+                    token: link.tokenContract,
+                    chain,
+                  },
+                });
+              }
+              continue;
+            }
+
+            // Ha saldo preso COM pagamento conciliado: ressuscita o link
+            // para a fila de sweep.
             const novo = await this.recomputeStatus(link);
             await repos.links.updateStatus(link.id, novo);
             result.resgatados++;
@@ -255,16 +297,43 @@ export class Sweeper {
 
     const sponsor = this.deps.gasSponsor;
 
-    const transfer = await repos.transfers.create({
-      linkId: link.id,
-      deAddress: link.enderecoDeposito,
-      paraAddress: '',
-      valorBaseUnits: saldo,
-      status: 'pendente',
-      chain: link.chain,
-      bloco: null,
-      nonce: nonceConfirmado,
-    });
+    // Reutiliza a MESMA linha para (link, nonce). Criar outra estourava o
+    // unique `movimentos_internos_link_nonce_uq` em toda retentativa apos
+    // falha antes do broadcast.
+    const existente = (await repos.transfers.findByLink(link.id)).find(
+      (t) => t.nonce === nonceConfirmado,
+    );
+    let transfer;
+    if (existente) {
+      await repos.transfers.update(existente.id, {
+        status: 'pendente',
+        txHash: null,
+        erro: null,
+        valorBaseUnits: saldo,
+        paraAddress: '',
+        bloco: null,
+      });
+      transfer = {
+        ...existente,
+        status: 'pendente' as const,
+        txHash: null,
+        erro: null,
+        valorBaseUnits: saldo,
+        paraAddress: '',
+        bloco: null,
+      };
+    } else {
+      transfer = await repos.transfers.create({
+        linkId: link.id,
+        deAddress: link.enderecoDeposito,
+        paraAddress: '',
+        valorBaseUnits: saldo,
+        status: 'pendente',
+        chain: link.chain,
+        bloco: null,
+        nonce: nonceConfirmado,
+      });
+    }
 
     try {
       const needsGas = (await provider.getBalance(link.enderecoDeposito)) < BigInt(21000) * (maxFeePerGas ?? gasPrice ?? 0n);

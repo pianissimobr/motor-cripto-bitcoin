@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { getAddress } from 'ethers';
+import { checksumAddress } from '../domain/address.js';
+import { HD_INDEX_SCOPE } from '../hd/index-scope.js';
 import { divRound } from '../domain/money.js';
 import type { PaymentLink, RampProfile } from '../domain/types.js';
 import type { HdWallet } from '../hd/hd-wallet.js';
@@ -21,6 +22,7 @@ export class LinkService {
       hdWallet: HdWallet;
       logger: Logger;
       ttlHours: number;
+      maxIndex: number;
     },
   ) {}
 
@@ -51,9 +53,11 @@ export class LinkService {
 
     const destino = await this.resolveColdWallet(input, profile);
 
-    // Alocacao atomica de indice: um endereco derivado nunca e reutilizado.
-    const index = await repos.indices.allocate(profile.id);
-    const enderecoDeposito = this.deps.hdWallet.deriveAddress(index);
+    // Alocacao atomica GLOBAL: o endereco depende so do indice HD, nao do
+    // perfil Ramp. Usar `profile.id` fazia dois perfis derivarem o mesmo
+    // endereco (indice 0 em ambos).
+    const index = await repos.indices.allocate(HD_INDEX_SCOPE, this.deps.maxIndex);
+    const enderecoDeposito = checksumAddress(this.deps.hdWallet.deriveAddress(index));
     const caminhoDerivacao = this.deps.hdWallet.fullPath(index);
 
     const taxa = profile.taxaTokenPorFiatBaseUnits;
@@ -137,7 +141,7 @@ export class LinkService {
           `carteira fria da chain "${wallet.chain}" incompativel com o perfil "${profile.chain}"`,
         );
       }
-      return { id: wallet.id, endereco: wallet.address };
+      return { id: wallet.id, endereco: checksumAddress(wallet.address) };
     }
     if (input.coldWalletAddress) {
       if (!/^0x[a-fA-F0-9]{40}$/.test(input.coldWalletAddress)) {
@@ -149,7 +153,7 @@ export class LinkService {
       );
       return {
         id: existing?.id ?? null,
-        endereco: getAddress(input.coldWalletAddress),
+        endereco: checksumAddress(input.coldWalletAddress),
       };
     }
     // fallback: carteira fria cadastrada para a chain do perfil
@@ -163,7 +167,7 @@ export class LinkService {
           'informe coldWalletId ou coldWalletAddress',
       );
     }
-    return { id: candidate.id, endereco: candidate.address };
+    return { id: candidate.id, endereco: checksumAddress(candidate.address) };
   }
 
   async get(id: string): Promise<PaymentLink | null> {

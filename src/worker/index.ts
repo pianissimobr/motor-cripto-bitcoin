@@ -1,37 +1,47 @@
 import { bootstrap } from '../bootstrap.js';
+import { createLockClient } from '../adapters/db/client.js';
 
 /**
  * Worker: monitor on-chain + varredura para a carteira fria.
  *
- * Roda em processo separado da API. Um advisory lock do Postgres garante
- * que apenas uma instancia do worker exista por banco (evita sweep duplo).
+ * Roda em processo separado da API. Um advisory lock de SESSAO garante que
+ * apenas uma instancia do worker exista por banco (evita sweep duplo). O
+ * lock usa uma conexao dedicada, sem idle_timeout: no pool normal a sessao
+ * podia ser fechada e o lock liberado sem ninguem perceber.
  */
 
 const LOCK_ID = 918_273_645;
 
 async function main(): Promise<void> {
-  const { config, logger, db, motor, close } = await bootstrap();
+  const { config, logger, motor, close } = await bootstrap();
 
-  const sql = db.sql;
+  const lockSql = createLockClient(config.database.url, config.database.ssl);
   let lockHeld = false;
 
   const acquireLock = async (): Promise<boolean> => {
-    const rows = await sql`select pg_try_advisory_lock(${LOCK_ID}) as acquired`;
+    const rows = await lockSql`select pg_try_advisory_lock(${LOCK_ID}) as acquired`;
     lockHeld = Boolean(rows[0]?.acquired);
     return lockHeld;
   };
 
   if (!(await acquireLock())) {
     logger.error('outro worker ja esta rodando neste banco (advisory lock ocupado)');
+    await lockSql.end({ timeout: 5 });
     await close();
     process.exit(1);
   }
   logger.info('advisory lock obtido: worker ativo');
 
   let running = true;
+  let wake: (() => void) | undefined;
+  const stopped = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+
   const stop = (signal: string) => {
     logger.info({ signal }, 'sinal recebido, encerrando worker');
     running = false;
+    wake?.();
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
@@ -39,6 +49,7 @@ async function main(): Promise<void> {
   const tick = async () => {
     if (!running) return;
     const started = Date.now();
+
     try {
       const monitorResult = await motor.monitor.runCycle();
       if (monitorResult.logsVarridos > 0 || monitorResult.pagamentosConfirmados > 0) {
@@ -55,7 +66,12 @@ async function main(): Promise<void> {
       for (const erro of monitorResult.erros) {
         logger.error({ erro }, 'erro no monitor');
       }
+    } catch (err) {
+      // Uma falha no monitor nao pode impedir o sweeper de rodar.
+      logger.error({ err }, 'falha no ciclo do monitor');
+    }
 
+    try {
       const sweepResult = await motor.sweeper.runCycle();
       if (sweepResult.movidos > 0 || sweepResult.falhas > 0 || sweepResult.resgatados > 0) {
         logger.info(
@@ -73,27 +89,32 @@ async function main(): Promise<void> {
         logger.error({ erro }, 'erro no sweeper');
       }
     } catch (err) {
-      logger.error({ err }, 'falha no ciclo do worker');
+      logger.error({ err }, 'falha no ciclo do sweeper');
     }
+
     logger.debug({ ms: Date.now() - started }, 'ciclo concluido');
   };
 
-  await tick();
-  const timer = setInterval(() => void tick(), config.chain.monitorIntervalMs);
-
-  await new Promise<void>((resolve) => {
-    const check = setInterval(() => {
-      if (!running) {
-        clearInterval(check);
-        clearInterval(timer);
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      void stopped.then(() => {
+        clearTimeout(timer);
         resolve();
-      }
-    }, 500);
-  });
+      });
+    });
+
+  // Loop sequencial: nunca ha dois ticks sobrepostos.
+  while (running) {
+    await tick();
+    if (!running) break;
+    await sleep(config.chain.monitorIntervalMs);
+  }
 
   if (lockHeld) {
-    await sql`select pg_advisory_unlock(${LOCK_ID})`;
+    await lockSql`select pg_advisory_unlock(${LOCK_ID})`;
   }
+  await lockSql.end({ timeout: 5 });
   await close();
   logger.info('worker encerrado');
 }

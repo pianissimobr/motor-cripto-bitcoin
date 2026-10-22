@@ -102,10 +102,15 @@ async function main(): Promise<void> {
   console.log(`   link: ${linkId}`);
 
   console.log('3) rewinding o cursor do monitor...');
+  // O hash TEM de ser zerado junto com o rewind: deixar o hash antigo
+  // apontando para um bloco novo faria o detector achar que houve reorg e
+  // tentar reconstruir desde o genesis (RPC publico recusa archive).
   await sql`
     insert into chain_cursors (chain, token_contract, ultimo_bloco, hash_bloco)
     values ('polygon', ${USDC.toLowerCase()}, ${bloco - 3}, null)
-    on conflict (chain, token_contract) do update set ultimo_bloco = ${bloco - 3}
+    on conflict (chain, token_contract) do update set
+      ultimo_bloco = ${bloco - 3},
+      hash_bloco = null
   `;
 
   console.log('4) rodando o monitor...');

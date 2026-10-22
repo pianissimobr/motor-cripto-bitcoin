@@ -50,6 +50,13 @@
       "when": 1792694458678,
       "tag": "0006_prefix_bidx_v2_len",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792699999999,
+      "tag": "0007_canonical_addresses_hd",
+      "breakpoints": true
     }
   ]
 }

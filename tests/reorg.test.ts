@@ -48,13 +48,14 @@ function setup() {
 }
 
 describe('C2: ancoras esparsas', () => {
-  it('grava ancora so em multiplos do intervalo', async () => {
+  it('grava ancora quando o cursor avanca o intervalo', async () => {
     const { detector, anchors } = setup();
     for (const bloco of [30, 31, 32, 33, 64]) {
       await detector.maybeAnchor(CHAIN, TOKEN, bloco, `0xhash${bloco}`, 32);
     }
     const guardadas = await anchors.list(CHAIN, TOKEN, 100);
-    expect(guardadas.map((a) => a.bloco).sort((a, b) => a - b)).toEqual([32, 64]);
+    // Primeira ancora no 30; o salto de 30 -> 64 ja passou de 32.
+    expect(guardadas.map((a) => a.bloco).sort((a, b) => a - b)).toEqual([30, 64]);
   });
 
   it('nao grava ancora sem hash', async () => {

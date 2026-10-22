@@ -313,7 +313,7 @@ describe('A4: tabela de transicoes de status', () => {
   it('permite voltar de movido so para reorg/reconciliacao', () => {
     expect(canTransition('movido', 'pago')).toBe(true);
     expect(canTransition('movido', 'parcial')).toBe(true);
-    expect(canTransition('movido', 'aguardando')).toBe(false);
+    expect(canTransition('movido', 'aguardando')).toBe(true);
   });
 
   it('bloqueia transicoes invalidas', () => {

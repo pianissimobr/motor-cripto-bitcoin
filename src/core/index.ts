@@ -31,7 +31,13 @@ export type MotorOptions = {
   logger: Logger;
   dataKey: Buffer;
   indexKey: Buffer;
+  /** Opcional: cipher ja montado com keyring (rotacao). */
+  cipher?: DataCipher;
+  /** Opcional: blind index ja montado com chave ativa + anterior. */
+  blindIndex?: BlindIndex;
   ttlHours: number;
+  /** Limite maximo do indice HD (HD_MAX_INDEX). */
+  maxIndex?: number;
   monitor?: Partial<MonitorOptions>;
   sweeper?: Partial<SweeperOptions>;
 };
@@ -49,8 +55,8 @@ export type Motor = {
 };
 
 export function createMotor(options: MotorOptions): Motor {
-  const cipher = new DataCipher(options.dataKey);
-  const blindIndex = new BlindIndex(options.indexKey);
+  const cipher = options.cipher ?? new DataCipher(options.dataKey);
+  const blindIndex = options.blindIndex ?? new BlindIndex(options.indexKey);
   const logger = options.logger;
 
   const customers = new CustomerService({
@@ -65,6 +71,7 @@ export function createMotor(options: MotorOptions): Motor {
     hdWallet: options.hdWallet,
     logger,
     ttlHours: options.ttlHours,
+    maxIndex: options.maxIndex ?? 100_000,
   });
 
   // A4: criado antes do monitor, que depende dele para mudar status.
@@ -143,7 +150,7 @@ export { HdWallet } from './hd/hd-wallet.js';
 export { LocalSigner } from './signer/local-signer.js';
 export { RemoteSigner } from './signer/remote-signer.js';
 export { PsbtSigner } from './signer/psbt-signer.js';
-export { DataCipher, BlindIndex } from './crypto/cipher.js';
+export { DataCipher, BlindIndex, Keyring } from './crypto/cipher.js';
 export { buildRampLink } from './ramp/link-builder.js';
 export { CHAINS, chainSpec } from './chain/chains.js';
 export { loadConfig } from './config.js';

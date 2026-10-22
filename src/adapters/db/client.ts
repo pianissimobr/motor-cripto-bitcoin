@@ -27,3 +27,22 @@ export function createDatabase(url: string, ssl: boolean): DatabaseHandle {
     },
   };
 }
+
+
+/**
+ * Conexao DEDICADA para advisory lock de sessao.
+ *
+ * O pool normal devolve a conexao ao pool apos a query; com
+ * `idle_timeout` a sessao pode ser fechada e o Postgres libera o lock
+ * silenciosamente. Para um lock de longa duracao precisamos de uma sessao
+ * que fique viva enquanto o worker rodar.
+ */
+export function createLockClient(url: string, ssl: boolean): postgres.Sql {
+  return postgres(url, {
+    ssl: ssl ? 'require' : false,
+    max: 1,
+    idle_timeout: 0,
+    connect_timeout: 15,
+    onnotice: () => {},
+  });
+}

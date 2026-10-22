@@ -7,6 +7,7 @@ import { createProviderFactory } from './core/chain/provider.js';
 import { GasSponsor } from './core/chain/gas-sponsor.js';
 import { loadConfig, type AppConfig } from './core/config.js';
 import { HdWallet } from './core/hd/hd-wallet.js';
+import { BlindIndex, DataCipher, Keyring } from './core/crypto/cipher.js';
 import { createMotor, type Motor } from './core/index.js';
 import { LocalSigner } from './core/signer/local-signer.js';
 import { PsbtSigner } from './core/signer/psbt-signer.js';
@@ -58,6 +59,22 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
     config.gasSponsor.minBalanceWei,
   );
 
+  // E1/E2/E3: usa o keyring completo, nao apenas a chave legada.
+  const keyring = new Keyring(
+    config.crypto.keyring,
+    config.crypto.activeKid,
+    config.crypto.legacyKid,
+  );
+  const cipher = new DataCipher(keyring);
+  const blindIndex = config.crypto.indexKeyV2
+    ? BlindIndex.rotating(
+        config.crypto.indexKeyV2,
+        config.crypto.indexKidV2,
+        config.crypto.indexKey,
+        'v1',
+      )
+    : new BlindIndex(config.crypto.indexKey, 'v1');
+
   const motor = createMotor({
     repos,
     hdWallet,
@@ -67,7 +84,10 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
     logger,
     dataKey: config.crypto.dataKey,
     indexKey: config.crypto.indexKey,
+    cipher,
+    blindIndex,
     ttlHours: config.links.ttlHours,
+    maxIndex: config.hd.maxIndex,
     monitor: {
       confirmationsRequired: config.chain.confirmationsRequired,
       tolerancePct: config.chain.tolerancePct,

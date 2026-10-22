@@ -3,7 +3,7 @@ import { chainSpec } from './chains.js';
 import { TRANSFER_TOPIC, addressToTopic, decodeTransferLog } from './erc20.js';
 import type { ReorgDetector } from './reorg-detector.js';
 import { divRound, withinTolerance } from '../domain/money.js';
-import type { LinkStatus, PaymentLink } from '../domain/types.js';
+import { LINK_STATUS, type LinkStatus, type PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { LinkStateMachine } from '../services/link-state-machine.js';
 import type { MotorRepositories } from '../ports/index.js';
@@ -19,7 +19,9 @@ import type { ProviderFactory } from './provider.js';
  * O cursor por (chain, token) garante que nenhum bloco seja pulado.
  */
 
-const ACTIVE_LINK_STATUSES: LinkStatus[] = ['aguardando', 'pago', 'parcial', 'pago_sem_gas', 'movido'];
+// Inclui expirado/revogado: dinheiro que chega depois do prazo ainda precisa
+// ser detectado, creditado e varrido (regra: nunca recusar dinheiro que chegou).
+const ACTIVE_LINK_STATUSES: LinkStatus[] = [...LINK_STATUS];
 
 export type MonitorOptions = {
   confirmationsRequired: number;
@@ -208,8 +210,23 @@ export class BlockchainMonitor {
    * praticamente nao muda e a reorg deixa de ser uma ameaca.
    */
   private async finalizedBlock(provider: Provider): Promise<number> {
-    const block = await provider.getBlock('finalized').catch(() => null);
-    return block?.number ?? (await provider.getBlockNumber());
+    let block: Awaited<ReturnType<Provider['getBlock']>> | null = null;
+    try {
+      block = await provider.getBlock('finalized');
+    } catch (err) {
+      throw new Error(
+        "MONITOR_BLOCK_TAG=finalized, mas o RPC nao suporta o bloco 'finalized'. " +
+          'Corrija o RPC ou mude explicitamente para latest (aceitando reorgs). ' +
+          `Causa: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!block) {
+      throw new Error(
+        "MONITOR_BLOCK_TAG=finalized, mas o RPC retornou bloco 'finalized' vazio. " +
+          'Nao caindo silenciosamente para latest.',
+      );
+    }
+    return block.number;
   }
 
   /**
@@ -239,6 +256,12 @@ export class BlockchainMonitor {
     result.reorgsDetectados++;
     const safe = check.blocoSeguro;
 
+    // C3: sem rewind o cursor fica apontando para o bloco invalido e a
+    // regiao reescrita nunca e varrida de novo. As ancoras acima do ponto
+    // seguro tambem deixam de valer.
+    await repos.cursors.rewind(chain, tokenContract, safe, null);
+    await repos.anchors.pruneAfter(chain, tokenContract, safe);
+
     // C4: credito primeiro (depende dos pagamentos), depois o pagamento.
     const atingidos = await repos.payments.listConfirmedAboveBlock(chain, safe);
     if (atingidos.length > 0) {
@@ -253,19 +276,24 @@ export class BlockchainMonitor {
     // C5: um sweep cujo bloco caiu precisa ser refeito.
     const sweepsRefeitos = await repos.transfers.revertAboveBlock(chain, safe);
 
-    // Links afetados voltam para 'aguardando' para reavaliacao.
+    // Links afetados sao recalculados: se ainda restar pagamento confirmado,
+    // volta para pago/parcial; se nada restar, volta para aguardando (reorg).
     const afetados = new Set(atingidos.map((p) => p.linkId));
     for (const linkId of afetados) {
       const link = await repos.links.findById(linkId);
       if (!link) continue;
-      if (link.status === 'movido' || link.status === 'pago' || link.status === 'parcial') {
-        await this.deps.linkState.transition({
-          linkId,
-          to: 'pago',
-          reason: `reorg: pagamento revertido no bloco > ${safe}`,
-          actor: 'monitor',
-        });
-      }
+      const total = await repos.payments.sumConfirmedByLink(link.id);
+      const destino: LinkStatus = total <= 0n ? 'aguardando' : await this.linkStatusFor(link);
+      if (link.status === destino) continue;
+      await this.deps.linkState.transition({
+        linkId,
+        to: destino,
+        reason:
+          total <= 0n
+            ? `reorg: pagamento revertido no bloco > ${safe}`
+            : `reorg: restam ${total} ${link.asset} confirmados`,
+        actor: 'monitor',
+      });
     }
 
     await repos.audit.record({
@@ -360,7 +388,6 @@ export class BlockchainMonitor {
   private async reconcileConfirmations(result: CycleResult): Promise<void> {
     const { repos, logger } = this.deps;
     const pending = await repos.payments.listByStatus('detectado', 500);
-    if (pending.length === 0) return;
 
     const heads = new Map<string, number>();
     for (const payment of pending) {
@@ -377,30 +404,21 @@ export class BlockchainMonitor {
       }
       if (confirmacoes < this.deps.options.confirmationsRequired) continue;
 
-      await repos.payments.upsert({
-        linkId: payment.linkId,
-        txHash: payment.txHash,
-        logIndex: payment.logIndex,
-        deAddress: payment.deAddress,
-        paraAddress: payment.paraAddress,
-        token: payment.token,
-        valorBaseUnits: payment.valorBaseUnits,
-        bloco: payment.bloco,
-        status: 'confirmado',
-        detectadoEm: payment.detectadoEm,
+      // Pagamento + credito na mesma transacao: um crash no meio nao deixa
+      // dinheiro confirmado sem credito.
+      const { creditCreated } = await repos.payments.confirm({
+        paymentId: payment.id,
+        confirmacoes,
+        credit: this.creditInput(link, payment.id, payment.valorBaseUnits),
       });
+      if (creditCreated) result.creditosCriados++;
 
-      const credit = await this.creditPayment(link, payment.id, payment.valorBaseUnits);
-      if (credit) result.creditosCriados++;
-
-      const status = await this.linkStatusFor(link);
-      // A4: passa pela maquina de estados (valida + audita o motivo).
-      await this.deps.linkState.transition({
-        linkId: link.id,
-        to: status,
-        reason: `${confirmacoes} confirmacoes, ${payment.valorBaseUnits} ${payment.token} recebido`,
-        actor: 'monitor',
-      });
+      await this.applyLinkStatus(
+        link,
+        confirmacoes,
+        payment.valorBaseUnits,
+        payment.token,
+      );
       result.pagamentosConfirmados++;
 
       logger.info(
@@ -413,6 +431,59 @@ export class BlockchainMonitor {
         'pagamento confirmado',
       );
     }
+
+    // Recuperacao: cobre crash entre confirmacao, credito e transicao.
+    const leftovers = await repos.payments.listForReconciliation(500);
+    for (const payment of leftovers) {
+      const link = await repos.links.findById(payment.linkId);
+      if (!link) continue;
+      const created = await this.creditPayment(link, payment.id, payment.valorBaseUnits);
+      if (created) result.creditosCriados++;
+      await this.applyLinkStatus(
+        link,
+        payment.confirmacoes,
+        payment.valorBaseUnits,
+        payment.token,
+      );
+    }
+  }
+
+  private async applyLinkStatus(
+    link: PaymentLink,
+    confirmacoes: number,
+    valorBaseUnits: bigint,
+    token: string,
+  ): Promise<void> {
+    const status = await this.linkStatusFor(link);
+    // A4: passa pela maquina de estados (valida + audita o motivo).
+    await this.deps.linkState.transition({
+      linkId: link.id,
+      to: status,
+      reason: `${confirmacoes} confirmacoes, ${valorBaseUnits} ${token} recebido`,
+      actor: 'monitor',
+    });
+  }
+
+  private creditInput(
+    link: PaymentLink,
+    pagamentoId: string,
+    valorBaseUnits: bigint,
+  ) {
+    const taxa = link.taxaTokenPorFiatBaseUnits;
+    const valorCentavos =
+      taxa && taxa > 0n
+        ? Number(divRound(valorBaseUnits * 100n, taxa))
+        : null;
+
+    return {
+      clienteId: link.clienteId,
+      linkId: link.id,
+      pagamentoId,
+      valorBaseUnits,
+      valorCentavos,
+      moeda: link.asset,
+      status: 'liberado' as const,
+    };
   }
 
   /** Credita o cliente com o valor EFETIVAMENTE recebido on-chain. */
@@ -424,22 +495,7 @@ export class BlockchainMonitor {
     const { repos } = this.deps;
     const existing = await repos.credits.findByPayment(pagamentoId);
     if (existing) return false;
-
-    const taxa = link.taxaTokenPorFiatBaseUnits;
-    const valorCentavos =
-      taxa && taxa > 0n
-        ? Number(divRound(valorBaseUnits * 100n, taxa))
-        : null;
-
-    await repos.credits.create({
-      clienteId: link.clienteId,
-      linkId: link.id,
-      pagamentoId,
-      valorBaseUnits: valorBaseUnits,
-      valorCentavos,
-      moeda: link.asset,
-      status: 'liberado',
-    });
+    await repos.credits.create(this.creditInput(link, pagamentoId, valorBaseUnits));
     return true;
   }
 

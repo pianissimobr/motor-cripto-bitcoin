@@ -163,8 +163,12 @@ export class ReorgDetector {
   }
 
   /**
-   * Grava uma ancora se o bloco for multiplo do intervalo.
-   * Esparsa de proposito: ancorar todo bloco custaria 1 RPC por bloco.
+   * Grava uma ancora quando o cursor avancou ao menos `interval` blocos
+   * desde a ultima.
+   *
+   * O monitor avanca em saltos de `MONITOR_BLOCK_RANGE` (ex.: 2000), entao
+   * exigir `bloco % interval === 0` fazia a ancora quase nunca ser gravada.
+   * Comparar com a ultima ancora funciona para qualquer tamanho de salto.
    */
   async maybeAnchor(
     chain: string,
@@ -174,7 +178,9 @@ export class ReorgDetector {
     interval: number,
   ): Promise<void> {
     if (!hashBloco || interval <= 0) return;
-    if (bloco % interval !== 0) return;
+    const [ultima] = await this.deps.anchors.list(chain, tokenContract, 1);
+    if (ultima && bloco - ultima.bloco < interval) return;
+    if (ultima && ultima.bloco === bloco && ultima.hashBloco === hashBloco) return;
     await this.deps.anchors.record({
       chain,
       tokenContract: tokenContract.toLowerCase(),

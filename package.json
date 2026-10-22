@@ -21,7 +21,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify:monitor": "tsx scripts/verify-monitor.ts",
-    "rotate:keys": "tsx scripts/rotate-keys.ts"
+    "rotate:keys": "tsx scripts/rotate-keys.ts",
+    "test:integration": "vitest run -c vitest.integration.config.ts"
   },
   "dependencies": {
     "@fastify/helmet": "13.0.2",

@@ -56,6 +56,7 @@ export class FakeCustomerRepository implements CustomerRepository {
       criadoEm: new Date(),
     };
     this.rows.push(row);
+    this.prefixos.set(row.id, [...input.prefixBidxList, ...input.prefixBidxListV2]);
     return row;
   }
 
@@ -64,8 +65,8 @@ export class FakeCustomerRepository implements CustomerRepository {
     return r ? { ...r } : null;
   }
 
-  /** Guardamos tambem o indice anterior para simular a rotacao. */
-  private readonly anteriores = new Map<string, string>();
+  /** Tokens de prefixo gravados ao criar o cliente (chave ativa + anterior). */
+  private readonly prefixos = new Map<string, string[]>();
 
   async findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null> {
     const r = this.rows.find(
@@ -81,12 +82,10 @@ export class FakeCustomerRepository implements CustomerRepository {
     limit: number,
   ): Promise<StoredCustomer[]> {
     const out: StoredCustomer[] = [];
+    const tokens = new Set(prefixBidxes);
     for (const c of this.rows) {
-      const algum =
-        prefixBidxes.some((b) => c.emailBidx.startsWith(b)) ||
-        (c.emailBidxAnterior !== null &&
-          prefixBidxes.some((b) => c.emailBidxAnterior!.startsWith(b)));
-      if (algum) out.push({ ...c });
+      const gravados = this.prefixos.get(c.id) ?? [];
+      if (gravados.some((t) => tokens.has(t))) out.push({ ...c });
       if (out.length >= limit) break;
     }
     return out;
@@ -259,6 +258,8 @@ export class FakeLinkRepository implements LinkRepository {
 export class FakePaymentRepository implements PaymentRepository {
   readonly rows: Payment[] = [];
 
+  constructor(private readonly credits?: FakeCreditRepository) {}
+
   async upsert(input: UpsertPaymentInput): Promise<Payment> {
     const existing = this.rows.find(
       (r) => r.txHash === input.txHash && r.logIndex === input.logIndex,
@@ -289,9 +290,45 @@ export class FakePaymentRepository implements PaymentRepository {
     return row;
   }
 
+  async confirm(input: {
+    paymentId: string;
+    confirmacoes: number;
+    credit: CreateCreditInput | null;
+  }): Promise<{ payment: Payment; creditCreated: boolean }> {
+    const row = this.rows.find((r) => r.id === input.paymentId);
+    if (!row) throw new Error(`pagamento nao encontrado: ${input.paymentId}`);
+    row.status = 'confirmado';
+    row.confirmacoes = input.confirmacoes;
+    row.confirmadoEm = new Date();
+
+    let creditCreated = false;
+    if (input.credit && this.credits) {
+      const existing = await this.credits.findByPayment(input.credit.pagamentoId);
+      if (!existing) {
+        await this.credits.create(input.credit);
+        creditCreated = true;
+      }
+    }
+    return { payment: { ...row }, creditCreated };
+  }
+
   async findByTxHash(txHash: string): Promise<Payment | null> {
     const r = this.rows.find((x) => x.txHash === txHash);
     return r ? { ...r } : null;
+  }
+
+  async listForReconciliation(limit: number): Promise<Payment[]> {
+    const out: Payment[] = [];
+    for (const r of this.rows) {
+      if (r.status !== 'confirmado') continue;
+      const hasCredit = this.credits
+        ? Boolean(await this.credits.findByPayment(r.id))
+        : false;
+      if (hasCredit) continue;
+      out.push({ ...r });
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   async listByLink(linkId: string): Promise<Payment[]> {
@@ -537,8 +574,11 @@ export class FakeAnchorRepository implements AnchorRepository {
 export class FakeIndexAllocator implements IndexAllocator {
   private readonly counters = new Map<string, number>();
 
-  async allocate(scope: string): Promise<number> {
+  async allocate(scope: string, maxIndex?: number): Promise<number> {
     const next = this.counters.get(scope) ?? 0;
+    if (maxIndex !== undefined && next > maxIndex) {
+      throw new Error(`limite de indices HD atingido: proximo=${next}, maximo=${maxIndex}`);
+    }
     this.counters.set(scope, next + 1);
     return next;
   }
@@ -570,13 +610,14 @@ export class FakeAuditRepository implements AuditRepository {
 }
 
 export function createFakeRepositories(): MotorRepositories {
+  const credits = new FakeCreditRepository();
   return {
     customers: new FakeCustomerRepository(),
     rampProfiles: new FakeRampProfileRepository(),
     coldWallets: new FakeColdWalletRepository(),
     links: new FakeLinkRepository(),
-    payments: new FakePaymentRepository(),
-    credits: new FakeCreditRepository(),
+    payments: new FakePaymentRepository(credits),
+    credits,
     transfers: new FakeTransferRepository(),
     cursors: new FakeCursorRepository(),
     anchors: new FakeAnchorRepository(),

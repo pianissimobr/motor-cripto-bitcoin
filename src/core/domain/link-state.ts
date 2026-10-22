@@ -14,11 +14,12 @@ import type { LinkStatus } from './types.js';
 
 export const LINK_TRANSITIONS: Record<LinkStatus, readonly LinkStatus[]> = {
   aguardando: ['pago', 'parcial', 'pago_sem_gas', 'expirado', 'revogado'],
-  pago: ['parcial', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
-  parcial: ['pago', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
-  pago_sem_gas: ['pago', 'parcial', 'movido', 'expirado', 'revogado'],
+  // 'aguardando' e permitido apenas para reorg: o pagamento deixou de existir.
+  pago: ['aguardando', 'parcial', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
+  parcial: ['aguardando', 'pago', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
+  pago_sem_gas: ['aguardando', 'pago', 'parcial', 'movido', 'expirado', 'revogado'],
   // 'movido' so volta atras por reorg ou reconciliacao (A5).
-  movido: ['pago', 'parcial'],
+  movido: ['aguardando', 'pago', 'parcial'],
   // pagamento fora do prazo: o dinheiro chegou, entao entra.
   expirado: ['pago', 'parcial', 'revogado'],
   // link revogado mas o dinheiro apareceu assim mesmo.

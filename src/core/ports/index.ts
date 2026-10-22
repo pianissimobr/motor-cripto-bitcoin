@@ -166,9 +166,17 @@ export type UpsertPaymentInput = {
 export interface PaymentRepository {
   /** Idempotente por (tx_hash, log_index). */
   upsert(input: UpsertPaymentInput): Promise<Payment>;
+  /** Confirma o pagamento e cria o credito atomicamente. */
+  confirm(input: {
+    paymentId: string;
+    confirmacoes: number;
+    credit: CreateCreditInput | null;
+  }): Promise<{ payment: Payment; creditCreated: boolean }>;
   findByTxHash(txHash: string): Promise<Payment | null>;
   listByLink(linkId: string): Promise<Payment[]>;
   listByStatus(status: Payment['status'], limit: number): Promise<Payment[]>;
+  /** Confirmados sem credito ou cujo link ficou com status defasado. */
+  listForReconciliation(limit: number): Promise<Payment[]>;
   sumConfirmedByLink(linkId: string): Promise<bigint>;
   updateConfirmations(paymentId: string, confirmacoes: number): Promise<void>;
   /**
@@ -259,7 +267,8 @@ export interface AnchorRepository {
  * vezes (endereco derivado e publico: reutilizar expoe fundos antigos).
  */
 export interface IndexAllocator {
-  allocate(scope: string): Promise<number>;
+  /** Aloca o proximo indice global. `maxIndex` e o maior indice permitido. */
+  allocate(scope: string, maxIndex?: number): Promise<number>;
 }
 
 export type RecordAuditInput = {
