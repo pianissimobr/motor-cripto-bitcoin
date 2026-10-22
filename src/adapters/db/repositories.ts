@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import type { Database } from './client.js';
 import {
@@ -6,6 +6,7 @@ import {
   cadastros,
   cadastrosLinks,
   carteirasFrias,
+  chainAnchors,
   chainCursors,
   creditosCliente,
   eventosAuditoria,
@@ -16,6 +17,7 @@ import {
   rampProfiles,
 } from './schema.js';
 import type {
+  AnchorRepository,
   AuditRepository,
   ColdWalletRepository,
   CreateColdWalletInput,
@@ -39,6 +41,7 @@ import type {
 } from '../../core/ports/index.js';
 import type {
   AuditEvent,
+  ChainAnchor,
   ChainCursor,
   ColdWallet,
   CreditStatus,
@@ -544,6 +547,43 @@ class DrizzlePaymentRepository implements PaymentRepository {
       .set({ confirmacoes })
       .where(eq(linksPagos.id, paymentId));
   }
+
+  /** C4: pagamentos cujo bloco caiu no reorg (na regiao descartada). */
+  async listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]> {
+    const rows = await this.db
+      .select({ p: linksPagos })
+      .from(linksPagos)
+      .innerJoin(linksGerados, eq(linksPagos.linkId, linksGerados.id))
+      .where(
+        and(
+          eq(linksGerados.chain, chain),
+          gt(linksPagos.bloco, bloco),
+          inArray(linksPagos.status, ['detectado', 'confirmado']),
+        ),
+      );
+    return rows.map((r) => toPayment(r.p));
+  }
+
+  async revertAboveBlock(chain: string, bloco: number): Promise<number> {
+    const rows = await this.db
+      .update(linksPagos)
+      .set({ status: 'revertido', confirmadoEm: null, confirmacoes: 0 })
+      .where(
+        and(
+          inArray(linksPagos.status, ['detectado', 'confirmado']),
+          gt(linksPagos.bloco, bloco),
+          inArray(
+            linksPagos.linkId,
+            this.db
+              .select({ id: linksGerados.id })
+              .from(linksGerados)
+              .where(eq(linksGerados.chain, chain)),
+          ),
+        ),
+      )
+      .returning({ id: linksPagos.id });
+    return rows.length;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -623,6 +663,22 @@ class DrizzleCreditRepository implements CreditRepository {
       .limit(1);
     return row ? toCredit(row) : null;
   }
+
+  /** C4: credito de pagamento revertido por reorg deixa de valer. */
+  async revertByPaymentIds(pagamentoIds: string[]): Promise<number> {
+    if (pagamentoIds.length === 0) return 0;
+    const rows = await this.db
+      .update(creditosCliente)
+      .set({ status: 'revertido' })
+      .where(
+        and(
+          inArray(creditosCliente.pagamentoId, pagamentoIds),
+          inArray(creditosCliente.status, ['pendente', 'liberado']),
+        ),
+      )
+      .returning({ id: creditosCliente.id });
+    return rows.length;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -639,6 +695,8 @@ function toTransfer(row: typeof movimentosInternos.$inferSelect): InternalTransf
     txHash: row.txHash,
     status: row.status as TransferStatus,
     erro: row.erro,
+    chain: row.chain,
+    bloco: row.bloco,
     criadoEm: row.criadoEm,
   };
 }
@@ -657,6 +715,8 @@ class DrizzleTransferRepository implements TransferRepository {
         txHash: input.txHash ?? null,
         status: input.status,
         erro: input.erro ?? null,
+        chain: input.chain,
+        bloco: input.bloco ?? null,
       })
       .returning();
     if (!row) throw new Error('falha ao registrar movimento interno');
@@ -665,7 +725,12 @@ class DrizzleTransferRepository implements TransferRepository {
 
   async update(
     id: string,
-    patch: Partial<Pick<InternalTransfer, 'status' | 'txHash' | 'erro' | 'valorBaseUnits'>>,
+    patch: Partial<
+      Pick<
+        InternalTransfer,
+        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+      >
+    >,
   ): Promise<void> {
     await this.db
       .update(movimentosInternos)
@@ -676,8 +741,26 @@ class DrizzleTransferRepository implements TransferRepository {
         ...(patch.valorBaseUnits !== undefined
           ? { valorBaseUnits: patch.valorBaseUnits }
           : {}),
+        ...(patch.paraAddress !== undefined ? { paraAddress: patch.paraAddress } : {}),
+        ...(patch.bloco !== undefined ? { bloco: patch.bloco } : {}),
       })
       .where(eq(movimentosInternos.id, id));
+  }
+
+  /** C5: um sweep cujo bloco caiu no reorg precisa ser refeito. */
+  async revertAboveBlock(chain: string, bloco: number): Promise<number> {
+    const rows = await this.db
+      .update(movimentosInternos)
+      .set({ status: 'pendente', txHash: null, bloco: null, erro: 'reorg: refazer sweep' })
+      .where(
+        and(
+          eq(movimentosInternos.chain, chain),
+          gt(movimentosInternos.bloco, bloco),
+          inArray(movimentosInternos.status, ['enviado', 'confirmado', 'patrocinado']),
+        ),
+      )
+      .returning({ id: movimentosInternos.id });
+    return rows.length;
   }
 
   async findByLink(linkId: string): Promise<InternalTransfer[]> {
@@ -741,6 +824,94 @@ class DrizzleCursorRepository implements CursorRepository {
         target: [chainCursors.chain, chainCursors.tokenContract],
         set: { ultimoBloco: bloco, hashBloco, atualizadoEm: new Date() },
       });
+  }
+
+  /** C3: rebobina o cursor apos um reorg. */
+  async rewind(
+    chain: string,
+    tokenContract: string,
+    bloco: number,
+    hashBloco: string | null,
+  ): Promise<void> {
+    await this.db
+      .update(chainCursors)
+      .set({ ultimoBloco: bloco, hashBloco, atualizadoEm: new Date() })
+      .where(
+        and(
+          eq(chainCursors.chain, chain),
+          eq(chainCursors.tokenContract, tokenContract.toLowerCase()),
+        ),
+      );
+  }
+}
+
+class DrizzleAnchorRepository implements AnchorRepository {
+  constructor(private readonly db: Database) {}
+
+  async record(anchor: ChainAnchor): Promise<void> {
+    await this.db
+      .insert(chainAnchors)
+      .values({
+        chain: anchor.chain,
+        tokenContract: anchor.tokenContract.toLowerCase(),
+        bloco: anchor.bloco,
+        hashBloco: anchor.hashBloco,
+      })
+      .onConflictDoNothing();
+  }
+
+  async list(chain: string, tokenContract: string, limit: number): Promise<ChainAnchor[]> {
+    const rows = await this.db
+      .select()
+      .from(chainAnchors)
+      .where(
+        and(
+          eq(chainAnchors.chain, chain),
+          eq(chainAnchors.tokenContract, tokenContract.toLowerCase()),
+        ),
+      )
+      .orderBy(desc(chainAnchors.bloco))
+      .limit(limit);
+    return rows.map((r) => ({
+      chain: r.chain,
+      tokenContract: r.tokenContract,
+      bloco: r.bloco,
+      hashBloco: r.hashBloco,
+    }));
+  }
+
+  async pruneAfter(chain: string, tokenContract: string, bloco: number): Promise<void> {
+    await this.db
+      .delete(chainAnchors)
+      .where(
+        and(
+          eq(chainAnchors.chain, chain),
+          eq(chainAnchors.tokenContract, tokenContract.toLowerCase()),
+          gt(chainAnchors.bloco, bloco),
+        ),
+      );
+  }
+
+  async oldest(chain: string, tokenContract: string): Promise<ChainAnchor | null> {
+    const [row] = await this.db
+      .select()
+      .from(chainAnchors)
+      .where(
+        and(
+          eq(chainAnchors.chain, chain),
+          eq(chainAnchors.tokenContract, tokenContract.toLowerCase()),
+        ),
+      )
+      .orderBy(asc(chainAnchors.bloco))
+      .limit(1);
+    return row
+      ? {
+          chain: row.chain,
+          tokenContract: row.tokenContract,
+          bloco: row.bloco,
+          hashBloco: row.hashBloco,
+        }
+      : null;
   }
 }
 
@@ -861,6 +1032,7 @@ export function createRepositories(db: Database): MotorRepositories {
     credits: new DrizzleCreditRepository(db),
     transfers: new DrizzleTransferRepository(db),
     cursors: new DrizzleCursorRepository(db),
+    anchors: new DrizzleAnchorRepository(db),
     indices: new DrizzleIndexAllocator(db),
     audit: new DrizzleAuditRepository(db),
   };

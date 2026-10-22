@@ -22,6 +22,13 @@
       "when": 1792693583752,
       "tag": "0002_link_carteira_fria",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792693955798,
+      "tag": "0003_reorg_anchors",
+      "breakpoints": true
     }
   ]
 }

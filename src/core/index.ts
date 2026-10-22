@@ -1,5 +1,6 @@
 import { DataCipher, BlindIndex } from './crypto/cipher.js';
 import { BlockchainMonitor, type MonitorOptions } from './chain/monitor.js';
+import { ReorgDetector } from './chain/reorg-detector.js';
 import { GasSponsor } from './chain/gas-sponsor.js';
 import { Sweeper, type SweeperOptions } from './chain/sweeper.js';
 import type { ProviderFactory } from './chain/provider.js';
@@ -69,17 +70,29 @@ export function createMotor(options: MotorOptions): Motor {
   // A4: criado antes do monitor, que depende dele para mudar status.
   const linkState = new LinkStateMachine({ repos: options.repos, logger });
 
+  // C2/C3: detector de reorg (ancoras esparsas + busca do ancestral comum).
+  const reorgDetector = new ReorgDetector({
+    cursors: options.repos.cursors,
+    anchors: options.repos.anchors,
+    logger,
+    maxAnchors: options.monitor?.maxReorgAnchors ?? 64,
+  });
+
   const monitor = new BlockchainMonitor({
     repos: options.repos,
     providerFactory: options.providerFactory,
     logger,
     linkState,
+    reorgDetector,
     options: {
       confirmationsRequired: options.monitor?.confirmationsRequired ?? 10,
       tolerancePct: options.monitor?.tolerancePct ?? 1,
       maxTopics: options.monitor?.maxTopics ?? 200,
       blockRange: options.monitor?.blockRange ?? 2_000,
       startBlock: options.monitor?.startBlock ?? 0,
+      blockTag: options.monitor?.blockTag ?? 'finalized',
+      anchorInterval: options.monitor?.anchorInterval ?? 32,
+      maxReorgAnchors: options.monitor?.maxReorgAnchors ?? 64,
     },
   });
 
@@ -120,6 +133,7 @@ export {
   IllegalTransitionError,
 } from './domain/link-state.js';
 export { BlockchainMonitor } from './chain/monitor.js';
+export { ReorgDetector } from './chain/reorg-detector.js';
 export { Sweeper } from './chain/sweeper.js';
 export { GasSponsor } from './chain/gas-sponsor.js';
 export { HdWallet } from './hd/hd-wallet.js';

@@ -213,11 +213,37 @@ export const movimentosInternos = pgTable(
     txHash: text('tx_hash'),
     status: text('status').notNull().default('pendente'),
     erro: text('erro'),
+    /** C5: chain e bloco do sweep, para detectar se ele caiu num reorg. */
+    chain: text('chain').notNull().default('polygon'),
+    bloco: integer('bloco'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('movimentos_internos_link_idx').on(t.linkId),
     index('movimentos_internos_status_idx').on(t.status),
+    index('movimentos_internos_bloco_idx').on(t.chain, t.bloco),
+  ],
+);
+
+/**
+ * C2: ancoras esparsas de hash de bloco.
+ *
+ * Se o hash em `chain_cursors` divergir do que a chain devolve, houve
+ * reorg. Guardamos hashes a cada N blocos para poder voltar atras e
+ * achar o ancestral comum sem refazer a varredura inteira.
+ */
+export const chainAnchors = pgTable(
+  'chain_anchors',
+  {
+    chain: text('chain').notNull(),
+    tokenContract: text('token_contract').notNull(),
+    bloco: integer('bloco').notNull(),
+    hashBloco: text('hash_bloco').notNull(),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.chain, t.tokenContract, t.bloco] }),
+    index('chain_anchors_lookup_idx').on(t.chain, t.tokenContract, t.bloco),
   ],
 );
 

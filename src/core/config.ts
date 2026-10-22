@@ -62,6 +62,11 @@ export const EnvSchema = z.object({
   MONITOR_MAX_TOPICS: intFromEnv(200),
   MONITOR_BLOCK_RANGE: intFromEnv(2_000),
   MONITOR_START_BLOCK: intFromEnv(0),
+  // C1: teto da varredura. `finalized` = so blocos com finalidade
+  // (Polygon PoS tem checkpoint); `latest` = inclui blocos reescrevivel.
+  MONITOR_BLOCK_TAG: z.enum(['finalized', 'latest']).default('finalized'),
+  // C2: intervalo (em blocos) entre duas ancoras de hash.
+  MONITOR_ANCHOR_INTERVAL: intFromEnv(32),
 
   RAMP_BASE_URL: z.string().default('https://buy.ramp.network/'),
   RAMP_PARAM_STYLE: z.enum(['legacy', 'unified']).default('legacy'),
@@ -109,6 +114,10 @@ export type AppConfig = {
     maxTopics: number;
     blockRange: number;
     startBlock: number;
+    /** C1 */
+    blockTag: 'finalized' | 'latest';
+    /** C2 */
+    anchorInterval: number;
   };
   ramp: {
     baseUrl: string;
@@ -180,6 +189,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       maxTopics: env.MONITOR_MAX_TOPICS,
       blockRange: env.MONITOR_BLOCK_RANGE,
       startBlock: env.MONITOR_START_BLOCK,
+      blockTag: env.MONITOR_BLOCK_TAG,
+      anchorInterval: env.MONITOR_ANCHOR_INTERVAL,
     },
     ramp: {
       baseUrl: env.RAMP_BASE_URL,

@@ -1,5 +1,6 @@
 import type {
   AuditEvent,
+  ChainAnchor,
   ChainCursor,
   ColdWallet,
   CreditStatus,
@@ -149,6 +150,13 @@ export interface PaymentRepository {
   listByStatus(status: Payment['status'], limit: number): Promise<Payment[]>;
   sumConfirmedByLink(linkId: string): Promise<bigint>;
   updateConfirmations(paymentId: string, confirmacoes: number): Promise<void>;
+  /**
+   * C4: reverte todos os pagamentos acima de `bloco` na chain informada.
+   * Usado quando o cursor e rewindado por reorg.
+   */
+  revertAboveBlock(chain: string, bloco: number): Promise<number>;
+  /** Pagamentos confirmados cujo bloco caiu no reorg (fila de revogacao). */
+  listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]>;
 }
 
 export type CreateCreditInput = {
@@ -167,6 +175,8 @@ export interface CreditRepository {
   listAll(limit: number): Promise<CustomerCredit[]>;
   sumByCustomer(clienteId: string): Promise<number>;
   findByPayment(pagamentoId: string): Promise<CustomerCredit | null>;
+  /** C4: reverte os creditos ligados a pagamentos revogados. */
+  revertByPaymentIds(pagamentoIds: string[]): Promise<number>;
 }
 
 export type CreateTransferInput = {
@@ -177,6 +187,8 @@ export type CreateTransferInput = {
   status: TransferStatus;
   txHash?: string | null;
   erro?: string | null;
+  chain: string;
+  bloco?: number | null;
 };
 
 export interface TransferRepository {
@@ -184,16 +196,34 @@ export interface TransferRepository {
   update(
     id: string,
     patch: Partial<
-      Pick<InternalTransfer, 'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress'>
+      Pick<
+        InternalTransfer,
+        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+      >
     >,
   ): Promise<void>;
   findByLink(linkId: string): Promise<InternalTransfer[]>;
   listByStatus(status: TransferStatus, limit: number): Promise<InternalTransfer[]>;
+  /** C5: marca como 'pendente' os sweeps cujo bloco caiu no reorg. */
+  revertAboveBlock(chain: string, bloco: number): Promise<number>;
 }
 
 export interface CursorRepository {
   get(chain: string, tokenContract: string): Promise<ChainCursor | null>;
   set(chain: string, tokenContract: string, bloco: number, hashBloco: string | null): Promise<void>;
+  /** Move o cursor para tras (reorg). */
+  rewind(chain: string, tokenContract: string, bloco: number, hashBloco: string | null): Promise<void>;
+}
+
+/** C2: ancoras esparsas de hash de bloco para detectar e resolver reorg. */
+export interface AnchorRepository {
+  record(anchor: ChainAnchor): Promise<void>;
+  /** Ancoras do par (chain, token), da mais nova para a mais antiga. */
+  list(chain: string, tokenContract: string, limit: number): Promise<ChainAnchor[]>;
+  /** Remove ancoras acima de `bloco` (invalidadas pelo reorg). */
+  pruneAfter(chain: string, tokenContract: string, bloco: number): Promise<void>;
+  /** A ancora mais antiga ainda guardada (limite da retrospectiva). */
+  oldest(chain: string, tokenContract: string): Promise<ChainAnchor | null>;
 }
 
 /**
@@ -228,6 +258,7 @@ export type MotorRepositories = {
   credits: CreditRepository;
   transfers: TransferRepository;
   cursors: CursorRepository;
+  anchors: AnchorRepository;
   indices: IndexAllocator;
   audit: AuditRepository;
 };

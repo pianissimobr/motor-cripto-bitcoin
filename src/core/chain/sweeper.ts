@@ -222,6 +222,8 @@ export class Sweeper {
       paraAddress: '',
       valorBaseUnits: saldo,
       status: 'pendente',
+      chain: link.chain,
+      bloco: null,
     });
 
     try {
@@ -289,7 +291,11 @@ export class Sweeper {
 
       const receipt = await tx.wait(1, 120_000);
       if (receipt && receipt.status === 1) {
-        await repos.transfers.update(transfer.id, { status: 'confirmado' });
+        // C5: guarda o bloco para saber depois se o sweep caiu num reorg.
+        await repos.transfers.update(transfer.id, {
+          status: 'confirmado',
+          bloco: receipt.blockNumber,
+        });
         await repos.links.updateStatus(link.id, 'movido');
         logger.info({ linkId: link.id, txHash: tx.hash }, 'sweep confirmado');
         return 'movido';

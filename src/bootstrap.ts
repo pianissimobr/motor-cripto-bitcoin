@@ -74,6 +74,8 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
       maxTopics: config.chain.maxTopics,
       blockRange: config.chain.blockRange,
       startBlock: config.chain.startBlock,
+      blockTag: config.chain.blockTag,
+      anchorInterval: config.chain.anchorInterval,
     },
     sweeper: {
       gasSponsorAmountWei: config.gasSponsor.amountWei,

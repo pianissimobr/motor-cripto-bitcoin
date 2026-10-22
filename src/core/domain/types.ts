@@ -160,6 +160,9 @@ export type InternalTransfer = {
   txHash: string | null;
   status: TransferStatus;
   erro?: string | null;
+  /** C5: chain e bloco do sweep (null enquanto pendente de minacao). */
+  chain: string;
+  bloco: number | null;
   criadoEm: Date;
 };
 
@@ -168,6 +171,14 @@ export type ChainCursor = {
   tokenContract: string;
   ultimoBloco: number;
   hashBloco: string | null;
+};
+
+/** C2: ancora esparsa de hash de bloco, usada para achar o ancestral comum. */
+export type ChainAnchor = {
+  chain: string;
+  tokenContract: string;
+  bloco: number;
+  hashBloco: string;
 };
 
 export type AuditEvent = {

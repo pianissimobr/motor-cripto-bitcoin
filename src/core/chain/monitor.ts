@@ -1,6 +1,7 @@
 import { getAddress, type Log, type Provider } from 'ethers';
 import { chainSpec } from './chains.js';
 import { TRANSFER_TOPIC, addressToTopic, decodeTransferLog } from './erc20.js';
+import type { ReorgDetector } from './reorg-detector.js';
 import { divRound, withinTolerance } from '../domain/money.js';
 import type { LinkStatus, PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
@@ -26,6 +27,12 @@ export type MonitorOptions = {
   maxTopics: number;
   blockRange: number;
   startBlock: number;
+  /** C1: `finalized` so le blocos com checkpoint (nao voltam em reorg). */
+  blockTag: 'finalized' | 'latest';
+  /** C2: intervalo entre ancoras de hash. */
+  anchorInterval: number;
+  /** C3: quantas ancoras voltar atras antes de reconstrucao total. */
+  maxReorgAnchors: number;
 };
 
 export type CycleResult = {
@@ -34,6 +41,12 @@ export type CycleResult = {
   pagamentosDetectados: number;
   pagamentosConfirmados: number;
   creditosCriados: number;
+  /** C3: reorgs detectados neste ciclo. */
+  reorgsDetectados: number;
+  /** C4: pagamentos revogados por reorg. */
+  pagamentosRevogados: number;
+  /** C4: creditos revogados por reorg. */
+  creditosRevogados: number;
   erros: string[];
 };
 
@@ -44,6 +57,8 @@ export type MonitorDeps = {
   options: MonitorOptions;
   /** A4: para validar transicoes de status. */
   linkState: LinkStateMachine;
+  /** C2/C3: deteccao de reorg. */
+  reorgDetector: ReorgDetector;
 };
 
 export class BlockchainMonitor {
@@ -59,6 +74,9 @@ export class BlockchainMonitor {
       pagamentosDetectados: 0,
       pagamentosConfirmados: 0,
       creditosCriados: 0,
+      reorgsDetectados: 0,
+      pagamentosRevogados: 0,
+      creditosRevogados: 0,
       erros: [],
     };
     if (this.running) {
@@ -105,7 +123,16 @@ export class BlockchainMonitor {
     if (addresses.length === 0) return;
 
     const provider = this.deps.providerFactory(chain);
-    const head = await provider.getBlockNumber();
+
+    // C3: antes de qualquer leitura, confere se o cursor ainda vale.
+    // Um reorg aqui significa que o que "ja foi processado" pode nao existir.
+    await this.checkReorg(chain, tokenContract, provider, result);
+
+    // C1: teto da varredura. `finalized` na Polygon PoS tem checkpoint, ou
+    // seja esses blocos nao voltam; `latest` inclui blocos reescrevivel.
+    const head = this.deps.options.blockTag === 'finalized'
+      ? await this.finalizedBlock(provider)
+      : await provider.getBlockNumber();
     const cursor = await repos.cursors.get(chain, tokenContract.toLowerCase());
 
     const fromBlock = cursor
@@ -155,17 +182,117 @@ export class BlockchainMonitor {
     // Se o provedor reduziu a faixa, avancar ate toBlock pularia blocos.
     if (lastScannedBlock >= fromBlock) {
       const lastBlock = await provider.getBlock(lastScannedBlock).catch(() => null);
-      await repos.cursors.set(
+      const hashBloco = lastBlock?.hash ?? null;
+      await repos.cursors.set(chain, tokenContract.toLowerCase(), lastScannedBlock, hashBloco);
+      // C2: ancora esparsa, para o detector achar o ancestral comum depois.
+      await this.deps.reorgDetector.maybeAnchor(
         chain,
-        tokenContract.toLowerCase(),
+        tokenContract,
         lastScannedBlock,
-        lastBlock?.hash ?? null,
+        hashBloco,
+        this.deps.options.anchorInterval,
       );
     }
 
     logger.debug(
       { chain, fromBlock, toBlock, logs: result.logsVarridos, detected },
       'varredura concluida',
+    );
+  }
+
+  /**
+   * C1: bloco com finalidade. Se o RPC nao souber, cai para `latest`.
+   *
+   * Na Polygon PoS o bloco `finalized` fica poucos blocos atras do `latest`
+   * (medido: ~2 blocos / ~4s no publicnode), entao a latencia de credito
+   * praticamente nao muda e a reorg deixa de ser uma ameaca.
+   */
+  private async finalizedBlock(provider: Provider): Promise<number> {
+    const block = await provider.getBlock('finalized').catch(() => null);
+    return block?.number ?? (await provider.getBlockNumber());
+  }
+
+  /**
+   * C3/C4: detecta reorg e desfaz o que foi registrado na regiao perdida.
+   *
+   * Pagamento confirmado que estava num bloco reescrito vira 'revertido',
+   * o credito correspondente tambem, e o link volta a ser elegivel para
+   * varredura (se o dinheiro chegou de novo em outro bloco, sera redetectado).
+   */
+  private async checkReorg(
+    chain: string,
+    tokenContract: string,
+    provider: Provider,
+    result: CycleResult,
+  ): Promise<void> {
+    const { repos, logger } = this.deps;
+
+    const check = await this.deps.reorgDetector.check(chain, tokenContract, provider).catch((err) => {
+      logger.warn(
+        { err, chain },
+        'falha ao checar reorg: seguindo sem rewind (o monitor vai revalidar)',
+      );
+      return null;
+    });
+    if (!check?.reorg) return;
+
+    result.reorgsDetectados++;
+    const safe = check.blocoSeguro;
+
+    // C4: credito primeiro (depende dos pagamentos), depois o pagamento.
+    const atingidos = await repos.payments.listConfirmedAboveBlock(chain, safe);
+    if (atingidos.length > 0) {
+      const revogadosCredito = await repos.credits.revertByPaymentIds(
+        atingidos.map((p) => p.id),
+      );
+      result.creditosRevogados += revogadosCredito;
+    }
+    const revogados = await repos.payments.revertAboveBlock(chain, safe);
+    result.pagamentosRevogados += revogados;
+
+    // C5: um sweep cujo bloco caiu precisa ser refeito.
+    const sweepsRefeitos = await repos.transfers.revertAboveBlock(chain, safe);
+
+    // Links afetados voltam para 'aguardando' para reavaliacao.
+    const afetados = new Set(atingidos.map((p) => p.linkId));
+    for (const linkId of afetados) {
+      const link = await repos.links.findById(linkId);
+      if (!link) continue;
+      if (link.status === 'movido' || link.status === 'pago' || link.status === 'parcial') {
+        await this.deps.linkState.transition({
+          linkId,
+          to: 'pago',
+          reason: `reorg: pagamento revertido no bloco > ${safe}`,
+          actor: 'monitor',
+        });
+      }
+    }
+
+    await repos.audit.record({
+      ator: 'monitor',
+      acao: 'reorg.tratado',
+      entidade: 'chain',
+      entidadeId: `${chain}:${tokenContract.toLowerCase()}`,
+      detalhes: {
+        blocoSeguro: safe,
+        reconstrucaoTotal: check.reconstrucaoTotal,
+        pagamentosRevogados: revogados,
+        creditosRevogados: result.creditosRevogados,
+        sweepsRefeitos,
+        mensagem: check.mensagem,
+      },
+    });
+
+    logger.error(
+      {
+        chain,
+        blocoSeguro: safe,
+        pagamentosRevogados: revogados,
+        creditosRevogados: result.creditosRevogados,
+        sweepsRefeitos,
+        reconstrucaoTotal: check.reconstrucaoTotal,
+      },
+      'reorg tratado: regiao descartada e revogada',
     );
   }
 

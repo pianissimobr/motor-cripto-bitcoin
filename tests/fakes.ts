@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  AnchorRepository,
   AuditRepository,
   ColdWalletRepository,
   CreateColdWalletInput,
@@ -23,6 +24,7 @@ import type {
 } from '../src/core/ports/index.js';
 import type {
   AuditEvent,
+  ChainAnchor,
   ChainCursor,
   ColdWallet,
   CustomerCredit,
@@ -264,6 +266,24 @@ export class FakePaymentRepository implements PaymentRepository {
     const row = this.rows.find((r) => r.id === paymentId);
     if (row) row.confirmacoes = confirmacoes;
   }
+
+  async listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]> {
+    // O fake nao tem join com links; usa o bloco do proprio pagamento.
+    return this.rows
+      .filter((r) => r.bloco > bloco && ['detectado', 'confirmado'].includes(r.status))
+      .map((r) => ({ ...r }));
+  }
+
+  async revertAboveBlock(chain: string, bloco: number): Promise<number> {
+    let n = 0;
+    for (const r of this.rows) {
+      if (r.bloco > bloco && ['detectado', 'confirmado'].includes(r.status)) {
+        Object.assign(r, { status: 'revertido', confirmadoEm: null, confirmacoes: 0 });
+        n++;
+      }
+    }
+    return n;
+  }
 }
 
 export class FakeCreditRepository implements CreditRepository {
@@ -305,6 +325,18 @@ export class FakeCreditRepository implements CreditRepository {
     const r = this.rows.find((x) => x.pagamentoId === pagamentoId);
     return r ? { ...r } : null;
   }
+
+  async revertByPaymentIds(pagamentoIds: string[]): Promise<number> {
+    const set = new Set(pagamentoIds);
+    let n = 0;
+    for (const r of this.rows) {
+      if (set.has(r.pagamentoId) && ['pendente', 'liberado'].includes(r.status)) {
+        r.status = 'revertido';
+        n++;
+      }
+    }
+    return n;
+  }
 }
 
 export class FakeTransferRepository implements TransferRepository {
@@ -320,6 +352,8 @@ export class FakeTransferRepository implements TransferRepository {
       txHash: input.txHash ?? null,
       status: input.status,
       erro: input.erro ?? null,
+      chain: input.chain,
+      bloco: input.bloco ?? null,
       criadoEm: new Date(),
     };
     this.rows.push(row);
@@ -329,11 +363,30 @@ export class FakeTransferRepository implements TransferRepository {
   async update(
     id: string,
     patch: Partial<
-      Pick<InternalTransfer, 'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress'>
+      Pick<
+        InternalTransfer,
+        'status' | 'txHash' | 'erro' | 'valorBaseUnits' | 'paraAddress' | 'bloco'
+      >
     >,
   ): Promise<void> {
     const row = this.rows.find((r) => r.id === id);
     if (row) Object.assign(row, patch);
+  }
+
+  async revertAboveBlock(chain: string, bloco: number): Promise<number> {
+    let n = 0;
+    for (const r of this.rows) {
+      if (
+        r.chain === chain &&
+        r.bloco !== null &&
+        r.bloco > bloco &&
+        ['enviado', 'confirmado', 'patrocinado'].includes(r.status)
+      ) {
+        Object.assign(r, { status: 'pendente', txHash: null, bloco: null, erro: 'reorg: refazer sweep' });
+        n++;
+      }
+    }
+    return n;
   }
 
   async findByLink(linkId: string): Promise<InternalTransfer[]> {
@@ -368,6 +421,65 @@ export class FakeCursorRepository implements CursorRepository {
       ultimoBloco: bloco,
       hashBloco,
     });
+  }
+
+  async rewind(
+    chain: string,
+    tokenContract: string,
+    bloco: number,
+    hashBloco: string | null,
+  ): Promise<void> {
+    await this.set(chain, tokenContract, bloco, hashBloco);
+  }
+}
+
+export class FakeAnchorRepository implements AnchorRepository {
+  readonly rows: ChainAnchor[] = [];
+
+  async record(anchor: ChainAnchor): Promise<void> {
+    const existe = this.rows.find(
+      (r) =>
+        r.chain === anchor.chain &&
+        r.tokenContract === anchor.tokenContract.toLowerCase() &&
+        r.bloco === anchor.bloco,
+    );
+    if (existe) return;
+    this.rows.push({
+      ...anchor,
+      tokenContract: anchor.tokenContract.toLowerCase(),
+    });
+  }
+
+  async list(chain: string, tokenContract: string, limit: number): Promise<ChainAnchor[]> {
+    return this.rows
+      .filter(
+        (r) =>
+          r.chain === chain && r.tokenContract === tokenContract.toLowerCase(),
+      )
+      .sort((a, b) => b.bloco - a.bloco)
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
+  async pruneAfter(chain: string, tokenContract: string, bloco: number): Promise<void> {
+    for (let i = this.rows.length - 1; i >= 0; i--) {
+      const r = this.rows[i]!;
+      if (
+        r.chain === chain &&
+        r.tokenContract === tokenContract.toLowerCase() &&
+        r.bloco > bloco
+      ) {
+        this.rows.splice(i, 1);
+      }
+    }
+  }
+
+  async oldest(chain: string, tokenContract: string): Promise<ChainAnchor | null> {
+    const filtradas = this.rows.filter(
+      (r) => r.chain === chain && r.tokenContract === tokenContract.toLowerCase(),
+    );
+    if (filtradas.length === 0) return null;
+    return { ...filtradas.reduce((a, b) => (a.bloco <= b.bloco ? a : b)) };
   }
 }
 
@@ -416,6 +528,7 @@ export function createFakeRepositories(): MotorRepositories {
     credits: new FakeCreditRepository(),
     transfers: new FakeTransferRepository(),
     cursors: new FakeCursorRepository(),
+    anchors: new FakeAnchorRepository(),
     indices: new FakeIndexAllocator(),
     audit: new FakeAuditRepository(),
   };
