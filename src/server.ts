@@ -9,7 +9,7 @@ import { buildHttpApp } from './adapters/http/app.js';
  */
 
 async function main(): Promise<void> {
-  const { config, logger, motor, close } = await bootstrap();
+  const { config, logger, motor, close } = await bootstrap(process.env, 'api');
 
   const app = await buildHttpApp({ motor, logger, config });
 

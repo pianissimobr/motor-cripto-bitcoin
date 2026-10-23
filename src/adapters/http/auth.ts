@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
 declare module 'fastify' {
@@ -23,6 +23,26 @@ export type AuthOptions = {
 export function createAuthHook(options: AuthOptions) {
   const publicPaths = new Set(options.publicPaths ?? ['/api/health', '/health']);
   const readonlyToken = options.readonlyToken;
+  const failures = new Map<string, { n: number; reset: number }>();
+  const windowMs = 60_000;
+  const maxFailures = 10;
+
+  const failureCount = (ip: string): number => {
+    const now = Date.now();
+    const slot = failures.get(ip);
+    if (!slot || now >= slot.reset) return 0;
+    return slot.n;
+  };
+
+  const recordFailure = (ip: string): void => {
+    const now = Date.now();
+    const slot = failures.get(ip);
+    if (!slot || now >= slot.reset) {
+      failures.set(ip, { n: 1, reset: now + windowMs });
+      return;
+    }
+    slot.n += 1;
+  };
 
   return async function authHook(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const path = request.url.split('?')[0] ?? '';
@@ -33,6 +53,11 @@ export function createAuthHook(options: AuthOptions) {
 
     const header = request.headers.authorization;
     if (!header || !header.toLowerCase().startsWith('bearer ')) {
+      if (failureCount(request.ip) >= maxFailures) {
+        await reply.code(429).send({ erro: 'muitas tentativas de autenticacao' });
+        return;
+      }
+      recordFailure(request.ip);
       await reply.code(401).send({ erro: 'token de acesso ausente' });
       return;
     }
@@ -49,18 +74,22 @@ export function createAuthHook(options: AuthOptions) {
       return;
     }
 
+    if (failureCount(request.ip) >= maxFailures) {
+      await reply.code(429).send({ erro: 'muitas tentativas de autenticacao' });
+      return;
+    }
+    recordFailure(request.ip);
     await reply.code(403).send({
       erro: isRead ? 'token de acesso invalido' : 'token sem permissao de escrita',
     });
   };
 }
 
+/** HMAC dos dois lados: o tamanho do token nao sai no tempo da comparacao. */
+const COMPARE_KEY = Buffer.from('motor-cripto/auth-compare/v1');
+
 function safeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf8');
-  const bufB = Buffer.from(b, 'utf8');
-  if (bufA.length !== bufB.length) {
-    timingSafeEqual(bufA, bufA);
-    return false;
-  }
-  return timingSafeEqual(bufA, bufB);
+  const ha = createHmac('sha256', COMPARE_KEY).update(a, 'utf8').digest();
+  const hb = createHmac('sha256', COMPARE_KEY).update(b, 'utf8').digest();
+  return timingSafeEqual(ha, hb);
 }

@@ -78,6 +78,13 @@
       "when": 1792700000002,
       "tag": "0010_email_index_canonical",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1792700000003,
+      "tag": "0011_credito_centavos_bigint",
+      "breakpoints": true
     }
   ]
 }

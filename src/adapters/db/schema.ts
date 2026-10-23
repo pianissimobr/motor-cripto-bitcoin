@@ -209,7 +209,7 @@ export const creditosCliente = pgTable(
       .notNull()
       .references(() => linksPagos.id, { onDelete: 'cascade' }),
     valorBaseUnits: bigint('valor_base_units', { mode: 'bigint' }).notNull(),
-    valorCentavos: integer('valor_centavos'),
+    valorCentavos: bigint('valor_centavos', { mode: 'bigint' }),
     moeda: text('moeda').notNull(),
     status: text('status').notNull().default('pendente'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),

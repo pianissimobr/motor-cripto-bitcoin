@@ -128,13 +128,13 @@ describe('P1: guards de configuracao', () => {
       baseEnv({
         NODE_ENV: 'production',
         SIGNER_MODE: 'local',
-        SIGNER_PASSPHRASE: 'segredo',
+        SIGNER_PASSPHRASE: 'segredo-producao1',
       }),
     );
     expect(config.signer.mode).toBe('local');
   });
 
-  it('em producao exige https no signer remoto', () => {
+  it('em producao exige https no signer remoto e o token', () => {
     expect(() =>
       loadConfig(
         baseEnv({
@@ -150,8 +150,41 @@ describe('P1: guards de configuracao', () => {
         NODE_ENV: 'production',
         SIGNER_MODE: 'remote',
         SIGNER_REMOTE_URL: 'https://signer.local',
+        SIGNER_REMOTE_TOKEN: 't'.repeat(16),
       }),
     );
     expect(config.signer.remoteUrl).toBe('https://signer.local');
+  });
+
+  it('em producao recusa token de exemplo, senha curta e RPC sem https', () => {
+    expect(() =>
+      loadConfig(
+        baseEnv({
+          NODE_ENV: 'production',
+          SIGNER_MODE: 'psbt',
+          ADMIN_TOKEN: 'troque-este-token-por-um-valor-aleatorio-longo',
+        }),
+      ),
+    ).toThrow(/ADMIN_TOKEN/);
+
+    expect(() =>
+      loadConfig(
+        baseEnv({
+          NODE_ENV: 'production',
+          SIGNER_MODE: 'local',
+          SIGNER_PASSPHRASE: 'curta-demais',
+        }),
+      ),
+    ).toThrow(/16 caracteres/);
+
+    expect(() =>
+      loadConfig(
+        baseEnv({
+          NODE_ENV: 'production',
+          SIGNER_MODE: 'psbt',
+          RPC_URL_POLYGON: 'http://rpc.local',
+        }),
+      ),
+    ).toThrow(/https/);
   });
 });

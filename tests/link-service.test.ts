@@ -178,6 +178,21 @@ describe('core do motor', () => {
     expect(a.enderecoDeposito).not.toBe(b.enderecoDeposito);
   });
 
+  it('rejeita endereco de carteira fria que nao esta cadastrado', async () => {
+    const customer = await ctx.motor.customers.create({
+      nome: 'Maria Silva',
+      email: 'maria@example.com',
+    });
+    await expect(
+      ctx.motor.links.create({
+        clienteId: customer.id,
+        amountCents: 100,
+        rampProfileId: ctx.profileId,
+        coldWalletAddress: '0x3333333333333333333333333333333333333333',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
   it('rejeita valor nao positivo', async () => {
     const customer = await ctx.motor.customers.create({
       nome: 'Maria Silva',
@@ -289,7 +304,7 @@ describe('core do motor', () => {
       linkId: a.id,
       pagamentoId: randomUUID(),
       valorBaseUnits: 1_000_000n,
-      valorCentavos: 100,
+      valorCentavos: 100n,
       moeda: 'USDC',
       status: 'liberado',
     });
@@ -298,7 +313,7 @@ describe('core do motor', () => {
       linkId: b.id,
       pagamentoId: randomUUID(),
       valorBaseUnits: 2_000_000n,
-      valorCentavos: 200,
+      valorCentavos: 200n,
       moeda: 'USDC',
       status: 'liberado',
     });

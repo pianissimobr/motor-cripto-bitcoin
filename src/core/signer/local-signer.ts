@@ -14,12 +14,14 @@ import {
  * Signer local: usa um keystore cifrado (scrypt + AES-256-GCM) guardado em
  * disco com permissao 0600. A senha vem do ambiente / secret manager.
  *
- * O material de chave existe em memoria apenas durante a assinatura.
+ * So o worker instancia esta classe. A folha e derivada dentro de
+ * `signTransfer` e nao fica num cache do processo. O xprv da conta permanece
+ * no no HD enquanto o worker estiver no ar: e o material necessario para
+ * derivar a proxima folha.
  */
 export class LocalSigner implements Signer {
   readonly mode: SignerMode = 'local';
   private readonly wallet: HdWallet;
-  private readonly privateKeys = new Map<number, string>();
 
   private constructor(wallet: HdWallet) {
     this.wallet = wallet;
@@ -63,15 +65,6 @@ export class LocalSigner implements Signer {
     }
   }
 
-  privateKeyFor(index: number): string {
-    let key = this.privateKeys.get(index);
-    if (!key) {
-      key = this.wallet.derivePrivateKey(index);
-      this.privateKeys.set(index, key);
-    }
-    return key;
-  }
-
   buildUnsigned(input: SignTransferInput): UnsignedTransaction {
     assertSignTransferInput(input);
     const from = getAddress(this.addressFor(input.index));
@@ -94,7 +87,7 @@ export class LocalSigner implements Signer {
 
   async signTransfer(input: SignTransferInput): Promise<SignedTransaction> {
     assertSignTransferInput(input);
-    const wallet = new Wallet(this.privateKeyFor(input.index));
+    const wallet = new Wallet(this.wallet.derivePrivateKey(input.index));
     const tx = {
       to: getAddress(input.to),
       data: input.data,

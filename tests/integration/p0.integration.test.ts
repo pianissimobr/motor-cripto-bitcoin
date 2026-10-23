@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalAuditPreimage } from '../../src/core/audit-preimage.js';
 import { createRepositories } from '../../src/adapters/db/repositories.js';
 import { createLockClient } from '../../src/adapters/db/client.js';
 import {
@@ -193,7 +194,7 @@ describe('P0 com Postgres real', () => {
       linkId: link.id,
       pagamentoId: payment.id,
       valorBaseUnits: 2_000_000n,
-      valorCentavos: 1111,
+      valorCentavos: 1111n,
       moeda: 'USDC',
       status: 'liberado' as const,
     };
@@ -224,7 +225,7 @@ describe('P0 com Postgres real', () => {
       linkId: link.id,
       pagamentoId: payment.id,
       valorBaseUnits: payment.valorBaseUnits,
-      valorCentavos: 500,
+      valorCentavos: 500n,
       moeda: 'USDC',
       status: 'liberado' as const,
     };
@@ -285,7 +286,7 @@ describe('P0 com Postgres real', () => {
       linkId: link.id,
       pagamentoId: payment.id,
       valorBaseUnits: 3_000_000n,
-      valorCentavos: 0,
+      valorCentavos: 0n,
       moeda: 'USDC',
       status: 'liberado',
     });
@@ -427,7 +428,7 @@ describe('P0 com Postgres real', () => {
         row.criado_em instanceof Date ? row.criado_em : new Date(row.criado_em);
       const esperado = createHash('sha256')
         .update(
-          [
+          canonicalAuditPreimage([
             row.hash_anterior ?? '',
             row.id,
             criadoEm.toISOString(),
@@ -437,7 +438,7 @@ describe('P0 com Postgres real', () => {
             row.entidade_id ?? '',
             row.ip ?? '',
             row.detalhes ?? '',
-          ].join('|'),
+          ]),
         )
         .digest('hex');
       expect(row.hash).toBe(esperado);

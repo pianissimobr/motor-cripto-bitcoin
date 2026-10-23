@@ -1,6 +1,6 @@
-import { getAddress, type Log, type Provider } from 'ethers';
+import { Contract, getAddress, type Log, type Provider } from 'ethers';
 import { chainSpec } from './chains.js';
-import { TRANSFER_TOPIC, addressToTopic, decodeTransferLog } from './erc20.js';
+import { TRANSFER_TOPIC, addressToTopic, decodeTransferLog, ERC20_ABI } from './erc20.js';
 import type { ReorgDetector } from './reorg-detector.js';
 import { divRound, withinTolerance } from '../domain/money.js';
 import { LINK_STATUS, type LinkStatus, type PaymentLink } from '../domain/types.js';
@@ -35,6 +35,8 @@ export type MonitorOptions = {
   anchorInterval: number;
   /** C3: quantas ancoras voltar atras antes de reconstrucao total. */
   maxReorgAnchors: number;
+  /** Blocos para tras quando um aguardando tem saldo e o log nao foi visto. */
+  backfillBlocks?: number;
 };
 
 export type CycleResult = {
@@ -61,6 +63,8 @@ export type MonitorDeps = {
   linkState: LinkStateMachine;
   /** C2/C3: deteccao de reorg. */
   reorgDetector: ReorgDetector;
+  /** RPC opcional de conferencia. Ausente = um RPC so. */
+  confirmProviderFactory?: ProviderFactory;
 };
 
 export class BlockchainMonitor {
@@ -108,6 +112,7 @@ export class BlockchainMonitor {
       }
 
       await this.reconcileConfirmations(result);
+      await this.backfillUnseenBalances(result);
       return result;
     } finally {
       this.running = false;
@@ -132,14 +137,14 @@ export class BlockchainMonitor {
 
     // C1: teto da varredura. `finalized` na Polygon PoS tem checkpoint, ou
     // seja esses blocos nao voltam; `latest` inclui blocos reescrevivel.
-    const head = this.deps.options.blockTag === 'finalized'
-      ? await this.finalizedBlock(provider)
-      : await provider.getBlockNumber();
+    const head = await this.headBlock(provider);
     const cursor = await repos.cursors.get(chain, tokenContract.toLowerCase());
 
     const fromBlock = cursor
       ? cursor.ultimoBloco + 1
-      : Math.max(this.deps.options.startBlock, head - this.deps.options.blockRange + 1);
+      : this.deps.options.startBlock > 0
+        ? this.deps.options.startBlock
+        : Math.max(0, head - this.deps.options.blockRange + 1);
     if (fromBlock > head) return;
 
     const toBlock = Math.min(head, fromBlock + this.deps.options.blockRange - 1);
@@ -157,6 +162,9 @@ export class BlockchainMonitor {
       result.logsVarridos += logs.length;
 
       for (const log of logs) {
+        if (log.removed) continue;
+        if (!sameAddress(log.address, tokenContract)) continue;
+        if (!log.transactionHash) continue;
         const decoded = decodeTransferLog(log);
         if (!decoded) continue;
         const link = await repos.links.findByDepositAddress(decoded.to);
@@ -209,6 +217,11 @@ export class BlockchainMonitor {
    * (medido: ~2 blocos / ~4s no publicnode), entao a latencia de credito
    * praticamente nao muda e a reorg deixa de ser uma ameaca.
    */
+  private async headBlock(provider: Provider): Promise<number> {
+    if (this.deps.options.blockTag === 'finalized') return this.finalizedBlock(provider);
+    return provider.getBlockNumber();
+  }
+
   private async finalizedBlock(provider: Provider): Promise<number> {
     let block: Awaited<ReturnType<Provider['getBlock']>> | null = null;
     try {
@@ -406,60 +419,93 @@ export class BlockchainMonitor {
 
     const heads = new Map<string, number>();
     for (const payment of pending) {
-      const link = await repos.links.findById(payment.linkId);
-      if (!link) continue;
-      let head = heads.get(link.chain);
-      if (head === undefined) {
-        head = await this.deps.providerFactory(link.chain).getBlockNumber();
-        heads.set(link.chain, head);
-      }
-      const confirmacoes = Math.max(0, head - payment.bloco + 1);
-      if (confirmacoes !== payment.confirmacoes) {
-        await repos.payments.updateConfirmations(payment.id, confirmacoes);
-      }
-      if (confirmacoes < this.deps.options.confirmationsRequired) continue;
+      try {
+        const link = await repos.links.findById(payment.linkId);
+        if (!link) continue;
+        let head = heads.get(link.chain);
+        if (head === undefined) {
+          head = await this.headBlock(this.deps.providerFactory(link.chain));
+          heads.set(link.chain, head);
+        }
+        const confirmacoes = Math.max(0, head - payment.bloco + 1);
+        if (confirmacoes !== payment.confirmacoes) {
+          await repos.payments.updateConfirmations(payment.id, confirmacoes);
+        }
+        if (confirmacoes < this.deps.options.confirmationsRequired) continue;
 
-      // Pagamento + credito na mesma transacao: um crash no meio nao deixa
-      // dinheiro confirmado sem credito.
-      const { creditCreated } = await repos.payments.confirm({
-        paymentId: payment.id,
-        confirmacoes,
-        credit: this.creditInput(link, payment.id, payment.valorBaseUnits),
-      });
-      if (creditCreated) result.creditosCriados++;
+        const provider = this.deps.providerFactory(link.chain);
+        const provado = await this.receiptConfirms(provider, payment.txHash, payment.logIndex, link.tokenContract);
+        if (!provado) {
+          result.erros.push(`${payment.id}: recibo nao confirma o log de transferencia`);
+          continue;
+        }
+        const confirmProvider = this.confirmProvider(link.chain);
+        if (confirmProvider) {
+          const noOutro = await this.receiptConfirms(
+            confirmProvider,
+            payment.txHash,
+            payment.logIndex,
+            link.tokenContract,
+          );
+          const mesmoSaldo = await this.balancesAgree(provider, confirmProvider, link);
+          if (!noOutro || !mesmoSaldo) {
+            result.erros.push(`${payment.id}: RPC de conferencia divergiu do RPC principal`);
+            continue;
+          }
+        }
 
-      await this.applyLinkStatus(
-        link,
-        confirmacoes,
-        payment.valorBaseUnits,
-        payment.token,
-      );
-      result.pagamentosConfirmados++;
-
-      logger.info(
-        {
-          linkId: link.id,
-          txHash: payment.txHash,
+        // Pagamento + credito na mesma transacao: um crash no meio nao deixa
+        // dinheiro confirmado sem credito.
+        const { creditCreated } = await repos.payments.confirm({
+          paymentId: payment.id,
           confirmacoes,
-          valorBaseUnits: payment.valorBaseUnits.toString(),
-        },
-        'pagamento confirmado',
-      );
+          credit: this.creditInput(link, payment.id, payment.valorBaseUnits),
+        });
+        if (creditCreated) result.creditosCriados++;
+
+        await this.applyLinkStatus(
+          link,
+          confirmacoes,
+          payment.valorBaseUnits,
+          payment.token,
+        );
+        result.pagamentosConfirmados++;
+
+        logger.info(
+          {
+            linkId: link.id,
+            txHash: payment.txHash,
+            confirmacoes,
+            valorBaseUnits: payment.valorBaseUnits.toString(),
+          },
+          'pagamento confirmado',
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        result.erros.push(`${payment.id}: ${message}`);
+        logger.error({ err, paymentId: payment.id }, 'falha ao confirmar pagamento');
+      }
     }
 
     // Recuperacao: cobre crash entre confirmacao, credito e transicao.
     const leftovers = await repos.payments.listForReconciliation(500);
     for (const payment of leftovers) {
-      const link = await repos.links.findById(payment.linkId);
-      if (!link) continue;
-      const created = await this.creditPayment(link, payment.id, payment.valorBaseUnits);
-      if (created) result.creditosCriados++;
-      await this.applyLinkStatus(
-        link,
-        payment.confirmacoes,
-        payment.valorBaseUnits,
-        payment.token,
-      );
+      try {
+        const link = await repos.links.findById(payment.linkId);
+        if (!link) continue;
+        const created = await this.creditPayment(link, payment.id, payment.valorBaseUnits);
+        if (created) result.creditosCriados++;
+        await this.applyLinkStatus(
+          link,
+          payment.confirmacoes,
+          payment.valorBaseUnits,
+          payment.token,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        result.erros.push(`${payment.id}: ${message}`);
+        logger.error({ err, paymentId: payment.id }, 'falha ao reconciliar pagamento');
+      }
     }
   }
 
@@ -486,9 +532,7 @@ export class BlockchainMonitor {
   ) {
     const taxa = link.taxaTokenPorFiatBaseUnits;
     const valorCentavos =
-      taxa && taxa > 0n
-        ? Number(divRound(valorBaseUnits * 100n, taxa))
-        : null;
+      taxa && taxa > 0n ? divRound(valorBaseUnits * 100n, taxa) : null;
 
     return {
       clienteId: link.clienteId,
@@ -533,6 +577,140 @@ export class BlockchainMonitor {
       if (!ok) return 'parcial';
     }
     return 'pago';
+  }
+
+  private confirmProvider(chain: string): Provider | null {
+    if (!this.deps.confirmProviderFactory) return null;
+    try {
+      return this.deps.confirmProviderFactory(chain);
+    } catch {
+      return null;
+    }
+  }
+
+  /** O log da transferencia ainda esta num recibo de sucesso. */
+  private async receiptConfirms(
+    provider: Provider,
+    txHash: string,
+    logIndex: number,
+    tokenContract: string,
+  ): Promise<boolean> {
+    const receipt = await provider.getTransactionReceipt(txHash);
+    if (!receipt || receipt.status !== 1) return false;
+    return receipt.logs.some(
+      (log) =>
+        !log.removed &&
+        log.index === logIndex &&
+        (log.transactionHash ?? '').toLowerCase() === txHash.toLowerCase() &&
+        sameAddress(log.address, tokenContract),
+    );
+  }
+
+  private async balancesAgree(
+    primary: Provider,
+    confirm: Provider,
+    link: PaymentLink,
+  ): Promise<boolean> {
+    const a = (await new Contract(link.tokenContract, ERC20_ABI, primary).getFunction('balanceOf')(
+      link.enderecoDeposito,
+    )) as bigint;
+    const b = (await new Contract(link.tokenContract, ERC20_ABI, confirm).getFunction('balanceOf')(
+      link.enderecoDeposito,
+    )) as bigint;
+    return a === b;
+  }
+
+  /**
+   * Link aguardando com saldo e cujo log ficou fora da janela do cursor.
+   * Relê só esses endereços. Saldo sem log vira alerta, não crédito.
+   */
+  private async backfillUnseenBalances(result: CycleResult): Promise<void> {
+    const { repos, logger } = this.deps;
+    const links = await repos.links.listByStatus('aguardando', 50);
+    const lookback = this.deps.options.backfillBlocks ?? 100_000;
+
+    for (const link of links) {
+      try {
+        const provider = this.deps.providerFactory(link.chain);
+        const token = new Contract(link.tokenContract, ERC20_ABI, provider);
+        const saldo = (await token.getFunction('balanceOf')(link.enderecoDeposito)) as bigint;
+        if (saldo <= 0n) continue;
+
+        const head = await this.headBlock(provider);
+        const from = Math.max(this.deps.options.startBlock, head - lookback + 1);
+        const topic = addressToTopic(getAddress(link.enderecoDeposito));
+        const scan = await this.fetchLogs(provider, link.tokenContract, [topic], from, head);
+        let found = 0;
+        for (const log of scan.logs) {
+          if (log.removed) continue;
+          if (!sameAddress(log.address, link.tokenContract)) continue;
+          if (!log.transactionHash) continue;
+          const decoded = decodeTransferLog(log);
+          if (!decoded) continue;
+          if (!sameAddress(decoded.to, link.enderecoDeposito)) continue;
+          const payment = await repos.payments.upsert({
+            linkId: link.id,
+            txHash: log.transactionHash,
+            logIndex: log.index,
+            deAddress: decoded.from,
+            paraAddress: decoded.to,
+            token: link.asset,
+            valorBaseUnits: decoded.value,
+            bloco: log.blockNumber,
+            status: 'detectado',
+            detectadoEm: new Date(),
+          });
+          if (payment) found++;
+        }
+        result.pagamentosDetectados += found;
+        if (found > 0) continue;
+
+        const jaSinalizado = (await repos.transfers.findByLink(link.id)).some(
+          (t) => t.erro === 'saldo sem log de transferencia',
+        );
+        if (jaSinalizado) continue;
+        await repos.transfers.create({
+          linkId: link.id,
+          deAddress: link.enderecoDeposito,
+          paraAddress: '',
+          valorBaseUnits: saldo,
+          status: 'falhou',
+          erro: 'saldo sem log de transferencia',
+          chain: link.chain,
+          bloco: null,
+          nonce: null,
+        });
+        await repos.audit.record({
+          ator: 'monitor',
+          acao: 'monitor.saldo_sem_log',
+          entidade: 'link',
+          entidadeId: link.id,
+          detalhes: {
+            saldoBaseUnits: saldo.toString(),
+            token: link.tokenContract,
+            chain: link.chain,
+            deBloco: from,
+            ateBloco: head,
+          },
+        });
+        logger.error(
+          { linkId: link.id, saldo: saldo.toString() },
+          'saldo no endereco de deposito sem log de transferencia na janela de backfill',
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        result.erros.push(`backfill ${link.id}: ${message}`);
+      }
+    }
+  }
+}
+
+function sameAddress(a: string | null | undefined, b: string): boolean {
+  if (!a) return false;
+  try {
+    return getAddress(a) === getAddress(b);
+  } catch {
+    return a.toLowerCase() === b.toLowerCase();
   }
 }
 

@@ -7,7 +7,7 @@ type Snapshot = {
   tables: Record<
     string,
     {
-      columns: Record<string, { name: string; notNull: boolean }>;
+      columns: Record<string, { name: string; notNull: boolean; type?: string }>;
       indexes: Record<string, { name: string; isUnique: boolean }>;
       compositePrimaryKeys: Record<string, { name: string; columns: string[] }>;
     }
@@ -32,7 +32,7 @@ describe('migracoes: journal e snapshots em sincronia', () => {
   });
 
   it('o snapshot final reflete o schema endurecido', () => {
-    const snap = readJson<Snapshot>('0010_snapshot.json');
+    const snap = readJson<Snapshot>('0011_snapshot.json');
     const cadastros = snap.tables['public.cadastros']!;
     expect(cadastros.columns.email_bidx_anterior).toBeDefined();
     expect(cadastros.indexes.cadastros_email_bidx_anterior_idx?.isUnique).toBe(false);
@@ -54,5 +54,6 @@ describe('migracoes: journal e snapshots em sincronia', () => {
     expect(
       snap.tables['public.links_gerados']!.indexes.links_gerados_indice_hd_uq?.isUnique,
     ).toBe(true);
+    expect(snap.tables['public.creditos_cliente']!.columns.valor_centavos?.type).toBe('bigint');
   });
 });

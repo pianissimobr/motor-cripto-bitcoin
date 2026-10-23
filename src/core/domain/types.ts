@@ -144,7 +144,7 @@ export type CustomerCredit = {
   /** Valor creditado em base units do token (fonte da verdade). */
   valorBaseUnits: bigint;
   /** Equivalente em fiat (centavos), quando ha taxa de referencia. */
-  valorCentavos: number | null;
+  valorCentavos: bigint | null;
   /** Simbolo do token creditado (ex.: USDC). */
   moeda: string;
   status: CreditStatus;

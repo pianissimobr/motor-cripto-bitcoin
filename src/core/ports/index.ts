@@ -208,7 +208,7 @@ export type CreateCreditInput = {
   linkId: string;
   pagamentoId: string;
   valorBaseUnits: bigint;
-  valorCentavos: number | null;
+  valorCentavos: bigint | null;
   moeda: string;
   status: CreditStatus;
 };
@@ -218,7 +218,7 @@ export interface CreditRepository {
   listByCustomer(clienteId: string): Promise<CustomerCredit[]>;
   listByLink(linkId: string): Promise<CustomerCredit[]>;
   listAll(limit: number): Promise<CustomerCredit[]>;
-  sumByCustomer(clienteId: string): Promise<number>;
+  sumByCustomer(clienteId: string): Promise<bigint>;
   findByPayment(pagamentoId: string): Promise<CustomerCredit | null>;
   /** C4: reverte os creditos ligados a pagamentos revogados. */
   revertByPaymentIds(pagamentoIds: string[]): Promise<number>;

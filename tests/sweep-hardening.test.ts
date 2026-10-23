@@ -145,7 +145,7 @@ describe('sweep hardening', () => {
     expect((await ctx.repos.links.findById(link.id))?.status).toBe('movido');
   });
 
-  it('recupera sinteticamente saldo zero com nonce consumido sem registro', async () => {
+  it('nao marca movido quando o saldo zerou sem prova de destino', async () => {
     const ctx = setupSweepContext();
     const link = await seedPaidLink(ctx);
     const chain = createFakeChain({
@@ -156,15 +156,14 @@ describe('sweep hardening', () => {
     const sweeper = makeHarnessSweeper(ctx, chain.provider);
     const r = await sweeper.runCycle();
 
-    expect(r.movidos).toBe(1);
-    expect((await ctx.repos.links.findById(link.id))?.status).toBe('movido');
+    expect(r.movidos).toBe(0);
+    expect((await ctx.repos.links.findById(link.id))?.status).toBe('pago');
     const recovery = (await ctx.repos.transfers.findByLink(link.id)).find(
       (t) => t.kind === 'recovery',
     );
-    expect(recovery).toBeDefined();
-    expect(recovery?.status).toBe('confirmado');
+    expect(recovery?.status).toBe('falhou');
+    expect(recovery?.erro).toBe('sweep sem prova de destino');
     expect(recovery?.txHash).toBeNull();
-    expect(recovery?.nonce).toBe(0);
   });
 
   it('usa o gas estimado do ERC-20, nao 21000, para decidir patrocinio', async () => {

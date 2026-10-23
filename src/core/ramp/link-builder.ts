@@ -84,6 +84,13 @@ export function buildRampLink(input: RampLinkInput): string {
   return url.toString();
 }
 
+/** Tira `hostApiKey` da URL persistida e das respostas de leitura. */
+export function stripHostApiKey(url: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.delete('hostApiKey');
+  return parsed.toString();
+}
+
 /** Centavos para "123.45" sem float. */
 function centsToDotDecimal(cents: number): string {
   const whole = Math.floor(cents / 100);

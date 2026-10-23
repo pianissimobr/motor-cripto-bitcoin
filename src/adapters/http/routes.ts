@@ -10,6 +10,7 @@ import {
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
 import { collectAlerts, type GasSponsorBalance } from '../../core/alerts.js';
 import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
+import { stripHostApiKey } from '../../core/ramp/link-builder.js';
 import type { ColdWallet, Customer, RampProfile } from '../../core/domain/types.js';
 import type { Motor } from '../../core/index.js';
 import type { UpdateRampProfileInput } from '../../core/ports/index.js';
@@ -317,6 +318,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
     const detail = await motor.links.detail(id);
     if (!detail) return reply.code(404).send({ erro: 'link nao encontrado' });
     const { link, payments, transfers, credits } = detail;
+    const adminView = request.authScope !== 'readonly';
+    const rampUrl = adminView ? await rampUrlParaAdmin(motor, link.rampUrl, link.rampProfileId) : stripHostApiKey(link.rampUrl);
     return {
       id: link.id,
       clienteId: link.clienteId,
@@ -326,8 +329,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       asset: link.asset,
       chain: link.chain,
       enderecoDeposito: link.enderecoDeposito,
-      caminhoDerivacao: link.caminhoDerivacao,
-      rampUrl: link.rampUrl,
+      ...(adminView ? { caminhoDerivacao: link.caminhoDerivacao } : {}),
+      rampUrl,
       expiraEm: link.expiraEm,
       criadoEm: link.criadoEm,
       pagamentos: payments.map((p) => ({
@@ -348,13 +351,15 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
         status: t.status,
         erro: t.erro,
         valor: t.valorBaseUnits.toString(),
-        unsignedTransaction: parseUnsignedJson(t.unsignedTransaction),
+        ...(adminView
+          ? { unsignedTransaction: parseUnsignedJson(t.unsignedTransaction) }
+          : {}),
         criadoEm: t.criadoEm,
       })),
       creditos: credits.map((c) => ({
         id: c.id,
         valor: c.valorBaseUnits.toString(),
-        valorCentavos: c.valorCentavos,
+        valorCentavos: c.valorCentavos?.toString() ?? null,
         moeda: c.moeda,
         status: c.status,
         criadoEm: c.criadoEm,
@@ -386,8 +391,12 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const link = await motor.links.get(id);
     if (!link) return reply.code(404).send({ erro: 'link nao encontrado' });
+    const rampUrl =
+      request.authScope === 'readonly'
+        ? stripHostApiKey(link.rampUrl)
+        : await rampUrlParaAdmin(motor, link.rampUrl, link.rampProfileId);
     try {
-      const svg = await qrCodeSvg(link.rampUrl);
+      const svg = await qrCodeSvg(rampUrl);
       return reply
         .header('content-type', 'image/svg+xml; charset=utf-8')
         .header('cache-control', 'private, max-age=300')
@@ -440,14 +449,14 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
     const credits = await motor.repos.credits.listByCustomer(query.clienteId);
     const totalCentavos = await motor.repos.credits.sumByCustomer(query.clienteId);
     return {
-      totalCentavos,
+      totalCentavos: totalCentavos.toString(),
       total: centsToFiat(totalCentavos),
       creditos: credits.map((c) => ({
         id: c.id,
         linkId: c.linkId,
         pagamentoId: c.pagamentoId,
         valor: c.valorBaseUnits.toString(),
-        valorCentavos: c.valorCentavos,
+        valorCentavos: c.valorCentavos?.toString() ?? null,
         valorFiat: c.valorCentavos !== null ? centsToFiat(c.valorCentavos) : null,
         moeda: c.moeda,
         status: c.status,
@@ -649,6 +658,16 @@ function parseUnsignedJson(value: string | null): unknown {
   } catch {
     return null;
   }
+}
+
+/** URL completa para o admin. A persistida nao leva hostApiKey. */
+async function rampUrlParaAdmin(motor: Motor, rampUrl: string, rampProfileId: string): Promise<string> {
+  const limpa = stripHostApiKey(rampUrl);
+  const profile = await motor.repos.rampProfiles.findById(rampProfileId);
+  if (!profile?.hostApiKey) return limpa;
+  const url = new URL(limpa);
+  url.searchParams.set('hostApiKey', profile.hostApiKey);
+  return url.toString();
 }
 
 /**

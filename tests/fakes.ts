@@ -446,10 +446,10 @@ export class FakeCreditRepository implements CreditRepository {
     return this.rows.slice(0, limit);
   }
 
-  async sumByCustomer(clienteId: string): Promise<number> {
+  async sumByCustomer(clienteId: string): Promise<bigint> {
     return this.rows
       .filter((r) => r.clienteId === clienteId && r.status === 'liberado')
-      .reduce((acc, r) => acc + (r.valorCentavos ?? 0), 0);
+      .reduce((acc, r) => acc + (r.valorCentavos ?? 0n), 0n);
   }
 
   async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {

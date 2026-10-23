@@ -13,7 +13,7 @@ import { createLockClient } from '../adapters/db/client.js';
 const LOCK_ID = 918_273_645;
 
 async function main(): Promise<void> {
-  const { config, logger, motor, close } = await bootstrap();
+  const { config, logger, motor, close } = await bootstrap(process.env, 'worker');
 
   const lockSql = createLockClient(config.database.url, config.database.ssl);
   let lockHeld = false;

@@ -1,3 +1,4 @@
+import { Wallet, getAddress } from 'ethers';
 import { z } from 'zod';
 
 /**
@@ -69,6 +70,11 @@ export const EnvSchema = z
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL obrigatorio'),
   DATABASE_SSL: boolish.default(false),
+  /** PEM da CA, quando o servidor nao usa uma CA publica. */
+  DATABASE_SSL_CA: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
 
   DATA_ENCRYPTION_KEY: z.string().min(1, 'DATA_ENCRYPTION_KEY obrigatorio (32 bytes base64)'),
   DATA_INDEX_KEY: z.string().min(1, 'DATA_INDEX_KEY obrigatorio (32 bytes base64)'),
@@ -105,6 +111,11 @@ export const EnvSchema = z
       .regex(/^0x[0-9a-fA-F]{64}$/, 'deve ser uma chave privada 0x + 64 hex')
       .optional(),
   ),
+  /** Endereco publico do patrocinador. A API consulta saldo sem a chave. */
+  GAS_SPONSOR_ADDRESS: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'deve ser um endereco 0x + 40 hex').optional(),
+  ),
   // 0,5 POL por patrocinio e um piso de 0,1 POL no destino. O piso precisa
   // ser menor que o envio, senao o motor manda gas a cada sweep.
   GAS_SPONSOR_AMOUNT_WEI: weiFromEnv('500000000000000000'),
@@ -121,6 +132,8 @@ export const EnvSchema = z
   MONITOR_BLOCK_TAG: z.enum(['finalized', 'latest']).default('finalized'),
   // C2: intervalo (em blocos) entre duas ancoras de hash.
   MONITOR_ANCHOR_INTERVAL: intFromEnv(32, { min: 1 }),
+  /** Quantos blocos reler quando um link aguardando tem saldo e o log passou batido. */
+  MONITOR_BACKFILL_BLOCKS: intFromEnv(100_000, { min: 1 }),
 
   RAMP_BASE_URL: z
     .string()
@@ -151,6 +164,16 @@ export const EnvSchema = z
   COLD_WALLET_LABEL: z.string().trim().min(1).max(80).default('Cold Wallet Principal'),
   })
   .superRefine((env, ctx) => {
+    if (env.GAS_SPONSOR_PRIVATE_KEY && env.GAS_SPONSOR_ADDRESS) {
+      const derived = new Wallet(env.GAS_SPONSOR_PRIVATE_KEY).address;
+      if (getAddress(derived) !== getAddress(env.GAS_SPONSOR_ADDRESS)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['GAS_SPONSOR_ADDRESS'],
+          message: 'nao corresponde a GAS_SPONSOR_PRIVATE_KEY',
+        });
+      }
+    }
     if (env.GAS_SPONSOR_PRIVATE_KEY) {
       if (env.GAS_SPONSOR_AMOUNT_WEI <= 0n) {
         ctx.addIssue({
@@ -175,11 +198,36 @@ export const EnvSchema = z
       });
     }
     if (env.NODE_ENV !== 'production') return;
+    if (env.ADMIN_TOKEN.length < 32 || env.ADMIN_TOKEN === ADMIN_TOKEN_EXEMPLO) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ADMIN_TOKEN'],
+        message: 'em producao precisa ter ao menos 32 caracteres e nao pode ser o valor de exemplo',
+      });
+    }
     if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
       ctx.addIssue({
         code: 'custom',
         path: ['SIGNER_PASSPHRASE'],
         message: 'SIGNER_PASSPHRASE obrigatorio em producao (keystore cifrado)',
+      });
+    }
+    if (
+      env.SIGNER_MODE === 'local' &&
+      env.SIGNER_PASSPHRASE &&
+      env.SIGNER_PASSPHRASE.length < 16
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_PASSPHRASE'],
+        message: 'em producao precisa ter ao menos 16 caracteres',
+      });
+    }
+    if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_REMOTE_TOKEN'],
+        message: 'SIGNER_REMOTE_TOKEN obrigatorio em producao',
       });
     }
     if (
@@ -194,6 +242,9 @@ export const EnvSchema = z
       });
     }
   });
+
+/** Valor publicado no .env.example. Nao pode ir para producao. */
+const ADMIN_TOKEN_EXEMPLO = 'troque-este-token-por-um-valor-aleatorio-longo';
 
 export type Env = z.infer<typeof EnvSchema>;
 
@@ -260,7 +311,7 @@ export type AppConfig = {
     trustProxy: boolean;
     isProduction: boolean;
   };
-  database: { url: string; ssl: boolean };
+  database: { url: string; ssl: false | { ca?: string } };
   crypto: {
     /** E1/E2: chaves de cifragem por id + chave ativa. */
     keyring: Record<string, Buffer>;
@@ -290,6 +341,8 @@ export type AppConfig = {
   };
   gasSponsor: {
     privateKey?: string;
+    /** Endereco publico. A API usa so este campo. */
+    address?: string;
     amountWei: bigint;
     minBalanceWei: bigint;
   };
@@ -304,6 +357,7 @@ export type AppConfig = {
     blockTag: 'finalized' | 'latest';
     /** C2 */
     anchorInterval: number;
+    backfillBlocks: number;
   };
   ramp: {
     baseUrl: string;
@@ -335,6 +389,20 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error(`Configuracao invalida:\n${issues}`);
   }
   const env = parsed.data;
+  if (env.NODE_ENV === 'production') {
+    const rpcInseguro = Object.entries(source).find(
+      ([key, value]) =>
+        key.startsWith('RPC_URL_') &&
+        typeof value === 'string' &&
+        value.length > 0 &&
+        !value.startsWith('https://'),
+    );
+    if (rpcInseguro) {
+      throw new Error(
+        `Configuracao invalida:\n  - ${rpcInseguro[0]}: precisa ser https em producao`,
+      );
+    }
+  }
 
   return {
     env,
@@ -347,7 +415,10 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       trustProxy: env.TRUST_PROXY,
       isProduction: env.NODE_ENV === 'production',
     },
-    database: { url: env.DATABASE_URL, ssl: env.DATABASE_SSL },
+    database: {
+      url: env.DATABASE_URL,
+      ssl: env.DATABASE_SSL ? { ca: env.DATABASE_SSL_CA } : false,
+    },
     crypto: buildCrypto(env),
     hd: {
       xpub: env.HD_XPUB,
@@ -364,6 +435,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     gasSponsor: {
       privateKey: env.GAS_SPONSOR_PRIVATE_KEY,
+      address: env.GAS_SPONSOR_ADDRESS,
       amountWei: env.GAS_SPONSOR_AMOUNT_WEI,
       minBalanceWei: env.GAS_SPONSOR_MIN_BALANCE_WEI,
     },
@@ -376,6 +448,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       startBlock: env.MONITOR_START_BLOCK,
       blockTag: env.MONITOR_BLOCK_TAG,
       anchorInterval: env.MONITOR_ANCHOR_INTERVAL,
+      backfillBlocks: env.MONITOR_BACKFILL_BLOCKS,
     },
     ramp: {
       baseUrl: env.RAMP_BASE_URL,

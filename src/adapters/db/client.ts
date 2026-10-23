@@ -10,9 +10,9 @@ export type DatabaseHandle = {
   close: () => Promise<void>;
 };
 
-export function createDatabase(url: string, ssl: boolean): DatabaseHandle {
+export function createDatabase(url: string, ssl: DatabaseTls | boolean): DatabaseHandle {
   const sql = postgres(url, {
-    ssl: ssl ? 'require' : false,
+    ssl: pgSsl(ssl),
     max: 10,
     idle_timeout: 30,
     connect_timeout: 15,
@@ -37,12 +37,27 @@ export function createDatabase(url: string, ssl: boolean): DatabaseHandle {
  * silenciosamente. Para um lock de longa duracao precisamos de uma sessao
  * que fique viva enquanto o worker rodar.
  */
-export function createLockClient(url: string, ssl: boolean): postgres.Sql {
+export function createLockClient(url: string, ssl: DatabaseTls | boolean): postgres.Sql {
   return postgres(url, {
-    ssl: ssl ? 'require' : false,
+    ssl: pgSsl(ssl),
     max: 1,
     idle_timeout: 0,
     connect_timeout: 15,
     onnotice: () => {},
   });
+}
+
+export type DatabaseTls = false | { ca?: string };
+
+/**
+ * `false` = sem TLS. `true` ou `{ ca? }` = verify-full (o servidor precisa
+ * apresentar um certificado valido). `require` cifrava e nao autenticava.
+ */
+export function pgSsl(
+  tls: DatabaseTls | boolean,
+): false | 'verify-full' | { rejectUnauthorized: true; ca: string } {
+  if (tls === false) return false;
+  if (tls === true) return 'verify-full';
+  if (tls.ca) return { rejectUnauthorized: true, ca: tls.ca };
+  return 'verify-full';
 }

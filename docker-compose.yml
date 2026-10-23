@@ -8,7 +8,8 @@ services:
       POSTGRES_PASSWORD: motor_dev_password
       POSTGRES_DB: motor_cripto
     ports:
-      - "5432:5432"
+      # So na maquina local. A senha abaixo e de desenvolvimento, nao de producao.
+      - "127.0.0.1:5432:5432"
     volumes:
       - motor_cripto_pgdata:/var/lib/postgresql/data
     healthcheck:

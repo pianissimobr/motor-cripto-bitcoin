@@ -84,7 +84,7 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<Fastif
     });
   }
 
-  const gasSponsorEnabled = Boolean(config.gasSponsor.privateKey);
+  const gasSponsorEnabled = Boolean(config.gasSponsor.address || config.gasSponsor.privateKey);
   const canQueryGasSponsor = Boolean(motor.gasSponsor && motor.providerFactory);
   const loadGasSponsorBalances = async (): Promise<GasSponsorBalance[]> => {
     const perfis = await motor.repos.rampProfiles.list();

@@ -1,7 +1,9 @@
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalAuditPreimage } from '../../core/audit-preimage.js';
 import { checksumAddress, normalizeAddress } from '../../core/domain/address.js';
 import { HD_INDEX_SCOPE } from '../../core/hd/index-scope.js';
+import { DataCipher } from '../../core/crypto/cipher.js';
 import type { Database } from './client.js';
 import {
   cadastrosPrefixos,
@@ -291,7 +293,7 @@ class DrizzleCustomerRepository implements CustomerRepository {
 /* Ramp profiles                                                       */
 /* ------------------------------------------------------------------ */
 
-function toRampProfile(row: typeof rampProfiles.$inferSelect): RampProfile {
+function toRampProfile(row: typeof rampProfiles.$inferSelect, hostApiKey: string | null): RampProfile {
   return {
     id: row.id,
     label: row.label,
@@ -304,7 +306,7 @@ function toRampProfile(row: typeof rampProfiles.$inferSelect): RampProfile {
     paramStyle: row.paramStyle as ParamStyle,
     hostAppName: row.hostAppName,
     hostLogoUrl: row.hostLogoUrl,
-    hostApiKey: row.hostApiKeyEnc,
+    hostApiKey,
     taxaTokenPorFiatBaseUnits: row.taxaTokenPorFiatBaseUnits,
     rampAssetKey: row.rampAssetKey,
     criadoEm: row.criadoEm,
@@ -312,12 +314,38 @@ function toRampProfile(row: typeof rampProfiles.$inferSelect): RampProfile {
 }
 
 class DrizzleRampProfileRepository implements RampProfileRepository {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly cipher: DataCipher | null,
+  ) {}
+
+  private seal(id: string, key: string | null | undefined): string | null {
+    if (!key) return null;
+    if (!this.cipher) return key;
+    return enc(this.cipher.encrypt(key, id));
+  }
+
+  /** Abre o envelope. Texto legado (antes da cifragem) e regravado cifrado. */
+  private async open(id: string, stored: string | null): Promise<string | null> {
+    if (!stored) return null;
+    if (!this.cipher) return stored;
+    try {
+      return this.cipher.decrypt(dec(stored), id);
+    } catch {
+      await this.db
+        .update(rampProfiles)
+        .set({ hostApiKeyEnc: this.seal(id, stored) })
+        .where(eq(rampProfiles.id, id));
+      return stored;
+    }
+  }
 
   async create(input: CreateRampProfileInput): Promise<RampProfile> {
+    const id = randomUUID();
     const [row] = await this.db
       .insert(rampProfiles)
       .values({
+        id,
         label: input.label,
         chain: input.chain.toLowerCase(),
         asset: input.asset,
@@ -328,13 +356,13 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
         paramStyle: input.paramStyle,
         hostAppName: input.hostAppName,
         hostLogoUrl: input.hostLogoUrl ?? null,
-        hostApiKeyEnc: input.hostApiKey ?? null,
+        hostApiKeyEnc: this.seal(id, input.hostApiKey),
         rampAssetKey: input.rampAssetKey ?? null,
         taxaTokenPorFiatBaseUnits: input.taxaTokenPorFiatBaseUnits ?? null,
       })
       .returning();
     if (!row) throw new Error('falha ao criar perfil Ramp');
-    return toRampProfile(row);
+    return toRampProfile(row, input.hostApiKey ?? null);
   }
 
   async update(id: string, input: UpdateRampProfileInput): Promise<RampProfile | null> {
@@ -345,38 +373,34 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
     if (input.paramStyle !== undefined) values.paramStyle = input.paramStyle;
     if (input.hostAppName !== undefined) values.hostAppName = input.hostAppName;
     if (input.hostLogoUrl !== undefined) values.hostLogoUrl = input.hostLogoUrl;
-    if (input.hostApiKey !== undefined) values.hostApiKeyEnc = input.hostApiKey;
+    if (input.hostApiKey !== undefined) values.hostApiKeyEnc = this.seal(id, input.hostApiKey);
     if (input.rampAssetKey !== undefined) values.rampAssetKey = input.rampAssetKey;
     if (input.taxaTokenPorFiatBaseUnits !== undefined) {
       values.taxaTokenPorFiatBaseUnits = input.taxaTokenPorFiatBaseUnits;
     }
     if (Object.keys(values).length === 0) {
-      const existing = await this.findById(id);
-      return existing;
+      return this.findById(id);
     }
     const [row] = await this.db
       .update(rampProfiles)
       .set(values)
       .where(eq(rampProfiles.id, id))
       .returning();
-    return row ? toRampProfile(row) : null;
+    if (!row) return null;
+    return toRampProfile(row, await this.open(row.id, row.hostApiKeyEnc));
   }
 
   async findById(id: string): Promise<RampProfile | null> {
-    const [row] = await this.db
-      .select()
-      .from(rampProfiles)
-      .where(eq(rampProfiles.id, id))
-      .limit(1);
-    return row ? toRampProfile(row) : null;
+    const [row] = await this.db.select().from(rampProfiles).where(eq(rampProfiles.id, id)).limit(1);
+    if (!row) return null;
+    return toRampProfile(row, await this.open(row.id, row.hostApiKeyEnc));
   }
 
   async list(): Promise<RampProfile[]> {
-    const rows = await this.db
-      .select()
-      .from(rampProfiles)
-      .orderBy(asc(rampProfiles.label));
-    return rows.map(toRampProfile);
+    const rows = await this.db.select().from(rampProfiles).orderBy(asc(rampProfiles.criadoEm));
+    return Promise.all(
+      rows.map(async (row) => toRampProfile(row, await this.open(row.id, row.hostApiKeyEnc))),
+    );
   }
 }
 
@@ -852,7 +876,7 @@ function toCredit(row: typeof creditosCliente.$inferSelect): CustomerCredit {
     linkId: row.linkId,
     pagamentoId: row.pagamentoId,
     valorBaseUnits: row.valorBaseUnits,
-    valorCentavos: row.valorCentavos,
+    valorCentavos: row.valorCentavos === null || row.valorCentavos === undefined ? null : toBigInt(row.valorCentavos),
     moeda: row.moeda,
     status: row.status as CreditStatus,
     criadoEm: row.criadoEm,
@@ -909,7 +933,7 @@ class DrizzleCreditRepository implements CreditRepository {
     return rows.map(toCredit);
   }
 
-  async sumByCustomer(clienteId: string): Promise<number> {
+  async sumByCustomer(clienteId: string): Promise<bigint> {
     const [row] = await this.db
       .select({
         total: sql<string>`coalesce(sum(${creditosCliente.valorCentavos}), 0)::text`,
@@ -918,7 +942,7 @@ class DrizzleCreditRepository implements CreditRepository {
       .where(
         and(eq(creditosCliente.clienteId, clienteId), eq(creditosCliente.status, 'liberado')),
       );
-    return toNumber(row?.total);
+    return toBigInt(row?.total);
   }
 
   async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {
@@ -1389,7 +1413,7 @@ class DrizzleAuditRepository implements AuditRepository {
       // entao trocar o IP de um evento nao quebrava o hash.
       const hash = createHash('sha256')
         .update(
-          [
+          canonicalAuditPreimage([
             hashAnterior ?? '',
             id,
             criadoEm.toISOString(),
@@ -1399,7 +1423,7 @@ class DrizzleAuditRepository implements AuditRepository {
             input.entidadeId ?? '',
             input.ip ?? '',
             detalhes ?? '',
-          ].join('|'),
+          ]),
         )
         .digest('hex');
 
@@ -1441,10 +1465,10 @@ class DrizzleAuditRepository implements AuditRepository {
 /* Factory                                                             */
 /* ------------------------------------------------------------------ */
 
-export function createRepositories(db: Database): MotorRepositories {
+export function createRepositories(db: Database, cipher: DataCipher | null = null): MotorRepositories {
   return {
     customers: new DrizzleCustomerRepository(db),
-    rampProfiles: new DrizzleRampProfileRepository(db),
+    rampProfiles: new DrizzleRampProfileRepository(db, cipher),
     coldWallets: new DrizzleColdWalletRepository(db),
     links: new DrizzleLinkRepository(db),
     payments: new DrizzlePaymentRepository(db),

@@ -154,7 +154,7 @@ el('gerar').addEventListener('click', async () => {
   const coldWalletId = el('carteiraId').value || null;
   const coldWalletAddress = coldWalletId ? null : el('carteiraEndereco').value.trim() || null;
   if (!coldWalletId && !coldWalletAddress) {
-    errorBox.textContent = 'Selecione a carteira final ou informe o endereco 0x...';
+    errorBox.textContent = 'Selecione a carteira final ou informe um endereco ja cadastrado.';
     return;
   }
 

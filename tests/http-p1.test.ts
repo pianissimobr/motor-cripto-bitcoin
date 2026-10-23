@@ -86,6 +86,29 @@ describe('P1: auth por escopo', () => {
     }
   });
 
+  it('bloqueia o IP depois de 10 falhas de autenticacao', async () => {
+    const { app } = await makeApp();
+    app.get('/api/ping', async () => ({ ok: true }));
+    try {
+      for (let i = 0; i < 10; i++) {
+        const resp = await app.inject({
+          method: 'GET',
+          url: '/api/ping',
+          headers: { authorization: 'Bearer token-errado-aqui' },
+        });
+        expect(resp.statusCode).toBe(403);
+      }
+      const bloqueado = await app.inject({
+        method: 'GET',
+        url: '/api/ping',
+        headers: { authorization: 'Bearer token-errado-aqui' },
+      });
+      expect(bloqueado.statusCode).toBe(429);
+    } finally {
+      await close(app);
+    }
+  });
+
   it('auth/check exige token e devolve o escopo resolvido', async () => {
     const { app } = await makeApp();
     try {

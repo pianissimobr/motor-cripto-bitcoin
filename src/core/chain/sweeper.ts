@@ -306,7 +306,36 @@ export class Sweeper {
       return 'ignorado';
     }
 
-    const carteiraFria = await this.resolveColdWallet(link);
+    let carteiraFria: string;
+    try {
+      carteiraFria = await this.resolveColdWallet(link);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const ja = (await repos.transfers.findByLink(link.id)).some((t) => t.erro === message);
+      if (!ja) {
+        await repos.transfers.create({
+          linkId: link.id,
+          deAddress: link.enderecoDeposito,
+          paraAddress: link.carteiraFriaEndereco ?? '',
+          valorBaseUnits: saldo,
+          status: 'falhou',
+          erro: message,
+          chain: link.chain,
+          bloco: null,
+          nonce: null,
+          kind: 'sweep',
+        });
+        await repos.audit.record({
+          ator: 'worker',
+          acao: 'sweep.destino_recusado',
+          entidade: 'link',
+          entidadeId: link.id,
+          detalhes: { chain: link.chain, motivo: message },
+        });
+      }
+      logger.error({ linkId: link.id, motivo: message }, 'sweep recusado: destino fora do cadastro');
+      return 'ignorado';
+    }
     const data = encodeTransfer(carteiraFria, saldo);
 
     let gasLimit = 120_000n;
@@ -788,52 +817,41 @@ export class Sweeper {
       return 'ignorado';
     }
 
-    const nonceRecuperado = nonceAtual - 1;
-    const recuperacaoExistente = await repos.transfers.findByLinkKindNonce(
-      link.id,
-      'recovery',
-      nonceRecuperado,
-    );
-    if (recuperacaoExistente) {
-      await this.ensureMovido(link, 'recuperacao sintetica ja registrada');
-      return 'movido';
-    }
-
-    const total = await repos.payments.sumConfirmedByLink(link.id);
-    const valor = total > 0n ? total : (link.expectedBaseUnits ?? 0n);
-    await repos.transfers.create({
-      linkId: link.id,
-      deAddress: link.enderecoDeposito,
-      paraAddress: '',
-      valorBaseUnits: valor,
-      status: 'confirmado',
-      chain: link.chain,
-      bloco: null,
-      nonce: nonceRecuperado,
-      kind: 'recovery',
-      txHash: null,
-      rawTransaction: null,
-      erro: 'recuperacao sintetica: saldo zero e nonce consumido sem registro de sweep',
-    });
-    await repos.audit.record({
-      ator: 'worker',
-      acao: 'sweep.recuperacao_sintetica',
-      entidade: 'link',
-      entidadeId: link.id,
-      detalhes: {
-        nonce: nonceRecuperado,
-        valorBaseUnits: valor.toString(),
-        token: link.tokenContract,
+    const jaSinalizado = transfers.some((t) => t.erro === 'sweep sem prova de destino');
+    if (!jaSinalizado) {
+      const nonceRecuperado = nonceAtual - 1;
+      await repos.transfers.create({
+        linkId: link.id,
+        deAddress: link.enderecoDeposito,
+        paraAddress: '',
+        valorBaseUnits: 0n,
+        status: 'falhou',
         chain: link.chain,
-        motivo: 'saldo zero e nonce consumido sem sweep confirmado no banco',
-      },
-    });
-    logger.warn(
-      { linkId: link.id, nonce: nonceRecuperado, valor: valor.toString() },
-      'sweep recuperado sinteticamente (sem txHash)',
+        bloco: null,
+        nonce: nonceRecuperado,
+        kind: 'recovery',
+        txHash: null,
+        rawTransaction: null,
+        erro: 'sweep sem prova de destino',
+      });
+      await repos.audit.record({
+        ator: 'worker',
+        acao: 'sweep.sem_prova',
+        entidade: 'link',
+        entidadeId: link.id,
+        detalhes: {
+          nonce: nonceRecuperado,
+          token: link.tokenContract,
+          chain: link.chain,
+          motivo: 'saldo zero e nonce consumido sem sweep confirmado para a carteira fria',
+        },
+      });
+    }
+    logger.error(
+      { linkId: link.id, nonceAtual },
+      'saldo zero e nonce consumido sem prova de que o destino foi a carteira fria',
     );
-    await this.ensureMovido(link, 'saldo zero e nonce consumido: sweep recuperado sinteticamente');
-    return 'movido';
+    return 'ignorado';
   }
 
   private async finalizeSweep(
@@ -1013,9 +1031,9 @@ export class Sweeper {
   /**
    * Destino do sweep.
    *
-   * A1: usa SEMPRE o endereco persistido no link (a escolha feita na UI).
-   * O fallback por chain existe apenas para links legados criados antes da
-   * correcao, e nesse caso emite aviso: o destino pode nao ser o esperado.
+   * O endereco persistido no link so vale se ainda estiver em
+   * `carteiras_frias` na mesma chain. Um UPDATE no banco para um endereco
+   * desconhecido nao e assinado.
    */
   private async resolveColdWallet(link: {
     id: string;
@@ -1023,19 +1041,31 @@ export class Sweeper {
     chain: string;
     carteiraFriaEndereco: string | null;
   }): Promise<string> {
-    if (link.carteiraFriaEndereco) return link.carteiraFriaEndereco;
-
     const wallets = await this.deps.repos.coldWallets.list();
-    const candidate = wallets.find((w) => w.chain.toLowerCase() === link.chain.toLowerCase());
+    const daChain = wallets.filter((w) => w.chain.toLowerCase() === link.chain.toLowerCase());
+
+    if (link.carteiraFriaEndereco) {
+      const cadastrada = daChain.find(
+        (w) => w.address.toLowerCase() === link.carteiraFriaEndereco!.toLowerCase(),
+      );
+      if (!cadastrada) {
+        throw new Error(
+          'destino do sweep nao esta cadastrado em carteiras_frias para esta chain',
+        );
+      }
+      return cadastrada.address;
+    }
+
+    const candidate = daChain[0];
     if (candidate) {
       this.deps.logger.warn(
         { linkId: link.id, chain: link.chain, fallback: candidate.address },
-        'link legado sem destino persistado: usando fallback por chain',
+        'link legado sem destino persistido: usando carteira fria cadastrada da chain',
       );
       return candidate.address;
     }
     throw new Error(
-      `nenhuma carteira fria para a chain "${link.chain}" e o link nao tem destino persistado`,
+      `nenhuma carteira fria para a chain "${link.chain}" e o link nao tem destino persistido`,
     );
   }
 }

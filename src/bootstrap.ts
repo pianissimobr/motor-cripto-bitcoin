@@ -9,6 +9,7 @@ import { loadConfig, type AppConfig } from './core/config.js';
 import { HdWallet } from './core/hd/hd-wallet.js';
 import { BlindIndex, DataCipher, Keyring } from './core/crypto/cipher.js';
 import { createMotor, type Motor } from './core/index.js';
+import { AddressOnlySigner } from './core/signer/address-signer.js';
 import { LocalSigner } from './core/signer/local-signer.js';
 import { PsbtSigner } from './core/signer/psbt-signer.js';
 import { RemoteSigner } from './core/signer/remote-signer.js';
@@ -17,9 +18,12 @@ import type { Logger } from './core/logger.js';
 
 /**
  * Montagem do motor: config -> infra -> core.
- * Compartilhado entre o servidor HTTP e o worker, para que ambos usem
- * exatamente a mesma configuracao e os mesmos ports.
+ *
+ * `api` nao abre o keystore, nao guarda a chave do gas sponsor e nao guarda
+ * o token do signer remoto. `worker` e o unico papel que assina.
  */
+
+export type BootstrapRole = 'api' | 'worker';
 
 export type Bootstrap = {
   config: AppConfig;
@@ -30,13 +34,28 @@ export type Bootstrap = {
   close: () => Promise<void>;
 };
 
-export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<Bootstrap> {
+const SECRET_ENV = ['GAS_SPONSOR_PRIVATE_KEY', 'SIGNER_PASSPHRASE', 'SIGNER_REMOTE_TOKEN'] as const;
+
+export async function bootstrap(
+  env: NodeJS.ProcessEnv = process.env,
+  role: BootstrapRole = 'api',
+): Promise<Bootstrap> {
   loadEnvFile();
-  const config = loadConfig(env);
+  const source = role === 'api' ? omitSecrets(env) : env;
+  const config = loadConfig(source);
+  if (role === 'api') {
+    for (const key of SECRET_ENV) delete process.env[key];
+  }
   const logger = createLogger(config);
 
   const db = createDatabase(config.database.url, config.database.ssl);
-  const repos = createRepositories(db.db);
+  const keyring = new Keyring(
+    config.crypto.keyring,
+    config.crypto.activeKid,
+    config.crypto.legacyKid,
+  );
+  const cipher = new DataCipher(keyring);
+  const repos = createRepositories(db.db, cipher);
 
   const hdWallet = HdWallet.fromAccountXpub(
     config.hd.xpub,
@@ -44,28 +63,35 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
     config.hd.accountIndex,
   );
 
-  const signer = createSigner(config, hdWallet, logger);
+  const signer = createProcessSigner(role, config, hdWallet, logger);
 
   const rpcUrls: Record<string, string> = {};
+  const confirmUrls: Record<string, string> = {};
   for (const [chain, spec] of Object.entries(CHAINS)) {
     const url = env[spec.rpcEnvKey];
     if (url) rpcUrls[chain] = url;
+    const confirm = env[`${spec.rpcEnvKey}_CONFIRM`];
+    if (typeof confirm === 'string' && confirm.length > 0) confirmUrls[chain] = confirm;
   }
   const providerFactory = createProviderFactory(rpcUrls);
+  const confirmProviderFactory =
+    Object.keys(confirmUrls).length > 0 ? createProviderFactory(confirmUrls) : undefined;
 
-  const gasSponsor = new GasSponsor(
-    config.gasSponsor.privateKey,
-    config.gasSponsor.amountWei,
-    config.gasSponsor.minBalanceWei,
-  );
+  const gasSponsor =
+    role === 'worker'
+      ? GasSponsor.fromPrivateKey(
+          config.gasSponsor.privateKey,
+          config.gasSponsor.amountWei,
+          config.gasSponsor.minBalanceWei,
+          config.gasSponsor.address,
+        )
+      : GasSponsor.watchOnly(
+          config.gasSponsor.address,
+          config.gasSponsor.amountWei,
+          config.gasSponsor.minBalanceWei,
+        );
 
-  // E1/E2/E3: usa o keyring completo, nao apenas a chave legada.
-  const keyring = new Keyring(
-    config.crypto.keyring,
-    config.crypto.activeKid,
-    config.crypto.legacyKid,
-  );
-  const cipher = new DataCipher(keyring);
+  // E1/E2/E3: blind index com a chave ativa e, na rotacao, tambem a anterior.
   const blindIndex = config.crypto.indexKeyV2
     ? BlindIndex.rotating(
         config.crypto.indexKeyV2,
@@ -96,7 +122,9 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
       startBlock: config.chain.startBlock,
       blockTag: config.chain.blockTag,
       anchorInterval: config.chain.anchorInterval,
+      backfillBlocks: config.chain.backfillBlocks,
     },
+    confirmProviderFactory,
     sweeper: {
       gasSponsorAmountWei: config.gasSponsor.amountWei,
       gasSponsorMinBalanceWei: config.gasSponsor.minBalanceWei,
@@ -116,7 +144,31 @@ export async function bootstrap(env: NodeJS.ProcessEnv = process.env): Promise<B
   };
 }
 
-function createSigner(config: AppConfig, hdWallet: HdWallet, logger: Logger): Signer {
+function omitSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const copy: NodeJS.ProcessEnv = { ...env };
+  for (const key of SECRET_ENV) delete copy[key];
+  return copy;
+}
+
+/**
+ * API: so endereco. Worker: keystore, signer remoto ou PSBT.
+ * Exportado para o teste que garante que o papel `api` nao abre o keystore.
+ */
+export function createProcessSigner(
+  role: BootstrapRole,
+  config: AppConfig,
+  hdWallet: HdWallet,
+  logger: Logger,
+): Signer {
+  if (role === 'api') {
+    const signer = new AddressOnlySigner(hdWallet, config.signer.mode);
+    logger.info({ signer: signer.describe() }, 'signer da API sem chave privada');
+    return signer;
+  }
+  return createSigningSigner(config, hdWallet, logger);
+}
+
+function createSigningSigner(config: AppConfig, hdWallet: HdWallet, logger: Logger): Signer {
   switch (config.signer.mode) {
     case 'local': {
       const passphrase = config.signer.passphrase;

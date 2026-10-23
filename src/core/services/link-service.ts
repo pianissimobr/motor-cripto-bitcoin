@@ -7,7 +7,7 @@ import type { PaymentLink, RampProfile } from '../domain/types.js';
 import type { HdWallet } from '../hd/hd-wallet.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories } from '../ports/index.js';
-import { buildRampLink } from '../ramp/link-builder.js';
+import { buildRampLink, stripHostApiKey } from '../ramp/link-builder.js';
 
 /**
  * Servico de geracao de cobrancas.
@@ -60,6 +60,7 @@ export class LinkService {
     const index = await repos.indices.allocate(HD_INDEX_SCOPE, this.deps.maxIndex);
 
     let link: PaymentLink;
+    let rampUrlCompleta = '';
     try {
       const enderecoDeposito = checksumAddress(this.deps.hdWallet.deriveAddress(index));
       const caminhoDerivacao = this.deps.hdWallet.fullPath(index);
@@ -70,13 +71,15 @@ export class LinkService {
           ? divRound(taxa * BigInt(input.amountCents), 100n)
           : null;
 
-      const rampUrl = buildRampLink({
+      const rampUrlCompletaLocal = buildRampLink({
         profile,
         depositAddress: enderecoDeposito,
         amountCents: input.amountCents,
         paymentId: randomUUID(),
         finalUrl: input.finalUrl ?? null,
       });
+      rampUrlCompleta = rampUrlCompletaLocal;
+      const rampUrl = stripHostApiKey(rampUrlCompletaLocal);
 
       const expiraEm = new Date(Date.now() + this.deps.ttlHours * 3600_000);
 
@@ -138,7 +141,7 @@ export class LinkService {
       { linkId: link.id, clienteId: customer.id, indiceHd: index },
       'link de cobranca criado',
     );
-    return link;
+    return { ...link, rampUrl: rampUrlCompleta };
   }
 
   /**
@@ -163,14 +166,20 @@ export class LinkService {
       if (!/^0x[a-fA-F0-9]{40}$/.test(input.coldWalletAddress)) {
         throw new ValidationError('endereco de carteira fria invalido');
       }
-      // Endereco livre: entra no log como destino, sem id de tabela.
       const existing = await this.deps.repos.coldWallets.findByAddress(
         input.coldWalletAddress,
       );
-      return {
-        id: existing?.id ?? null,
-        endereco: checksumAddress(input.coldWalletAddress),
-      };
+      if (!existing) {
+        throw new ValidationError(
+          'carteira fria nao cadastrada: registre o endereco antes de usa-lo como destino',
+        );
+      }
+      if (existing.chain.toLowerCase() !== profile.chain.toLowerCase()) {
+        throw new ValidationError(
+          `carteira fria da chain "${existing.chain}" incompativel com o perfil "${profile.chain}"`,
+        );
+      }
+      return { id: existing.id, endereco: checksumAddress(existing.address) };
     }
     // fallback: carteira fria cadastrada para a chain do perfil
     const wallets = await this.deps.repos.coldWallets.list();

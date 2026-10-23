@@ -34,10 +34,13 @@ export function fiatToCents(input: string | number): number {
 }
 
 /** Converte centavos para string no formato brasileiro: 12345 -> "123,45". */
-export function centsToFiat(cents: number): string {
-  const sign = cents < 0 ? '-' : '';
-  const abs = Math.abs(cents);
-  return `${sign}${Math.floor(abs / 100)},${String(abs % 100).padStart(2, '0')}`;
+export function centsToFiat(cents: number | bigint): string {
+  const value = typeof cents === 'bigint' ? cents : BigInt(cents);
+  const sign = value < 0n ? '-' : '';
+  const abs = value < 0n ? -value : value;
+  const whole = abs / 100n;
+  const fraction = (abs % 100n).toString().padStart(2, '0');
+  return `${sign}${whole},${fraction}`;
 }
 
 /**

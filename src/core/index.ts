@@ -40,6 +40,8 @@ export type MotorOptions = {
   maxIndex?: number;
   monitor?: Partial<MonitorOptions>;
   sweeper?: Partial<SweeperOptions>;
+  /** RPC de conferência. Se existir para a chain, o crédito exige acordo. */
+  confirmProviderFactory?: ProviderFactory;
 };
 
 export type Motor = {
@@ -103,7 +105,9 @@ export function createMotor(options: MotorOptions): Motor {
       blockTag: options.monitor?.blockTag ?? 'finalized',
       anchorInterval: options.monitor?.anchorInterval ?? 32,
       maxReorgAnchors: options.monitor?.maxReorgAnchors ?? 64,
+      backfillBlocks: options.monitor?.backfillBlocks ?? 100_000,
     },
+    confirmProviderFactory: options.confirmProviderFactory,
   });
 
   const sweeper = new Sweeper({
@@ -153,6 +157,7 @@ export { collectAlerts, type Alerta, type AlertaNivel } from './alerts.js';
 export { Sweeper } from './chain/sweeper.js';
 export { GasSponsor } from './chain/gas-sponsor.js';
 export { HdWallet } from './hd/hd-wallet.js';
+export { AddressOnlySigner } from './signer/address-signer.js';
 export { LocalSigner } from './signer/local-signer.js';
 export { RemoteSigner } from './signer/remote-signer.js';
 export { PsbtSigner } from './signer/psbt-signer.js';
