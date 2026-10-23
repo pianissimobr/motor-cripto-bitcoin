@@ -85,6 +85,13 @@
       "when": 1792700000003,
       "tag": "0011_credito_centavos_bigint",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792700000004,
+      "tag": "0012_conta_cliente",
+      "breakpoints": true
     }
   ]
 }

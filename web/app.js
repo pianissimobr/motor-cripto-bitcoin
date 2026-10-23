@@ -5,6 +5,40 @@
 
 const TOKEN_KEY = 'motor.admin.token';
 
+export function getConta() {
+  return sessionStorage.getItem('motor.conta.token') || '';
+}
+
+export function setConta(value) {
+  if (value) sessionStorage.setItem('motor.conta.token', value);
+  else sessionStorage.removeItem('motor.conta.token');
+}
+
+/** Chamadas da conta do cliente. Não envia o token da loja. */
+export async function contaApi(path, options = {}) {
+  const headers = Object.assign({}, options.headers || {});
+  if (options.body && !headers['content-type']) headers['content-type'] = 'application/json';
+  const token = getConta();
+  if (token) headers['x-conta-token'] = token;
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  const text = await response.text();
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = { erro: text.slice(0, 200) };
+    }
+  }
+  if (!response.ok) {
+    const message = (body && (body.erro || body.message)) || `Erro no servidor (HTTP ${response.status})`;
+    const error = new Error(response.status >= 500 ? 'Erro no servidor' : message);
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+
 export function getToken() {
   return sessionStorage.getItem(TOKEN_KEY) || '';
 }

@@ -87,6 +87,29 @@ export interface CustomerRepository {
     prefixBidxList: string[],
     prefixBidxListV2: string[],
   ): Promise<void>;
+  updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void>;
+}
+
+export type AccountRecord = {
+  clienteId: string;
+  usuario: string;
+  senhaHash: string;
+};
+
+export type SessionRecord = {
+  clienteId: string;
+  expiraEm: Date;
+};
+
+export interface AccountRepository {
+  create(input: AccountRecord): Promise<void>;
+  findByUsuario(usuario: string): Promise<AccountRecord | null>;
+  findByClienteId(clienteId: string): Promise<AccountRecord | null>;
+  update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void>;
+  createSession(input: { id: string; tokenHash: string; clienteId: string; expiraEm: Date }): Promise<void>;
+  findSession(tokenHash: string): Promise<SessionRecord | null>;
+  deleteSession(tokenHash: string): Promise<void>;
+  deleteCustomer(clienteId: string): Promise<void>;
 }
 
 export type CreateRampProfileInput = {
@@ -340,4 +363,5 @@ export type MotorRepositories = {
   anchors: AnchorRepository;
   indices: IndexAllocator;
   audit: AuditRepository;
+  accounts: AccountRepository;
 };

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  AccountRecord,
+  AccountRepository,
   AnchorRepository,
   AuditRepository,
   ColdWalletRepository,
@@ -19,6 +21,7 @@ import type {
   PaymentRepository,
   RampProfileRepository,
   RecordAuditInput,
+  SessionRecord,
   StoredCustomer,
   TransferRepository,
   UpsertPaymentInput,
@@ -122,6 +125,13 @@ export class FakeCustomerRepository implements CustomerRepository {
     r.emailBidx = emailBidx;
     r.emailBidxAnterior = emailBidxAnterior;
     this.prefixos.set(id, [...prefixBidxList, ...prefixBidxListV2]);
+  }
+
+  async updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void> {
+    const r = this.rows.find((x) => x.id === id);
+    if (!r) return;
+    r.nomeMasked = nomeMasked;
+    r.emailMasked = emailMasked;
   }
 
   async replacePrefixes(
@@ -722,13 +732,82 @@ export class FakeAuditRepository implements AuditRepository {
   }
 }
 
+export class FakeAccountRepository implements AccountRepository {
+  readonly contas: AccountRecord[] = [];
+  readonly sessoes: Array<{ tokenHash: string; clienteId: string; expiraEm: Date }> = [];
+
+  constructor(
+    private readonly customers: FakeCustomerRepository,
+    private readonly links: FakeLinkRepository,
+  ) {}
+
+  async create(input: AccountRecord): Promise<void> {
+    if (this.contas.some((c) => c.usuario === input.usuario)) {
+      const err = new Error('duplicate key');
+      throw err;
+    }
+    this.contas.push({ ...input });
+  }
+
+  async findByUsuario(usuario: string): Promise<AccountRecord | null> {
+    return this.contas.find((c) => c.usuario === usuario) ?? null;
+  }
+
+  async findByClienteId(clienteId: string): Promise<AccountRecord | null> {
+    return this.contas.find((c) => c.clienteId === clienteId) ?? null;
+  }
+
+  async update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void> {
+    const row = this.contas.find((c) => c.clienteId === clienteId);
+    if (!row) return;
+    if (patch.usuario !== undefined) row.usuario = patch.usuario;
+    if (patch.senhaHash !== undefined) row.senhaHash = patch.senhaHash;
+  }
+
+  async createSession(input: {
+    id: string;
+    tokenHash: string;
+    clienteId: string;
+    expiraEm: Date;
+  }): Promise<void> {
+    this.sessoes.push({
+      tokenHash: input.tokenHash,
+      clienteId: input.clienteId,
+      expiraEm: input.expiraEm,
+    });
+  }
+
+  async findSession(tokenHash: string): Promise<SessionRecord | null> {
+    const row = this.sessoes.find((s) => s.tokenHash === tokenHash);
+    return row ? { clienteId: row.clienteId, expiraEm: row.expiraEm } : null;
+  }
+
+  async deleteSession(tokenHash: string): Promise<void> {
+    const i = this.sessoes.findIndex((s) => s.tokenHash === tokenHash);
+    if (i >= 0) this.sessoes.splice(i, 1);
+  }
+
+  async deleteCustomer(clienteId: string): Promise<void> {
+    const i = this.customers.rows.findIndex((r) => r.id === clienteId);
+    if (i >= 0) this.customers.rows.splice(i, 1);
+    for (let n = this.links.rows.length - 1; n >= 0; n--) {
+      if (this.links.rows[n]?.clienteId === clienteId) this.links.rows.splice(n, 1);
+    }
+    for (let n = this.contas.length - 1; n >= 0; n--) {
+      if (this.contas[n]?.clienteId === clienteId) this.contas.splice(n, 1);
+    }
+  }
+}
+
 export function createFakeRepositories(): MotorRepositories {
   const credits = new FakeCreditRepository();
+  const customers = new FakeCustomerRepository();
+  const links = new FakeLinkRepository();
   return {
-    customers: new FakeCustomerRepository(),
+    customers,
     rampProfiles: new FakeRampProfileRepository(),
     coldWallets: new FakeColdWalletRepository(),
-    links: new FakeLinkRepository(),
+    links,
     payments: new FakePaymentRepository(credits),
     credits,
     transfers: new FakeTransferRepository(),
@@ -736,5 +815,6 @@ export function createFakeRepositories(): MotorRepositories {
     anchors: new FakeAnchorRepository(),
     indices: new FakeIndexAllocator(),
     audit: new FakeAuditRepository(),
+    accounts: new FakeAccountRepository(customers, links),
   };
 }

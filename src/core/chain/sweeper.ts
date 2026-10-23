@@ -868,8 +868,8 @@ export class Sweeper {
       erro: null,
     });
 
-    // D2: o gas sponsor mandou POL para o endereco derivado; sobra um
-    // pouco. Sem isso, cada link deixa poeira de nativo para sempre.
+    // O patrocinador mandou POL para o endereco derivado. O que sobra
+    // volta para a carteira de gas, para a reserva se recompor sozinha.
     await this.sweepNativeDust(link, provider, receipt, feePerGas);
 
     await this.ensureMovido(
@@ -894,13 +894,14 @@ export class Sweeper {
   }
 
   /**
-   * D2: devolve o gas nativo restante para a carteira fria.
+   * Devolve o POL restante para a carteira de gas.
    *
    * O patrocinador mandou ~0,5 POL para o endereco derivado pagar o gas do
-   * `transfer`. Sobra quase tudo. Sem esta limpeza, cada link deixa poeira
-   * de nativo presa num enderece que ninguem mais vai usar.
+   * `transfer`. Sobra quase tudo. Sem esta devolucao, a carteira de gas
+   * esvazia a cada cobranca e o endereco derivado fica com poeira de POL.
    *
    * Reserva: o proprio envio custa gas, entao mandamos `saldo - reserva`.
+   * Sem endereco de gas configurado, o troco fica no endereco derivado.
    */
   private async sweepNativeDust(
     link: PaymentLink,
@@ -925,7 +926,14 @@ export class Sweeper {
         return;
       }
 
-      const destino = await this.resolveColdWallet(link);
+      const destino = this.destinoDoTroco(link.enderecoDeposito);
+      if (!destino) {
+        logger.warn(
+          { linkId: link.id },
+          'sem endereco da carteira de gas: troco de POL fica no endereco derivado',
+        );
+        return;
+      }
       const nonce = Number(
         await provider.getTransactionCount(link.enderecoDeposito, 'pending'),
       );
@@ -1016,7 +1024,7 @@ export class Sweeper {
           valor: aEnviar.toString(),
           gasUsed: receipt.gasUsed.toString(),
         },
-        'gas nativo residual devolvido para a carteira fria',
+        'gas nativo residual devolvido para a carteira de gas',
       );
     } catch (err) {
       // Falha aqui e cosmetica: o token ja esta seguro na carteira fria.
@@ -1026,6 +1034,18 @@ export class Sweeper {
         'nao foi possivel devolver o gas nativo residual (token ja esta seguro)',
       );
     }
+  }
+
+  /**
+   * Endereco da carteira de gas, se for um endereco EVM e nao for o proprio
+   * endereco da cobranca. Sem isso o troco nao sai.
+   */
+  private destinoDoTroco(enderecoDeposito: string): string | null {
+    const address = this.deps.gasSponsor.address;
+    if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) return null;
+    const destino = getAddress(address);
+    if (destino === getAddress(enderecoDeposito)) return null;
+    return destino;
   }
 
   /**

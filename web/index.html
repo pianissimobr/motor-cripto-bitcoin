@@ -12,48 +12,37 @@
     <div class="brand">
       <span class="dot"></span>
       <span>Motor Cripto</span>
-      <nav>
-        <a href="/cadastro.html">Cadastro</a>
-        <a href="/cobranca.html">Gerar cobranca</a>
-      </nav>
-    </div>
-    <div class="auth-box">
-      <input id="token-input" type="password" placeholder="ADMIN_TOKEN" autocomplete="off" spellcheck="false">
-      <button id="token-save" class="small">Conectar</button>
-      <span id="auth-state" class="auth-state">sem token</span>
     </div>
   </header>
 
   <main class="wrap">
-    <h1>Motor de pagamentos on-chain</h1>
-    <p class="sub">
-      Cobranca via Ramp (conta pessoal, sem webhook) com endereco unico por link,
-      confirmacao por monitoramento da blockchain e sweep automatico para a carteira fria.
-    </p>
+    <h1>Entrar</h1>
+    <p class="sub">Inscreva-se ou entre com usuário ou e-mail.</p>
 
-    <div class="grid">
-      <section class="card">
-        <h2>1. Cadastro</h2>
-        <p class="hint">
-          Registra nome e email do cliente. Os dados sao cifrados em repouso
-          (AES-256-GCM) e a busca usa indice opaco (HMAC-SHA256).
-        </p>
-        <a href="/cadastro.html"><button class="primary" type="button">Abrir cadastro</button></a>
-      </section>
+    <section class="card" style="max-width:460px">
+      <div class="acoes">
+        <button class="primary" id="mostrar-login" type="button">Login</button>
+        <a href="/inscricao.html"><button type="button">Inscreva-se</button></a>
+      </div>
 
-      <section class="card">
-        <h2>2. Gerar cobranca</h2>
-        <p class="hint">
-          Escolha o cliente, o valor, o perfil de integracao Ramp e a carteira
-          final. O motor deriva o endereco de deposito e devolve o link.
-        </p>
-        <a href="/cobranca.html"><button class="primary" type="button">Abrir cobranca</button></a>
-      </section>
-    </div>
+      <form id="login" hidden>
+        <label for="identificador">Usuário ou e-mail</label>
+        <input id="identificador" autocomplete="username" maxlength="320" required>
+
+        <label for="senha">Senha</label>
+        <input id="senha" type="password" autocomplete="current-password" maxlength="200" required>
+
+        <div style="margin-top:16px">
+          <button class="primary" type="submit">Entrar</button>
+        </div>
+        <div id="erro" class="error"></div>
+      </form>
+    </section>
   </main>
 
-  <footer>Motor Cripto - use as duas telas acima para operar.</footer>
-  <div id="toasts"></div>
+  <footer>
+    <a class="loja-link" href="/cadastro.html">Área da loja</a>
+  </footer>
   <script type="module" src="/index.js"></script>
 </body>
 </html>

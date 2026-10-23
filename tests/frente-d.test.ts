@@ -10,8 +10,8 @@ import { createFakeRepositories } from './fakes.js';
 /**
  * Frente D - sweeper robusto.
  *
- * D2: o gas nativo residual volta para a carteira fria (nada de poeira
- *     presa em endereco que ninguem mais usa).
+ * D2: o gas nativo residual volta para a carteira de gas (a reserva de POL
+ *     se recompoe; a carteira fria fica so com o token).
  * D3: nao cria uma segunda transacao enquanto a primeira esta pendente
  *     (competiriam pelo mesmo nonce e a segunda poderia substitui-la).
  * D4: idempotencia por (link, nonce) - um link nao gera dois sweeps do
@@ -26,6 +26,7 @@ const XPUB = accountNode.neuter().extendedKey;
 
 const USDC = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
 const CARTEIRA = '0x1111111111111111111111111111111111111111';
+const CARTEIRA_GAS = '0x2222222222222222222222222222222222222222';
 
 /** Provider fake com saldo de token e nativo controlados. */
 function makeProvider(opts: {
@@ -117,7 +118,7 @@ function makeSweeper(ctx: ReturnType<typeof setup>, provider: unknown, opts?: {
   const gasSponsor = opts?.sponsorThrows
     ? {
         enabled: true,
-        address: '0xS',
+        address: CARTEIRA_GAS,
         balance: async () => 0n,
         ensureGas: async () => {
           throw new Error(opts.sponsorThrows!);
@@ -125,7 +126,7 @@ function makeSweeper(ctx: ReturnType<typeof setup>, provider: unknown, opts?: {
       }
     : {
         enabled: opts?.sponsorEnabled ?? false,
-        address: opts?.sponsorEnabled ? '0xS' : null,
+        address: CARTEIRA_GAS,
         balance: async () => 0n,
         ensureGas: async () => false,
       };
@@ -268,7 +269,7 @@ describe('D4: idempotencia por (link, nonce)', () => {
 });
 
 describe('D2: devolve o gas nativo residual', () => {
-  it('registra o retorno de dust para a carteira fria', async () => {
+  it('registra o retorno de dust para a carteira de gas', async () => {
     const ctx = setup();
     const link = await seedLink(ctx);
     // Sobra bastante nativo apos o sweep do token.
@@ -284,7 +285,7 @@ describe('D2: devolve o gas nativo residual', () => {
     const movimentos = await ctx.repos.transfers.findByLink(link.id);
     const dust = movimentos.find((t) => t.erro === 'retorno de gas nativo (dust)');
     expect(dust).toBeDefined();
-    expect(dust?.paraAddress).toBe(CARTEIRA);
+    expect(dust?.paraAddress.toLowerCase()).toBe(CARTEIRA_GAS.toLowerCase());
     expect(dust?.valorBaseUnits).toBeGreaterThan(0n);
   });
 

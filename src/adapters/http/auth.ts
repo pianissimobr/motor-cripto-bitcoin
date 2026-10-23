@@ -50,6 +50,8 @@ export function createAuthHook(options: AuthOptions) {
     // e enviado no cabecalho a cada chamada.
     if (!path.startsWith('/api/')) return;
     if (publicPaths.has(path)) return;
+    // Conta do cliente: sessão própria, sem o token da loja.
+    if (path.startsWith('/api/conta')) return;
 
     const header = request.headers.authorization;
     if (!header || !header.toLowerCase().startsWith('bearer ')) {

@@ -35,6 +35,12 @@ export class ForbiddenError extends DomainError {
   }
 }
 
+export class UnauthorizedError extends DomainError {
+  constructor(message: string, codigo = 'nao_autorizado') {
+    super(message, 401, codigo);
+  }
+}
+
 export class ConflictError extends DomainError {
   constructor(message: string, codigo = 'conflito') {
     super(message, 409, codigo);

@@ -22,6 +22,7 @@ export const accountNode = HDNodeWallet.fromMnemonic(
 export const XPUB = accountNode.neuter().extendedKey;
 export const USDC = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
 export const CARTEIRA = '0x1111111111111111111111111111111111111111';
+export const CARTEIRA_GAS = '0x2222222222222222222222222222222222222222';
 
 export type FakeChainOptions = {
   tokenBalance?: bigint;
@@ -199,7 +200,7 @@ export function makeHarnessSweeper(
   const gasSponsor = opts?.sponsorThrows
     ? {
         enabled: true,
-        address: '0xS',
+        address: CARTEIRA_GAS,
         balance: async () => 0n,
         ensureGas: async () => {
           throw new Error(opts.sponsorThrows!);
@@ -207,7 +208,7 @@ export function makeHarnessSweeper(
       }
     : {
         enabled: opts?.sponsorEnabled ?? false,
-        address: opts?.sponsorEnabled ? '0xS' : null,
+        address: CARTEIRA_GAS,
         balance: async () => 0n,
         ensureGas: async () => false,
       };

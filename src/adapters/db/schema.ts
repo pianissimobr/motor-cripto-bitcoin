@@ -45,6 +45,34 @@ export const cadastros = pgTable(
   ],
 );
 
+/** Login do cliente. Separado do token de administração da loja. */
+export const contas = pgTable(
+  'contas',
+  {
+    clienteId: uuid('cliente_id')
+      .primaryKey()
+      .references(() => cadastros.id, { onDelete: 'cascade' }),
+    usuario: text('usuario').notNull(),
+    senhaHash: text('senha_hash').notNull(),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('contas_usuario_uq').on(t.usuario)],
+);
+
+export const sessoes = pgTable(
+  'sessoes',
+  {
+    id: uuid('id').primaryKey(),
+    tokenHash: text('token_hash').notNull(),
+    clienteId: uuid('cliente_id')
+      .notNull()
+      .references(() => cadastros.id, { onDelete: 'cascade' }),
+    expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('sessoes_token_hash_uq').on(t.tokenHash)],
+);
+
 export const cadastrosPrefixos = pgTable(
   'cadastros_prefixos',
   {

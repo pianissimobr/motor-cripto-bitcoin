@@ -12,6 +12,7 @@ import type { Motor } from '../../core/index.js';
 import type { Logger } from '../../core/logger.js';
 import { createAuthHook } from './auth.js';
 import { registerRoutes } from './routes.js';
+import { registerContaRoutes } from './conta-routes.js';
 
 /**
  * Monta a aplicacao HTTP como funcao testavel (independente do `listen`).
@@ -112,8 +113,9 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<Fastif
         gasSponsorEnabled && canQueryGasSponsor ? loadGasSponsorBalances : undefined,
     },
   });
+  registerContaRoutes(app, motor);
 
-  app.get('/', async (_request, reply) => reply.redirect('/cadastro.html'));
+  app.get('/', async (_request, reply) => reply.redirect('/index.html'));
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {

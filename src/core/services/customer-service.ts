@@ -4,7 +4,7 @@ import { maskEmail, maskName, normalizeEmail } from '../crypto/mask.js';
 import type { Customer } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories, StoredCustomer } from '../ports/index.js';
-import { ConflictError, ValidationError, isUniqueViolation } from '../domain/errors.js';
+import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from '../domain/errors.js';
 
 /** E-mail ja existente: a borda HTTP mapeia `statusCode` para 409. */
 export class DuplicateCustomerEmailError extends ConflictError {
@@ -97,6 +97,51 @@ export class CustomerService {
 
     this.deps.logger.info({ customerId: stored.id }, 'cliente cadastrado');
     return this.toCustomer(stored, nome, email);
+  }
+
+  /** Atualiza nome e/ou e-mail cifrados da própria conta. */
+  async updateContact(
+    id: string,
+    input: { nome?: string; email?: string },
+  ): Promise<Customer> {
+    const stored = await this.deps.repos.customers.findById(id);
+    if (!stored) throw new NotFoundError('Usuário não encontrado');
+
+    const nomeAtual = this.deps.cipher.decrypt(stored.nomeEnc, id);
+    const emailAtual = this.deps.cipher.decrypt(stored.emailEnc, id);
+    const nome = input.nome !== undefined ? input.nome.trim() : nomeAtual;
+    const email = input.email !== undefined ? normalizeEmail(input.email) : emailAtual;
+
+    if (nome.length < 2) throw new ValidationError('nome muito curto');
+    if (nome.length > 200) throw new ValidationError('nome muito longo');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new ValidationError('email invalido');
+    }
+    if (email.length > 320) throw new ValidationError('email muito longo');
+
+    const indices = this.deps.blindIndex.computeAll(email);
+    const ativo = this.deps.blindIndex.activeKid;
+    const emailBidxAtivo = indices.find((i) => i.kid === ativo)?.bidx ?? indices[0]!.bidx;
+    const emailBidxAntigo =
+      indices.length > 1 ? (indices.find((i) => i.kid !== ativo)?.bidx ?? null) : null;
+    if (email !== emailAtual) {
+      const outro = await this.deps.repos.customers.findByEmailBidx(indices.map((i) => i.bidx));
+      if (outro && outro.id !== id) throw new DuplicateCustomerEmailError();
+    }
+    const prefixos = prefixTokens(email, this.deps.blindIndex);
+    await this.deps.repos.customers.updateEncrypted(
+      id,
+      this.deps.cipher.encrypt(nome, id),
+      this.deps.cipher.encrypt(email, id),
+      emailBidxAtivo,
+      emailBidxAntigo,
+      indices.length > 1 ? prefixos.antigos : prefixos.ativos,
+      indices.length > 1 ? prefixos.ativos : [],
+    );
+    await this.deps.repos.customers.updateMasks(id, maskName(nome), maskEmail(email));
+    const atualizado = await this.deps.repos.customers.findById(id);
+    if (!atualizado) throw new NotFoundError('Usuário não encontrado');
+    return this.toCustomer(atualizado, nome, email);
   }
 
   async get(id: string): Promise<Customer | null> {

@@ -8,6 +8,8 @@ import type { Database } from './client.js';
 import {
   cadastrosPrefixos,
   cadastros,
+  contas,
+  sessoes,
   cadastrosLinks,
   carteirasFrias,
   chainAnchors,
@@ -21,6 +23,8 @@ import {
   rampProfiles,
 } from './schema.js';
 import type {
+  AccountRecord,
+  AccountRepository,
   AnchorRepository,
   AuditRepository,
   ColdWalletRepository,
@@ -40,6 +44,7 @@ import type {
   PaymentRepository,
   RampProfileRepository,
   RecordAuditInput,
+  SessionRecord,
   StoredCustomer,
   TransferRepository,
   UpsertPaymentInput,
@@ -247,6 +252,13 @@ class DrizzleCustomerRepository implements CustomerRepository {
           .onConflictDoNothing();
       }
     });
+  }
+
+  async updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void> {
+    await this.db
+      .update(cadastros)
+      .set({ nomeMasked, emailMasked })
+      .where(eq(cadastros.id, id));
   }
 
   /** Bloco 4: reindexa apenas os prefixos, sem tocar nos blobs cifrados. */
@@ -1462,6 +1474,70 @@ class DrizzleAuditRepository implements AuditRepository {
 }
 
 /* ------------------------------------------------------------------ */
+/* Conta do cliente                                                    */
+/* ------------------------------------------------------------------ */
+
+class DrizzleAccountRepository implements AccountRepository {
+  constructor(private readonly db: Database) {}
+
+  async create(input: AccountRecord): Promise<void> {
+    await this.db.insert(contas).values({
+      clienteId: input.clienteId,
+      usuario: input.usuario,
+      senhaHash: input.senhaHash,
+    });
+  }
+
+  async findByUsuario(usuario: string): Promise<AccountRecord | null> {
+    const [row] = await this.db.select().from(contas).where(eq(contas.usuario, usuario)).limit(1);
+    return row
+      ? { clienteId: row.clienteId, usuario: row.usuario, senhaHash: row.senhaHash }
+      : null;
+  }
+
+  async findByClienteId(clienteId: string): Promise<AccountRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(contas)
+      .where(eq(contas.clienteId, clienteId))
+      .limit(1);
+    return row
+      ? { clienteId: row.clienteId, usuario: row.usuario, senhaHash: row.senhaHash }
+      : null;
+  }
+
+  async update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void> {
+    await this.db.update(contas).set(patch).where(eq(contas.clienteId, clienteId));
+  }
+
+  async createSession(input: {
+    id: string;
+    tokenHash: string;
+    clienteId: string;
+    expiraEm: Date;
+  }): Promise<void> {
+    await this.db.insert(sessoes).values(input);
+  }
+
+  async findSession(hash: string): Promise<SessionRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(sessoes)
+      .where(eq(sessoes.tokenHash, hash))
+      .limit(1);
+    return row ? { clienteId: row.clienteId, expiraEm: row.expiraEm } : null;
+  }
+
+  async deleteSession(hash: string): Promise<void> {
+    await this.db.delete(sessoes).where(eq(sessoes.tokenHash, hash));
+  }
+
+  async deleteCustomer(clienteId: string): Promise<void> {
+    await this.db.delete(cadastros).where(eq(cadastros.id, clienteId));
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Factory                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1478,5 +1554,6 @@ export function createRepositories(db: Database, cipher: DataCipher | null = nul
     anchors: new DrizzleAnchorRepository(db),
     indices: new DrizzleIndexAllocator(db),
     audit: new DrizzleAuditRepository(db),
+    accounts: new DrizzleAccountRepository(db),
   };
 }
