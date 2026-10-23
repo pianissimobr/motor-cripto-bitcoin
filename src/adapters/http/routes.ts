@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { ConflictError, ValidationError, isUniqueViolation } from '../../core/domain/errors.js';
+import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from '../../core/domain/errors.js';
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
-import { collectAlerts } from '../../core/alerts.js';
+import { collectAlerts, type GasSponsorBalance } from '../../core/alerts.js';
 import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
 import type { ColdWallet, Customer, RampProfile } from '../../core/domain/types.js';
 import type { Motor } from '../../core/index.js';
+import type { UpdateRampProfileInput } from '../../core/ports/index.js';
 import type { Logger } from '../../core/logger.js';
 
 /**
@@ -43,6 +44,14 @@ const linkSchema = z.object({
   finalUrl: httpUrlSchema.nullish(),
 });
 
+const taxaTokenPorFiatBaseUnitsSchema = z
+  .union([
+    z.string().regex(/^\d+$/, 'taxa deve ser inteiro >= 0'),
+    z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    z.bigint().nonnegative(),
+  ])
+  .nullish();
+
 const rampProfileSchema = z.object({
   label: z.string().trim().min(1).max(80),
   chain: chainSchema,
@@ -66,14 +75,29 @@ const rampProfileSchema = z.object({
   hostApiKey: z.string().max(500).nullish(),
   rampAssetKey: z.string().trim().max(80).nullish(),
   // BigInt nao cabe em JSON; aceita string decimal ou numero inteiro seguro.
-  taxaTokenPorFiatBaseUnits: z
-    .union([
-      z.string().regex(/^\d+$/, 'taxa deve ser inteiro >= 0'),
-      z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-      z.bigint().nonnegative(),
-    ])
-    .nullish(),
+  taxaTokenPorFiatBaseUnits: taxaTokenPorFiatBaseUnitsSchema,
 });
+
+const rampProfilePatchSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80).optional(),
+    fiatCurrency: z
+      .string()
+      .regex(/^[A-Za-z]{3}$/, 'moeda fiat deve ter 3 letras')
+      .transform((value) => value.toUpperCase())
+      .optional(),
+    baseUrl: httpUrlSchema.optional(),
+    paramStyle: z.enum(['legacy', 'unified']).optional(),
+    hostAppName: z.string().trim().min(1).max(80).optional(),
+    hostLogoUrl: httpUrlSchema.nullish(),
+    hostApiKey: z.string().max(500).nullish(),
+    rampAssetKey: z.string().trim().max(80).nullish(),
+    taxaTokenPorFiatBaseUnits: taxaTokenPorFiatBaseUnitsSchema,
+  })
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, {
+    message: 'informe ao menos um campo para atualizar',
+  });
 
 const coldWalletSchema = z.object({
   label: z.string().trim().min(1).max(80),
@@ -84,8 +108,12 @@ const coldWalletSchema = z.object({
 export type RouteOptions = {
   motor: Motor;
   logger: Logger;
-  /** Saldo minimo do patrocinador de gas (para o alerta). */
-  gasSponsor?: { minBalanceWei: bigint; enabled: boolean };
+  /** Saldo minimo do patrocinador de gas e consulta opcional do saldo real. */
+  gasSponsor?: {
+    minBalanceWei: bigint;
+    enabled: boolean;
+    balances?: () => Promise<GasSponsorBalance[]>;
+  };
 };
 
 export async function registerRoutes(app: FastifyInstance, options: RouteOptions): Promise<void> {
@@ -421,19 +449,7 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
     const perfis = await motor.repos.rampProfiles.list();
     return {
       total: perfis.length,
-      perfis: perfis.map((p) => ({
-        id: p.id,
-        label: p.label,
-        chain: p.chain,
-        asset: p.asset,
-        tokenContract: p.tokenContract,
-        decimals: p.decimals,
-        fiatCurrency: p.fiatCurrency,
-        baseUrl: p.baseUrl,
-        paramStyle: p.paramStyle,
-        taxaTokenPorFiatBaseUnits: p.taxaTokenPorFiatBaseUnits?.toString() ?? null,
-        criadoEm: p.criadoEm,
-      })),
+      perfis: perfis.map(serializeRampProfile),
     };
   });
 
@@ -464,6 +480,40 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       ip: request.ip,
     });
     return reply.code(201).send({ id: profile.id, label: profile.label });
+  });
+
+  app.patch('/api/ramp-profiles/:id', async (request) => {
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const body = rampProfilePatchSchema.parse(request.body);
+
+    const patch: UpdateRampProfileInput = {};
+    if (body.label !== undefined) patch.label = body.label;
+    if (body.fiatCurrency !== undefined) patch.fiatCurrency = body.fiatCurrency;
+    if (body.baseUrl !== undefined) patch.baseUrl = body.baseUrl;
+    if (body.paramStyle !== undefined) patch.paramStyle = body.paramStyle;
+    if (body.hostAppName !== undefined) patch.hostAppName = body.hostAppName;
+    if (body.hostLogoUrl !== undefined) patch.hostLogoUrl = body.hostLogoUrl;
+    if (body.hostApiKey !== undefined) patch.hostApiKey = body.hostApiKey;
+    if (body.rampAssetKey !== undefined) patch.rampAssetKey = body.rampAssetKey;
+    if (body.taxaTokenPorFiatBaseUnits !== undefined) {
+      patch.taxaTokenPorFiatBaseUnits =
+        body.taxaTokenPorFiatBaseUnits === null
+          ? null
+          : BigInt(body.taxaTokenPorFiatBaseUnits);
+    }
+
+    const updated = await motor.repos.rampProfiles.update(id, patch);
+    if (!updated) throw new NotFoundError('perfil Ramp nao encontrado');
+
+    await motor.repos.audit.record({
+      ator: 'api',
+      acao: 'ramp_profile.atualizado',
+      entidade: 'ramp_profile',
+      entidadeId: updated.id,
+      ip: request.ip,
+      detalhes: { campos: Object.keys(body) },
+    });
+    return { perfil: serializeRampProfile(updated) };
   });
 
   app.get('/api/carteiras-frias', async () => {
@@ -505,11 +555,23 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   /* ---------------------------------------------------------------- */
 
   app.get('/api/alerts', async () => {
+    let gasSponsorBalances: GasSponsorBalance[] | undefined;
+    if (gasSponsorAtivo && configGas.balances) {
+      try {
+        gasSponsorBalances = await configGas.balances();
+      } catch (err) {
+        // A checagem e operacional: uma falha de RPC nao pode derrubar a
+        // listagem de alertas. O coletor trata ausencia como atencao.
+        logger.warn({ err }, 'falha ao consultar saldo do gas sponsor');
+      }
+    }
+
     const alertas = await collectAlerts({
       repos: motor.repos,
       logger,
       gasSponsorMinBalanceWei: configGas.minBalanceWei,
       gasSponsorConfigured: gasSponsorAtivo,
+      gasSponsorBalances,
     });
     return {
       total: alertas.length,
@@ -543,6 +605,26 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       })),
     };
   });
+}
+
+/** Perfil sem segredo: hostApiKey nunca sai da API. */
+function serializeRampProfile(p: RampProfile) {
+  return {
+    id: p.id,
+    label: p.label,
+    chain: p.chain,
+    asset: p.asset,
+    tokenContract: p.tokenContract,
+    decimals: p.decimals,
+    fiatCurrency: p.fiatCurrency,
+    baseUrl: p.baseUrl,
+    paramStyle: p.paramStyle,
+    hostAppName: p.hostAppName,
+    hostLogoUrl: p.hostLogoUrl ?? null,
+    rampAssetKey: p.rampAssetKey ?? null,
+    taxaTokenPorFiatBaseUnits: p.taxaTokenPorFiatBaseUnits?.toString() ?? null,
+    criadoEm: p.criadoEm,
+  };
 }
 
 function parseUnsignedJson(value: string | null): unknown {

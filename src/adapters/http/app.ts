@@ -5,6 +5,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { ZodError } from 'zod';
+import type { GasSponsorBalance } from '../../core/alerts.js';
 import { IllegalTransitionError } from '../../core/domain/link-state.js';
 import type { AppConfig } from '../../core/config.js';
 import type { Motor } from '../../core/index.js';
@@ -83,12 +84,32 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<Fastif
     });
   }
 
+  const gasSponsorEnabled = Boolean(config.gasSponsor.privateKey);
+  const canQueryGasSponsor = Boolean(motor.gasSponsor && motor.providerFactory);
+  const loadGasSponsorBalances = async (): Promise<GasSponsorBalance[]> => {
+    const perfis = await motor.repos.rampProfiles.list();
+    const chains = [...new Set(perfis.map((p) => p.chain.toLowerCase()))];
+    return Promise.all(
+      chains.map(async (chain) => {
+        try {
+          const balanceWei = await motor.gasSponsor.balance(motor.providerFactory(chain));
+          return { chain, balanceWei };
+        } catch (err) {
+          logger.warn({ err, chain }, 'falha ao consultar saldo do gas sponsor');
+          return { chain, balanceWei: null };
+        }
+      }),
+    );
+  };
+
   await registerRoutes(app, {
     motor,
     logger,
     gasSponsor: {
       minBalanceWei: config.gasSponsor.minBalanceWei,
-      enabled: Boolean(config.gasSponsor.privateKey),
+      enabled: gasSponsorEnabled,
+      balances:
+        gasSponsorEnabled && canQueryGasSponsor ? loadGasSponsorBalances : undefined,
     },
   });
 

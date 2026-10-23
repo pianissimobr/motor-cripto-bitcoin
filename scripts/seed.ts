@@ -17,10 +17,18 @@ const USDT0_POLYGON = '0xc2132D05D31c914a87C6611C10748AEb04B58e8F';
  * ATUALIZE essa taxa quando o cambio USD/BRL mudar: e ela que permite
  * marcar o link como "parcial" quando o pagamento nao bate.
  */
-const USDC_POR_BRL = BigInt(process.env.SEED_USDC_POR_BRL ?? '180000');
-const USDT_POR_BRL = BigInt(process.env.SEED_USDT_POR_BRL ?? '180000');
+function taxaFromEnv(name: string, fallback: string): bigint {
+  const raw = process.env[name] ?? fallback;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${name} deve ser um inteiro nao-negativo em base units (recebido "${raw}")`);
+  }
+  return BigInt(raw);
+}
 
 async function main(): Promise<void> {
+  const atualizarTaxas = process.argv.includes('--update-rates');
+  const USDC_POR_BRL = taxaFromEnv('SEED_USDC_POR_BRL', '180000');
+  const USDT_POR_BRL = taxaFromEnv('SEED_USDT_POR_BRL', '180000');
   const { config, logger, motor, close } = await bootstrap();
 
   const perfis = [
@@ -60,7 +68,28 @@ async function main(): Promise<void> {
   for (const perfil of perfis) {
     const jaExiste = existentes.find((p) => p.label === perfil.label);
     if (jaExiste) {
-      logger.info({ label: perfil.label, id: jaExiste.id }, 'perfil Ramp ja existe (mantido)');
+      const taxaAnterior = jaExiste.taxaTokenPorFiatBaseUnits;
+      if (atualizarTaxas && taxaAnterior !== perfil.taxaTokenPorFiatBaseUnits) {
+        const atualizado = await motor.repos.rampProfiles.update(jaExiste.id, {
+          taxaTokenPorFiatBaseUnits: perfil.taxaTokenPorFiatBaseUnits,
+        });
+        logger.info(
+          {
+            label: perfil.label,
+            id: atualizado?.id ?? jaExiste.id,
+            de: taxaAnterior?.toString() ?? null,
+            para: perfil.taxaTokenPorFiatBaseUnits.toString(),
+          },
+          'taxa do perfil Ramp atualizada',
+        );
+      } else {
+        logger.info(
+          { label: perfil.label, id: jaExiste.id, taxa: taxaAnterior?.toString() ?? null },
+          atualizarTaxas
+            ? 'taxa do perfil Ramp ja esta sincronizada'
+            : 'perfil Ramp ja existe (mantido; use --update-rates para sincronizar a taxa)',
+        );
+      }
       continue;
     }
     const criado = await motor.repos.rampProfiles.create(perfil);

@@ -105,8 +105,15 @@ export type CreateRampProfileInput = {
   taxaTokenPorFiatBaseUnits: bigint | null;
 };
 
+/** Campos mutaveis de um perfil. Chain/asset/contrato/decimais sao imutaveis. */
+export type UpdateRampProfileInput = Partial<
+  Omit<CreateRampProfileInput, 'chain' | 'asset' | 'tokenContract' | 'decimals'>
+>;
+
 export interface RampProfileRepository {
   create(input: CreateRampProfileInput): Promise<RampProfile>;
+  /** Atualiza apenas os campos presentes. `null` limpa o campo. */
+  update(id: string, input: UpdateRampProfileInput): Promise<RampProfile | null>;
   findById(id: string): Promise<RampProfile | null>;
   list(): Promise<RampProfile[]>;
 }

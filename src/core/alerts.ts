@@ -24,12 +24,23 @@ export type Alerta = {
   detalhe?: Record<string, unknown>;
 };
 
+/** Saldo nativo do patrocinador numa chain; `null` = RPC indisponivel. */
+export type GasSponsorBalance = {
+  chain: string;
+  balanceWei: bigint | null;
+};
+
 export type AlertsDeps = {
   repos: MotorRepositories;
   logger: Logger;
   /** Saldo minimo do patrocinador de gas, em wei. */
   gasSponsorMinBalanceWei: bigint;
   gasSponsorConfigured: boolean;
+  /**
+   * Saldo real por chain. Ausente = nao consultado (a borda HTTP injeta).
+   * Chain com `null` = consulta falhou e vira atencao, nunca "tudo ok".
+   */
+  gasSponsorBalances?: GasSponsorBalance[];
 };
 
 export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
@@ -124,17 +135,9 @@ export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
   }
 
   /* ---------------------------------------------------------------- */
-  /* Patrocinador de gas sem saldo                                     */
+  /* Patrocinador de gas: configurado E com saldo real suficiente      */
   /* ---------------------------------------------------------------- */
-  if (deps.gasSponsorConfigured) {
-    alertas.push({
-      nivel: 'info',
-      codigo: 'gas_sponsor_configurado',
-      titulo: 'Gas sponsor ativo',
-      descricao: `Monitorando o saldo do patrocinador (minimo ${deps.gasSponsorMinBalanceWei} wei).`,
-      detalhe: { minBalanceWei: deps.gasSponsorMinBalanceWei.toString() },
-    });
-  } else {
+  if (!deps.gasSponsorConfigured) {
     alertas.push({
       nivel: 'critico',
       codigo: 'gas_sponsor_ausente',
@@ -144,6 +147,75 @@ export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
         'o endereco derivado nao tem saldo nativo para pagar o gas.',
       detalhe: { variavel: 'GAS_SPONSOR_PRIVATE_KEY' },
     });
+  } else if (!deps.gasSponsorBalances) {
+    alertas.push({
+      nivel: 'atencao',
+      codigo: 'gas_sponsor_saldo_nao_verificado',
+      titulo: 'Saldo do gas sponsor nao verificado',
+      descricao:
+        'O patrocinador esta configurado, mas o saldo nativo nao foi consultado. ' +
+        'Sem essa checagem um sweep pode falhar por falta de gas.',
+      detalhe: { minBalanceWei: deps.gasSponsorMinBalanceWei.toString() },
+    });
+  } else if (deps.gasSponsorBalances.length === 0) {
+    alertas.push({
+      nivel: 'info',
+      codigo: 'gas_sponsor_sem_perfis',
+      titulo: 'Gas sponsor ativo sem perfis Ramp',
+      descricao: 'Nao ha perfil Ramp para definir em qual chain consultar o saldo.',
+      detalhe: { minBalanceWei: deps.gasSponsorMinBalanceWei.toString() },
+    });
+  } else {
+    const baixos = deps.gasSponsorBalances.filter(
+      (b) => b.balanceWei !== null && b.balanceWei < deps.gasSponsorMinBalanceWei,
+    );
+    const indisponiveis = deps.gasSponsorBalances.filter((b) => b.balanceWei === null);
+
+    if (baixos.length > 0) {
+      alertas.push({
+        nivel: 'critico',
+        codigo: 'gas_sponsor_saldo_baixo',
+        titulo: 'Gas sponsor com saldo abaixo do minimo',
+        descricao:
+          'Recarregue a carteira patrocinadora. Sem saldo suficiente os proximos ' +
+          'sweeps ficam em pago_sem_gas.',
+        detalhe: {
+          minBalanceWei: deps.gasSponsorMinBalanceWei.toString(),
+          saldos: baixos.map((b) => ({ chain: b.chain, balanceWei: b.balanceWei!.toString() })),
+        },
+      });
+    }
+
+    if (indisponiveis.length > 0) {
+      alertas.push({
+        nivel: 'atencao',
+        codigo: 'gas_sponsor_saldo_indisponivel',
+        titulo: 'Nao foi possivel ler o saldo do gas sponsor',
+        descricao:
+          'O RPC falhou para uma ou mais chains. O patrocinador pode estar sem ' +
+          'saldo; confira manualmente antes de ignorar.',
+        detalhe: {
+          minBalanceWei: deps.gasSponsorMinBalanceWei.toString(),
+          chains: indisponiveis.map((b) => b.chain),
+        },
+      });
+    }
+
+    if (baixos.length === 0 && indisponiveis.length === 0) {
+      alertas.push({
+        nivel: 'info',
+        codigo: 'gas_sponsor_saldo_ok',
+        titulo: 'Gas sponsor com saldo suficiente',
+        descricao: 'Saldo nativo conferido em todas as chains dos perfis Ramp.',
+        detalhe: {
+          minBalanceWei: deps.gasSponsorMinBalanceWei.toString(),
+          saldos: deps.gasSponsorBalances.map((b) => ({
+            chain: b.chain,
+            balanceWei: b.balanceWei!.toString(),
+          })),
+        },
+      });
+    }
   }
 
   const contagem = contar(alertas);

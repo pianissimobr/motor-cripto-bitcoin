@@ -84,6 +84,56 @@ describe('F2: alertas', () => {
     expect(critico?.detalhe?.variavel).toBe('GAS_SPONSOR_PRIVATE_KEY');
   });
 
+  it('alerta quando o saldo real do patrocinador esta abaixo do minimo', async () => {
+    const alertas = await collectAlerts({
+      ...depsBase,
+      repos: createFakeRepositories(),
+      gasSponsorConfigured: true,
+      gasSponsorBalances: [{ chain: 'polygon', balanceWei: 1n }],
+    });
+    const baixo = alertas.find((a) => a.codigo === 'gas_sponsor_saldo_baixo');
+    expect(baixo?.nivel).toBe('critico');
+    expect(baixo?.detalhe?.saldos).toEqual([{ chain: 'polygon', balanceWei: '1' }]);
+    expect(alertas.find((a) => a.codigo === 'gas_sponsor_saldo_ok')).toBeUndefined();
+  });
+
+  it('nao alerta quando o saldo real cobre o minimo', async () => {
+    const alertas = await collectAlerts({
+      ...depsBase,
+      repos: createFakeRepositories(),
+      gasSponsorConfigured: true,
+      gasSponsorBalances: [
+        { chain: 'polygon', balanceWei: 1_000_000_000_000_000_000n },
+      ],
+    });
+    expect(alertas.find((a) => a.codigo === 'gas_sponsor_saldo_baixo')).toBeUndefined();
+    expect(alertas.find((a) => a.codigo === 'gas_sponsor_saldo_ok')?.nivel).toBe('info');
+  });
+
+  it('RPC indisponivel vira atencao, nunca "saldo ok"', async () => {
+    const alertas = await collectAlerts({
+      ...depsBase,
+      repos: createFakeRepositories(),
+      gasSponsorConfigured: true,
+      gasSponsorBalances: [{ chain: 'polygon', balanceWei: null }],
+    });
+    const indisponivel = alertas.find((a) => a.codigo === 'gas_sponsor_saldo_indisponivel');
+    expect(indisponivel?.nivel).toBe('atencao');
+    expect(indisponivel?.detalhe?.chains).toEqual(['polygon']);
+    expect(alertas.find((a) => a.codigo === 'gas_sponsor_saldo_ok')).toBeUndefined();
+  });
+
+  it('configurado sem consulta de saldo vira atencao', async () => {
+    const alertas = await collectAlerts({
+      ...depsBase,
+      repos: createFakeRepositories(),
+      gasSponsorConfigured: true,
+    });
+    expect(
+      alertas.find((a) => a.codigo === 'gas_sponsor_saldo_nao_verificado')?.nivel,
+    ).toBe('atencao');
+  });
+
   it('sinaliza pagamento parcial com o valor recebido', async () => {
     const repos = createFakeRepositories();
     const seed = async (

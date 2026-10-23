@@ -27,6 +27,7 @@ import type {
   CreateCustomerInput,
   CreateLinkInput,
   CreateRampProfileInput,
+  UpdateRampProfileInput,
   CreateTransferInput,
   CreditRepository,
   CursorRepository,
@@ -334,6 +335,31 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
       .returning();
     if (!row) throw new Error('falha ao criar perfil Ramp');
     return toRampProfile(row);
+  }
+
+  async update(id: string, input: UpdateRampProfileInput): Promise<RampProfile | null> {
+    const values: Partial<typeof rampProfiles.$inferInsert> = {};
+    if (input.label !== undefined) values.label = input.label;
+    if (input.fiatCurrency !== undefined) values.fiatCurrency = input.fiatCurrency;
+    if (input.baseUrl !== undefined) values.baseUrl = input.baseUrl;
+    if (input.paramStyle !== undefined) values.paramStyle = input.paramStyle;
+    if (input.hostAppName !== undefined) values.hostAppName = input.hostAppName;
+    if (input.hostLogoUrl !== undefined) values.hostLogoUrl = input.hostLogoUrl;
+    if (input.hostApiKey !== undefined) values.hostApiKeyEnc = input.hostApiKey;
+    if (input.rampAssetKey !== undefined) values.rampAssetKey = input.rampAssetKey;
+    if (input.taxaTokenPorFiatBaseUnits !== undefined) {
+      values.taxaTokenPorFiatBaseUnits = input.taxaTokenPorFiatBaseUnits;
+    }
+    if (Object.keys(values).length === 0) {
+      const existing = await this.findById(id);
+      return existing;
+    }
+    const [row] = await this.db
+      .update(rampProfiles)
+      .set(values)
+      .where(eq(rampProfiles.id, id))
+      .returning();
+    return row ? toRampProfile(row) : null;
   }
 
   async findById(id: string): Promise<RampProfile | null> {

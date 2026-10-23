@@ -113,6 +113,16 @@ npm run seed
 O seed cria os perfis de integracao Ramp (`Polygon USDC`, `Polygon USDT0`) e a
 carteira fria (se `COLD_WALLET_ADDRESS` estiver definido no `.env`).
 
+Por padrao um perfil existente **nao** e alterado. Para sincronizar a taxa de
+referencia depois de mudar `SEED_USDC_POR_BRL`/`SEED_USDT_POR_BRL`:
+
+```bash
+npm run seed -- --update-rates
+```
+
+A mesma taxa pode ser ajustada em um perfil especifico por
+`PATCH /api/ramp-profiles/:id` (token admin).
+
 ### 5. Subir
 
 ```bash
@@ -252,6 +262,7 @@ Base: `http://localhost:4578`. Todas as rotas `/api/*` exigem `Authorization: Be
 | GET | `/api/links?clienteId=` | links do cliente |
 | GET | `/api/creditos?clienteId=` | creditos do cliente |
 | GET/POST | `/api/ramp-profiles` | perfis de integracao Ramp (o "id do ramp") |
+| PATCH | `/api/ramp-profiles/:id` | atualiza label, taxa, URL, host e asset key (chain/contrato/decimais sao imutaveis) |
 | GET/POST | `/api/carteiras-frias` | carteiras de destino final |
 | GET | `/api/auditoria` | log de auditoria |
 
@@ -295,11 +306,15 @@ Enderecos HD nascem com **saldo nativo zero**, e um `transfer` ERC-20 exige gas.
 Por isso o motor usa o padrao **gas sponsor**:
 
 1. a carteira patrocinadora (`GAS_SPONSOR_PRIVATE_KEY`) envia ~0,5 POL para o
-   endereco derivado
+   endereco derivado quando ele tem menos que `GAS_SPONSOR_MIN_BALANCE_WEI`
+   (padrao 0,1 POL)
 2. o endereco derivado assina o `transfer` do token para a carteira fria
 3. o tx e transmitido e acompanhado; o link vira `movido`
 
-Sem patrocinador configurado, o link fica `pago_sem_gas` e a UI avisa.
+Sem patrocinador configurado, o link fica `pago_sem_gas` e a UI avisa. O
+endpoint `/api/alerts` consulta o saldo nativo real do patrocinador nas chains
+dos perfis ativos e alerta quando ele fica abaixo do minimo (ou quando o RPC
+nao responde).
 
 Custo aproximado por link na Polygon: ~0,01 USD de gas + ~0,05 USD de gas do
 patrocinador.
@@ -361,7 +376,7 @@ resultados). Para producao, use Alchemy/Infura/QuickNode em `RPC_URL_POLYGON`.
 | `npm run build` / `npm start` | build e execucao em producao |
 | `npm run worker` | monitor + sweeper |
 | `npm run migrate` | aplica migrations |
-| `npm run seed` | perfis Ramp + carteira fria |
+| `npm run seed` | perfis Ramp + carteira fria (`--update-rates` sincroniza a taxa) |
 | `npm run wallet:init` | gera a HD Wallet |
 | `npm run rotate:keys` | re-cifra PII e rotaciona os blind indexes |
 | `npm run reindex:prefixes` | reconstroi os prefixos de busca (`--dry-run`) |

@@ -216,7 +216,7 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 | 3 | chaves, signer, init-wallet, RemoteSigner, PSBT | concluído |
 | 4 | PII/prefixos, unique efetivo de e-mail, duplicidade, rebuild | concluído |
 | 5 | API/validações/erros, detail, índice HD | concluído |
-| 6 | operação/gas/defaults, taxa/seed, config | pendente |
+| 6 | operação/gas/defaults, taxa/seed, config | concluído |
 | 7 | segurança/auditoria/UI | pendente |
 | 8 | migrações, backfill, smoke e rollout | pendente |
 
@@ -238,6 +238,25 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 
 **Testes: 230 → 236 unitários + 10 de integração.**
 
+### Bloco 6 — operação, gas, taxa e seed
+
+- `GAS_SPONSOR_MIN_BALANCE_WEI` caiu de 1,0 para 0,1 POL: antes o piso era
+  maior que o envio de 0,5 POL, então todo sweep patrocinava de novo. A config
+  agora rejeita chave inválida, envio zero e piso maior que o envio.
+- `/api/alerts` consulta o saldo nativo real do patrocinador nas chains dos
+  perfis ativos. Saldo abaixo do mínimo vira crítico; RPC indisponível vira
+  atenção; nunca mais "gas sponsor ativo" sem verificar.
+- `PATCH /api/ramp-profiles/:id` (admin) atualiza taxa, label, URL, host e
+  asset key. Chain, contrato e decimais são imutáveis; `hostApiKey` continua
+  fora das respostas. Alteração é auditada.
+- `npm run seed -- --update-rates` sincroniza a taxa dos perfis existentes
+  com `SEED_USDC_POR_BRL`/`SEED_USDT_POR_BRL` e valida que são inteiros.
+- Config do Ramp e da carteira fria passou a validar moeda, URL http(s),
+  nome do host e endereço EVM.
+
+**Testes: 236 → 247 unitários + 11 de integração.** Seed testado no banco de
+desenvolvimento: taxa alterada para 190000 e restaurada para 180000.
+
 ### Bugs reais encontrados durante a execução
 
 Não foram só as correções planejadas; testes e validações ao vivo revelaram
@@ -257,6 +276,9 @@ mais problemas, todos corrigidos:
 | `/api/creditos` sem `clienteId` devolvia 200 com `{ erro }`; o cliente tratava como sucesso | `routes.ts` | BAIXO |
 | Falha ao criar o link queimava um índice HD para sempre | `link-service.ts` / `repositories.ts` | ALTO |
 | `detail` carregava 1000 créditos para devolver os do link, podendo truncar | `link-service.ts` | BAIXO |
+| Piso de gas (1,0 POL) maior que o envio (0,5 POL) fazia todo sweep patrocinar de novo | `config.ts` | MÉDIO |
+| Seed mantinha a taxa antiga e não havia caminho para atualizá-la | `seed.ts` / perfis Ramp | MÉDIO |
+| Alerta de gas sponsor era estático e não consultava o saldo real | `alerts.ts` | ALTO |
 
 O achado da **tolerância** só apareceu porque a propriedade "nunca aceita
 pagamento dobrado" foi escrita. Nenhum caso fixo teria pego. O mesmo vale

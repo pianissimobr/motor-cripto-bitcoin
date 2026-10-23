@@ -63,6 +63,58 @@ describe('P1: guards de configuracao', () => {
     expect(config.gasSponsor.amountWei).toBe(123n);
   });
 
+  it('aplica defaults coerentes de gas: piso menor que o envio', () => {
+    const config = loadConfig(baseEnv());
+    expect(config.gasSponsor.amountWei).toBe(500_000_000_000_000_000n);
+    expect(config.gasSponsor.minBalanceWei).toBe(100_000_000_000_000_000n);
+    expect(config.gasSponsor.minBalanceWei).toBeLessThan(config.gasSponsor.amountWei);
+  });
+
+  it('valida a chave e os limites do gas sponsor quando configurado', () => {
+    const key = `0x${'1'.repeat(64)}`;
+    const config = loadConfig(baseEnv({ GAS_SPONSOR_PRIVATE_KEY: key }));
+    expect(config.gasSponsor.privateKey).toBe(key);
+
+    expect(() => loadConfig(baseEnv({ GAS_SPONSOR_PRIVATE_KEY: 'sem-0x' }))).toThrow(
+      /Configuracao invalida/,
+    );
+    expect(() =>
+      loadConfig(
+        baseEnv({ GAS_SPONSOR_PRIVATE_KEY: key, GAS_SPONSOR_AMOUNT_WEI: '0' }),
+      ),
+    ).toThrow(/maior que zero/);
+    expect(() =>
+      loadConfig(
+        baseEnv({
+          GAS_SPONSOR_PRIVATE_KEY: key,
+          GAS_SPONSOR_AMOUNT_WEI: '1',
+          GAS_SPONSOR_MIN_BALANCE_WEI: '2',
+        }),
+      ),
+    ).toThrow(/nao pode ser maior/);
+
+    const semChave = loadConfig(baseEnv({ GAS_SPONSOR_PRIVATE_KEY: '' }));
+    expect(semChave.gasSponsor.privateKey).toBeUndefined();
+  });
+
+  it('valida URL/moeda do Ramp e endereco da carteira fria', () => {
+    const config = loadConfig(
+      baseEnv({ RAMP_FIAT_CURRENCY: 'brl', COLD_WALLET_ADDRESS: '' }),
+    );
+    expect(config.ramp.fiatCurrency).toBe('BRL');
+    expect(config.coldWallet.address).toBeUndefined();
+
+    expect(() => loadConfig(baseEnv({ RAMP_BASE_URL: 'javascript:alert(1)' }))).toThrow(
+      /Configuracao invalida/,
+    );
+    expect(() =>
+      loadConfig(baseEnv({ RAMP_HOST_LOGO_URL: 'ftp://exemplo/logo.png' })),
+    ).toThrow(/Configuracao invalida/);
+    expect(() =>
+      loadConfig(baseEnv({ COLD_WALLET_ADDRESS: '0x123' })),
+    ).toThrow(/Configuracao invalida/);
+  });
+
   it('exige URL quando o signer e remoto', () => {
     expect(() => loadConfig(baseEnv({ SIGNER_MODE: 'remote' }))).toThrow(/Configuracao invalida/);
   });

@@ -52,6 +52,9 @@ export type Motor = {
   readonly repos: MotorRepositories;
   readonly signer: Signer;
   readonly hdWallet: HdWallet;
+  /** Operacao: consulta de saldo/alerta e provider por chain. */
+  readonly gasSponsor: GasSponsor;
+  readonly providerFactory: ProviderFactory;
 };
 
 export function createMotor(options: MotorOptions): Motor {
@@ -112,7 +115,8 @@ export function createMotor(options: MotorOptions): Motor {
     logger,
     options: {
       gasSponsorAmountWei: options.sweeper?.gasSponsorAmountWei ?? 500_000_000_000_000_000n,
-      gasSponsorMinBalanceWei: options.sweeper?.gasSponsorMinBalanceWei ?? 1_000_000_000_000_000_000n,
+      gasSponsorMinBalanceWei:
+        options.sweeper?.gasSponsorMinBalanceWei ?? 100_000_000_000_000_000n,
       batchSize: options.sweeper?.batchSize ?? 10,
       reconcileBatchSize: options.sweeper?.reconcileBatchSize ?? 25,
       tolerancePct: options.monitor?.tolerancePct ?? 1,
@@ -128,6 +132,8 @@ export function createMotor(options: MotorOptions): Motor {
     repos: options.repos,
     signer: options.signer,
     hdWallet: options.hdWallet,
+    gasSponsor: options.gasSponsor,
+    providerFactory: options.providerFactory,
   };
 }
 

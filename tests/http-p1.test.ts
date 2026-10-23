@@ -287,6 +287,136 @@ describe('P1: validacao e erros de dominio', () => {
   });
 });
 
+describe('P1: perfis Ramp - PATCH e alerta de gas', () => {
+  async function criarPerfil(repos: ReturnType<typeof createFakeRepositories>) {
+    return repos.rampProfiles.create({
+      label: 'Polygon USDC',
+      chain: 'polygon',
+      asset: 'USDC',
+      tokenContract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+      decimals: 6,
+      fiatCurrency: 'BRL',
+      baseUrl: 'https://buy.ramp.network/',
+      paramStyle: 'legacy',
+      hostAppName: 'Motor',
+      hostApiKey: 'segredo-host-api',
+      rampAssetKey: 'POLYGON_USDC',
+      taxaTokenPorFiatBaseUnits: 180_000n,
+    });
+  }
+
+  it('atualiza a taxa, audita e nunca devolve hostApiKey', async () => {
+    const { app, repos } = await makeApp();
+    const perfil = await criarPerfil(repos);
+    try {
+      const resp = await app.inject({
+        method: 'PATCH',
+        url: `/api/ramp-profiles/${perfil.id}`,
+        headers: admin,
+        payload: { taxaTokenPorFiatBaseUnits: '200000' },
+      });
+      expect(resp.statusCode).toBe(200);
+      expect(resp.json().perfil.taxaTokenPorFiatBaseUnits).toBe('200000');
+      expect(JSON.stringify(resp.json())).not.toContain('segredo-host-api');
+      expect((await repos.rampProfiles.findById(perfil.id))?.taxaTokenPorFiatBaseUnits).toBe(
+        200_000n,
+      );
+      const auditoria = await repos.audit.list(10);
+      expect(auditoria.find((e) => e.acao === 'ramp_profile.atualizado')).toBeTruthy();
+
+      const lista = await app.inject({
+        method: 'GET',
+        url: '/api/ramp-profiles',
+        headers: admin,
+      });
+      expect(JSON.stringify(lista.json())).not.toContain('segredo-host-api');
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('rejeita body vazio, campo imutavel e id inexistente', async () => {
+    const { app, repos } = await makeApp();
+    const perfil = await criarPerfil(repos);
+    try {
+      const vazio = await app.inject({
+        method: 'PATCH',
+        url: `/api/ramp-profiles/${perfil.id}`,
+        headers: admin,
+        payload: {},
+      });
+      expect(vazio.statusCode).toBe(400);
+
+      const imutavel = await app.inject({
+        method: 'PATCH',
+        url: `/api/ramp-profiles/${perfil.id}`,
+        headers: admin,
+        payload: { chain: 'ethereum' },
+      });
+      expect(imutavel.statusCode).toBe(400);
+
+      const inexistente = await app.inject({
+        method: 'PATCH',
+        url: '/api/ramp-profiles/00000000-0000-4000-8000-000000000000',
+        headers: admin,
+        payload: { taxaTokenPorFiatBaseUnits: '1' },
+      });
+      expect(inexistente.statusCode).toBe(404);
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('token read-only nao pode atualizar perfil', async () => {
+    const { app, repos } = await makeApp();
+    const perfil = await criarPerfil(repos);
+    try {
+      const resp = await app.inject({
+        method: 'PATCH',
+        url: `/api/ramp-profiles/${perfil.id}`,
+        headers: readonly,
+        payload: { taxaTokenPorFiatBaseUnits: '1' },
+      });
+      expect(resp.statusCode).toBe(403);
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('consulta o saldo real do patrocinador na API de alertas', async () => {
+    const repos = createFakeRepositories();
+    await criarPerfil(repos);
+    const config = loadConfig(
+      baseEnv({ GAS_SPONSOR_PRIVATE_KEY: `0x${'1'.repeat(64)}` }),
+    );
+    const motor = {
+      repos,
+      gasSponsor: { balance: async () => 1n },
+      providerFactory: () => ({}),
+    } as unknown as Motor;
+    const app = await buildHttpApp({
+      motor,
+      logger: silentLogger,
+      config,
+      serveStatic: false,
+    });
+    try {
+      const resp = await app.inject({
+        method: 'GET',
+        url: '/api/alerts',
+        headers: admin,
+      });
+      expect(resp.statusCode).toBe(200);
+      const alerta = resp
+        .json()
+        .alertas.find((a: { codigo: string }) => a.codigo === 'gas_sponsor_saldo_baixo');
+      expect(alerta?.nivel).toBe('critico');
+    } finally {
+      await close(app);
+    }
+  });
+});
+
 describe('P1: error handler global', () => {
   it('Zod vira 400 sem vazar detalhes internos', async () => {
     const { app } = await makeApp();

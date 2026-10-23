@@ -98,9 +98,17 @@ export const EnvSchema = z
   SIGNER_REMOTE_URL: z.string().optional(),
   SIGNER_REMOTE_TOKEN: z.string().optional(),
 
-  GAS_SPONSOR_PRIVATE_KEY: z.string().optional(),
+  GAS_SPONSOR_PRIVATE_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z
+      .string()
+      .regex(/^0x[0-9a-fA-F]{64}$/, 'deve ser uma chave privada 0x + 64 hex')
+      .optional(),
+  ),
+  // 0,5 POL por patrocinio e um piso de 0,1 POL no destino. O piso precisa
+  // ser menor que o envio, senao o motor manda gas a cada sweep.
   GAS_SPONSOR_AMOUNT_WEI: weiFromEnv('500000000000000000'),
-  GAS_SPONSOR_MIN_BALANCE_WEI: weiFromEnv('1000000000000000000'),
+  GAS_SPONSOR_MIN_BALANCE_WEI: weiFromEnv('100000000000000000'),
 
   CONFIRMATIONS_REQUIRED: intFromEnv(10, { min: 1 }),
   PAYMENT_TOLERANCE_PCT: floatFromEnv(1.0, { min: 0, max: 100 }),
@@ -114,17 +122,51 @@ export const EnvSchema = z
   // C2: intervalo (em blocos) entre duas ancoras de hash.
   MONITOR_ANCHOR_INTERVAL: intFromEnv(32, { min: 1 }),
 
-  RAMP_BASE_URL: z.string().default('https://buy.ramp.network/'),
+  RAMP_BASE_URL: z
+    .string()
+    .url('deve ser uma URL absoluta')
+    .refine((v) => ['http:', 'https:'].includes(new URL(v).protocol), 'deve usar http(s)')
+    .default('https://buy.ramp.network/'),
   RAMP_PARAM_STYLE: z.enum(['legacy', 'unified']).default('legacy'),
-  RAMP_HOST_APP_NAME: z.string().default('Motor Cripto'),
-  RAMP_HOST_LOGO_URL: z.string().optional(),
-  RAMP_FIAT_CURRENCY: z.string().default('BRL'),
+  RAMP_HOST_APP_NAME: z.string().trim().min(1).max(80).default('Motor Cripto'),
+  RAMP_HOST_LOGO_URL: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z
+      .string()
+      .url('deve ser uma URL absoluta')
+      .refine((v) => ['http:', 'https:'].includes(new URL(v).protocol), 'deve usar http(s)')
+      .optional(),
+  ),
+  RAMP_FIAT_CURRENCY: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, 'deve ter 3 letras')
+    .transform((v) => v.toUpperCase())
+    .default('BRL'),
   LINK_TTL_HOURS: intFromEnv(72, { min: 1 }),
 
-  COLD_WALLET_ADDRESS: z.string().optional(),
-  COLD_WALLET_LABEL: z.string().default('Cold Wallet Principal'),
+  COLD_WALLET_ADDRESS: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'deve ser um endereco 0x + 40 hex').optional(),
+  ),
+  COLD_WALLET_LABEL: z.string().trim().min(1).max(80).default('Cold Wallet Principal'),
   })
   .superRefine((env, ctx) => {
+    if (env.GAS_SPONSOR_PRIVATE_KEY) {
+      if (env.GAS_SPONSOR_AMOUNT_WEI <= 0n) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['GAS_SPONSOR_AMOUNT_WEI'],
+          message: 'precisa ser maior que zero quando o patrocinador esta configurado',
+        });
+      }
+      if (env.GAS_SPONSOR_MIN_BALANCE_WEI > env.GAS_SPONSOR_AMOUNT_WEI) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['GAS_SPONSOR_MIN_BALANCE_WEI'],
+          message: 'nao pode ser maior que GAS_SPONSOR_AMOUNT_WEI (senao todo sweep patrocina de novo)',
+        });
+      }
+    }
     if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_URL) {
       ctx.addIssue({
         code: 'custom',

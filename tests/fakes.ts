@@ -8,6 +8,7 @@ import type {
   CreateCustomerInput,
   CreateLinkInput,
   CreateRampProfileInput,
+  UpdateRampProfileInput,
   CreateTransferInput,
   CreditRepository,
   CursorRepository,
@@ -163,6 +164,23 @@ export class FakeRampProfileRepository implements RampProfileRepository {
     };
     this.rows.push(row);
     return row;
+  }
+
+  async update(id: string, input: UpdateRampProfileInput): Promise<RampProfile | null> {
+    const row = this.rows.find((x) => x.id === id);
+    if (!row) return null;
+    if (input.label !== undefined) row.label = input.label;
+    if (input.fiatCurrency !== undefined) row.fiatCurrency = input.fiatCurrency;
+    if (input.baseUrl !== undefined) row.baseUrl = input.baseUrl;
+    if (input.paramStyle !== undefined) row.paramStyle = input.paramStyle;
+    if (input.hostAppName !== undefined) row.hostAppName = input.hostAppName;
+    if (input.hostLogoUrl !== undefined) row.hostLogoUrl = input.hostLogoUrl;
+    if (input.hostApiKey !== undefined) row.hostApiKey = input.hostApiKey;
+    if (input.rampAssetKey !== undefined) row.rampAssetKey = input.rampAssetKey;
+    if (input.taxaTokenPorFiatBaseUnits !== undefined) {
+      row.taxaTokenPorFiatBaseUnits = input.taxaTokenPorFiatBaseUnits;
+    }
+    return { ...row };
   }
 
   async findById(id: string): Promise<RampProfile | null> {

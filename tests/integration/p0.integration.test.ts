@@ -127,6 +127,24 @@ describe('P0 com Postgres real', () => {
     expect(n).toBe(1);
   });
 
+  it('atualiza a taxa do perfil sem tocar nos campos imutaveis', async () => {
+    const { profile } = await seedBase();
+    const updated = await repos.rampProfiles.update(profile.id, {
+      taxaTokenPorFiatBaseUnits: 250_000n,
+      label: 'Polygon USDC (nova)',
+    });
+    expect(updated?.taxaTokenPorFiatBaseUnits).toBe(250_000n);
+    expect(updated?.label).toBe('Polygon USDC (nova)');
+    expect(updated?.tokenContract.toLowerCase()).toBe(USDC.toLowerCase());
+    expect(updated?.chain).toBe('polygon');
+
+    const noop = await repos.rampProfiles.update(profile.id, {});
+    expect(noop?.taxaTokenPorFiatBaseUnits).toBe(250_000n);
+
+    const missing = await repos.rampProfiles.update(randomUUID(), { label: 'x' });
+    expect(missing).toBeNull();
+  });
+
   it('armazena endereco lowercase e encontra por checksum', async () => {
     const { clienteId, profile } = await seedBase();
     const link = await createLink(clienteId, profile.id);
