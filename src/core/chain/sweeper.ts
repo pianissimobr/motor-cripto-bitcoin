@@ -807,6 +807,7 @@ export class Sweeper {
         link,
         `sweep ${confirmado.txHash ?? 'sem hash'} ja confirmado`,
       );
+      if (link.status === 'parcial') return 'ignorado';
       return 'movido';
     }
 
@@ -897,6 +898,9 @@ export class Sweeper {
       await this.deps.repos.links.updateSettlement(link.id, { reembolsado: true });
       return;
     }
+    // O token ja pode ter saido, mas parcial espera a janela de liquidacao.
+    // Quem decide pago ou nao_realizado e o settlement, nao o sweep.
+    if (atual.status === 'parcial') return;
     if (atual.status === 'movido') return;
     await this.deps.linkState.transition({
       linkId: link.id,
