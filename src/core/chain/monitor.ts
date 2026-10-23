@@ -19,9 +19,16 @@ import type { ProviderFactory } from './provider.js';
  * O cursor por (chain, token) garante que nenhum bloco seja pulado.
  */
 
-// Inclui expirado/revogado: dinheiro que chega depois do prazo ainda precisa
-// ser detectado, creditado e varrido (regra: nunca recusar dinheiro que chegou).
-const ACTIVE_LINK_STATUSES: LinkStatus[] = [...LINK_STATUS];
+// Inclui expirado/nao_realizado: dinheiro que chega depois do prazo ainda
+// precisa ser detectado, registrado e varrido (nunca recusar dinheiro).
+const ACTIVE_LINK_STATUSES: LinkStatus[] = [
+  'aguardando',
+  'pago',
+  'parcial',
+  'pago_sem_gas',
+  'expirado',
+  'nao_realizado',
+];
 
 export type MonitorOptions = {
   confirmationsRequired: number;
@@ -44,13 +51,10 @@ export type CycleResult = {
   logsVarridos: number;
   pagamentosDetectados: number;
   pagamentosConfirmados: number;
-  creditosCriados: number;
   /** C3: reorgs detectados neste ciclo. */
   reorgsDetectados: number;
   /** C4: pagamentos revogados por reorg. */
   pagamentosRevogados: number;
-  /** C4: creditos revogados por reorg. */
-  creditosRevogados: number;
   erros: string[];
 };
 
@@ -79,10 +83,8 @@ export class BlockchainMonitor {
       logsVarridos: 0,
       pagamentosDetectados: 0,
       pagamentosConfirmados: 0,
-      creditosCriados: 0,
       reorgsDetectados: 0,
       pagamentosRevogados: 0,
-      creditosRevogados: 0,
       erros: [],
     };
     if (this.running) {
@@ -281,14 +283,8 @@ export class BlockchainMonitor {
     await repos.cursors.rewind(chain, tokenContract, safe, null);
     await repos.anchors.pruneAfter(chain, tokenContract, safe);
 
-    // C4: credito primeiro (depende dos pagamentos), depois o pagamento.
+    // C4: pagamentos primeiro; os links afetados sao recalculados abaixo.
     const atingidos = await repos.payments.listConfirmedAboveBlock(chain, safe);
-    if (atingidos.length > 0) {
-      const revogadosCredito = await repos.credits.revertByPaymentIds(
-        atingidos.map((p) => p.id),
-      );
-      result.creditosRevogados += revogadosCredito;
-    }
     const revogados = await repos.payments.revertAboveBlock(chain, safe);
     result.pagamentosRevogados += revogados;
 
@@ -302,10 +298,8 @@ export class BlockchainMonitor {
       const link = await repos.links.findById(linkId);
       if (!link) continue;
       const total = await repos.payments.sumConfirmedByLink(link.id);
-      // Link expirado/revogado recebeu pagamento tardio; se o reorg derrubar
-      // esse pagamento, o link continua terminal em vez de "voltar" para
-      // aguardando (transicao ilegal e diagnostico errado).
-      const terminal = link.status === 'expirado' || link.status === 'revogado';
+      // Link terminal continua terminal se o pagamento sumir no reorg.
+      const terminal = link.status === 'expirado' || link.status === 'nao_realizado';
       const destino: LinkStatus =
         total <= 0n
           ? terminal
@@ -333,7 +327,6 @@ export class BlockchainMonitor {
         blocoSeguro: safe,
         reconstrucaoTotal: check.reconstrucaoTotal,
         pagamentosRevogados: revogados,
-        creditosRevogados: result.creditosRevogados,
         sweepsRefeitos,
         mensagem: check.mensagem,
       },
@@ -344,7 +337,6 @@ export class BlockchainMonitor {
         chain,
         blocoSeguro: safe,
         pagamentosRevogados: revogados,
-        creditosRevogados: result.creditosRevogados,
         sweepsRefeitos,
         reconstrucaoTotal: check.reconstrucaoTotal,
       },
@@ -454,14 +446,10 @@ export class BlockchainMonitor {
           }
         }
 
-        // Pagamento + credito na mesma transacao: um crash no meio nao deixa
-        // dinheiro confirmado sem credito.
-        const { creditCreated } = await repos.payments.confirm({
+        await repos.payments.confirm({
           paymentId: payment.id,
           confirmacoes,
-          credit: this.creditInput(link, payment.id, payment.valorBaseUnits),
         });
-        if (creditCreated) result.creditosCriados++;
 
         await this.applyLinkStatus(
           link,
@@ -487,14 +475,12 @@ export class BlockchainMonitor {
       }
     }
 
-    // Recuperacao: cobre crash entre confirmacao, credito e transicao.
+    // Recuperacao: cobre crash entre confirmacao e transicao do link.
     const leftovers = await repos.payments.listForReconciliation(500);
     for (const payment of leftovers) {
       try {
         const link = await repos.links.findById(payment.linkId);
         if (!link) continue;
-        const created = await this.creditPayment(link, payment.id, payment.valorBaseUnits);
-        if (created) result.creditosCriados++;
         await this.applyLinkStatus(
           link,
           payment.confirmacoes,
@@ -515,52 +501,34 @@ export class BlockchainMonitor {
     valorBaseUnits: bigint,
     token: string,
   ): Promise<void> {
+    const { repos } = this.deps;
+    const total = await repos.payments.sumConfirmedByLink(link.id);
+    await repos.links.updateSettlement(link.id, { valorRecebidoBaseUnits: total });
+
+    if (total <= 0n) return;
+    if (link.status === 'nao_realizado' || link.status === 'movido') return;
+
+    const now = new Date();
+    if (now > link.liquidacaoAte) {
+      await repos.links.updateSettlement(link.id, {
+        motivoNaoRealizado: 'pagamento_apos_prazo',
+      });
+      await this.deps.linkState.transition({
+        linkId: link.id,
+        to: 'nao_realizado',
+        reason: `pagamento confirmado apos a janela de liquidacao (${valorBaseUnits} ${token})`,
+        actor: 'monitor',
+      });
+      return;
+    }
+
     const status = await this.linkStatusFor(link);
-    // A4: passa pela maquina de estados (valida + audita o motivo).
     await this.deps.linkState.transition({
       linkId: link.id,
       to: status,
       reason: `${confirmacoes} confirmacoes, ${valorBaseUnits} ${token} recebido`,
       actor: 'monitor',
     });
-  }
-
-  private creditInput(
-    link: PaymentLink,
-    pagamentoId: string,
-    valorBaseUnits: bigint,
-  ) {
-    const taxa = link.taxaTokenPorFiatBaseUnits;
-    const valorCentavos =
-      taxa && taxa > 0n ? divRound(valorBaseUnits * 100n, taxa) : null;
-
-    return {
-      clienteId: link.clienteId,
-      linkId: link.id,
-      pagamentoId,
-      valorBaseUnits,
-      valorCentavos,
-      moeda: link.asset,
-      status: 'liberado' as const,
-    };
-  }
-
-  /** Credita o cliente com o valor EFETIVAMENTE recebido on-chain. */
-  private async creditPayment(
-    link: PaymentLink,
-    pagamentoId: string,
-    valorBaseUnits: bigint,
-  ): Promise<boolean> {
-    const { repos } = this.deps;
-    const existing = await repos.credits.findByPayment(pagamentoId);
-    if (existing) {
-      if (existing.status === 'revertido') {
-        await repos.credits.restoreByPaymentIds([pagamentoId], 'liberado');
-      }
-      return false;
-    }
-    await repos.credits.create(this.creditInput(link, pagamentoId, valorBaseUnits));
-    return true;
   }
 
   /** Calcula o status do link apos os pagamentos observados. */

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalAuditPreimage } from '../../core/audit-preimage.js';
 import { checksumAddress, normalizeAddress } from '../../core/domain/address.js';
@@ -6,85 +6,78 @@ import { HD_INDEX_SCOPE } from '../../core/hd/index-scope.js';
 import { DataCipher } from '../../core/crypto/cipher.js';
 import type { Database } from './client.js';
 import {
-  cadastrosPrefixos,
-  cadastros,
-  contas,
-  sessoes,
-  cadastrosLinks,
-  carteirasFrias,
+  apiClienteWallets,
+  apiClientes,
+  apiNonces,
   chainAnchors,
   chainCursors,
-  creditosCliente,
   eventosAuditoria,
   hdIndices,
   linksGerados,
   linksPagos,
   movimentosInternos,
   rampProfiles,
+  webhookOutbox,
 } from './schema.js';
 import type {
-  AccountRecord,
-  AccountRepository,
   AnchorRepository,
+  ApiClientRepository,
+  ApiClientWalletRepository,
   AuditRepository,
-  ColdWalletRepository,
-  CreateColdWalletInput,
-  CreateCreditInput,
-  CreateCustomerInput,
+  CreateApiClientInput,
+  CreateApiClientWalletInput,
   CreateLinkInput,
   CreateRampProfileInput,
-  UpdateRampProfileInput,
   CreateTransferInput,
-  CreditRepository,
+  CreateWebhookEventInput,
   CursorRepository,
-  CustomerRepository,
   IndexAllocator,
   LinkRepository,
   MotorRepositories,
+  NonceRepository,
   PaymentRepository,
   RampProfileRepository,
   RecordAuditInput,
-  SessionRecord,
-  StoredCustomer,
+  SettlementPatch,
   TransferRepository,
+  UpdateApiClientInput,
+  UpdateRampProfileInput,
   UpsertPaymentInput,
+  WebhookOutboxRepository,
 } from '../../core/ports/index.js';
 import type {
+  ApiClient,
+  ApiClientStatus,
+  ApiClientWallet,
   AuditEvent,
   ChainAnchor,
   ChainCursor,
-  ColdWallet,
-  CreditStatus,
-  CustomerCredit,
-  CustomerStatus,
   InternalTransfer,
   LinkStatus,
+  NaoRealizadoMotivo,
   ParamStyle,
   Payment,
   PaymentLink,
   RampProfile,
   TransferKind,
   TransferStatus,
+  WebhookEvent,
+  WebhookEventType,
+  WebhookStatus,
 } from '../../core/domain/types.js';
 
 /**
  * Implementacao dos ports do motor sobre Drizzle/Postgres.
  *
- * Os blobs cifrados sao gravados como base64 em colunas text (portavel
- * entre drivers). O conteudo em claro nunca chega nesta camada.
+ * Segredos (webhook secret, page token) sao gravados cifrados com o id do
+ * registro como AAD. A API key e gravada apenas como SHA-256.
  */
 
-/** A3: lock de serializacao da cadeia de auditoria (escopo global do banco). */
 const AUDIT_LOCK_ID = 7_315_902_411;
 
 const enc = (buf: Buffer): string => buf.toString('base64');
 const dec = (value: string): Buffer => Buffer.from(value, 'base64');
 
-/**
- * O driver `postgres.js` devolve `numeric`/`bigint` do Postgres como string
- * (mesmo para `sum(integer)` e `count(*)`). Sem a conversao explicita,
- * `total <= 0n` compara string com bigint e lanca em runtime.
- */
 function toBigInt(value: bigint | string | number | null | undefined): bigint {
   if (value === null || value === undefined) return 0n;
   return typeof value === 'bigint' ? value : BigInt(value);
@@ -95,209 +88,257 @@ function toNumber(value: bigint | string | number | null | undefined): number {
   return typeof value === 'number' ? value : Number(value);
 }
 
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
 /* ------------------------------------------------------------------ */
-/* Customers                                                           */
+/* API clients                                                         */
 /* ------------------------------------------------------------------ */
 
-function toStoredCustomer(row: typeof cadastros.$inferSelect): StoredCustomer {
+function toApiClient(
+  row: typeof apiClientes.$inferSelect,
+  webhookSecret: string,
+  requestSecret: string,
+): ApiClient {
   return {
     id: row.id,
-    nomeEnc: dec(row.nomeEnc),
-    emailEnc: dec(row.emailEnc),
-    emailBidx: row.emailBidx,
-    emailBidxAnterior: row.emailBidxAnterior,
-    nomeMasked: row.nomeMasked,
-    emailMasked: row.emailMasked,
-    status: row.status as CustomerStatus,
+    nome: row.nome,
+    apiKeyPrefix: row.apiKeyPrefix,
+    apiKeyHash: row.apiKeyHash,
+    webhookUrl: row.webhookUrl,
+    webhookSecret,
+    requestSecret,
+    status: row.status as ApiClientStatus,
     criadoEm: row.criadoEm,
   };
 }
 
-class DrizzleCustomerRepository implements CustomerRepository {
-  constructor(private readonly db: Database) {}
+class DrizzleApiClientRepository implements ApiClientRepository {
+  constructor(
+    private readonly db: Database,
+    private readonly cipher: DataCipher | null,
+  ) {}
 
-  async create(input: CreateCustomerInput): Promise<StoredCustomer> {
-    return this.db.transaction(async (tx) => {
-      const [row] = await tx
-        .insert(cadastros)
-        .values({
-          id: input.id,
-          nomeEnc: enc(input.nomeEnc),
-          emailEnc: enc(input.emailEnc),
-          emailBidx: input.emailBidx,
-          emailBidxAnterior: input.emailBidxAnterior,
-          nomeMasked: input.nomeMasked,
-          emailMasked: input.emailMasked,
-          status: input.status ?? 'ativo',
-        })
-        .returning();
-      if (!row) throw new Error('falha ao inserir cadastro');
-
-      const prefixos = [
-        ...input.prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
-        ...input.prefixBidxListV2.map((prefixBidx) => ({
-          prefixBidx: `v2:${prefixBidx}`,
-          prefixBidxV2: prefixBidx,
-        })),
-      ];
-      if (prefixos.length > 0) {
-        await tx
-          .insert(cadastrosPrefixos)
-          .values(prefixos.map((p) => ({ ...p, clienteId: input.id })))
-          .onConflictDoNothing();
-      }
-      return toStoredCustomer(row);
-    });
+  private seal(id: string, secret: string): string {
+    if (!this.cipher) return secret;
+    return enc(this.cipher.encrypt(secret, id));
   }
 
-  async findById(id: string): Promise<StoredCustomer | null> {
-    const [row] = await this.db.select().from(cadastros).where(eq(cadastros.id, id)).limit(1);
-    return row ? toStoredCustomer(row) : null;
+  private open(id: string, stored: string): string {
+    if (!this.cipher) return stored;
+    try {
+      return this.cipher.decrypt(dec(stored), id);
+    } catch {
+      // Compatibilidade com um banco criado antes da cifragem.
+      return stored;
+    }
   }
 
-  /**
-   * E3: busca exata tolerante a rotacao.
-   *
-   * Consulta as DUAS colunas (ativa e anterior) em vez de `coalesce`:
-   * durante a transicao o indice procurado pode ser o novo enquanto a linha
-   * ainda guarda o antigo em `email_bidx` (e vice-versa).
-   */
-  async findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null> {
-    if (emailBidxes.length === 0) return null;
+  async create(input: CreateApiClientInput): Promise<ApiClient> {
+    const [row] = await this.db
+      .insert(apiClientes)
+      .values({
+        id: input.id,
+        nome: input.nome,
+        apiKeyHash: input.apiKeyHash,
+        apiKeyPrefix: input.apiKeyPrefix,
+        webhookUrl: input.webhookUrl,
+        webhookSecretEnc: this.seal(input.id, input.webhookSecret),
+        requestSecretEnc: this.seal(input.id, input.requestSecret),
+      })
+      .returning();
+    if (!row) throw new Error('falha ao criar cliente da API');
+    return toApiClient(row, input.webhookSecret, input.requestSecret);
+  }
+
+  async findById(id: string): Promise<ApiClient | null> {
+    const [row] = await this.db.select().from(apiClientes).where(eq(apiClientes.id, id)).limit(1);
+    return row
+      ? toApiClient(
+          row,
+          this.open(row.id, row.webhookSecretEnc),
+          this.open(row.id, row.requestSecretEnc),
+        )
+      : null;
+  }
+
+  async findByApiKeyHash(apiKeyHash: string): Promise<ApiClient | null> {
     const [row] = await this.db
       .select()
-      .from(cadastros)
+      .from(apiClientes)
+      .where(eq(apiClientes.apiKeyHash, apiKeyHash))
+      .limit(1);
+    return row
+      ? toApiClient(
+          row,
+          this.open(row.id, row.webhookSecretEnc),
+          this.open(row.id, row.requestSecretEnc),
+        )
+      : null;
+  }
+
+  async list(): Promise<ApiClient[]> {
+    const rows = await this.db.select().from(apiClientes).orderBy(asc(apiClientes.criadoEm));
+    return rows.map((row) =>
+      toApiClient(
+        row,
+        this.open(row.id, row.webhookSecretEnc),
+        this.open(row.id, row.requestSecretEnc),
+      ),
+    );
+  }
+
+  async update(id: string, input: UpdateApiClientInput): Promise<ApiClient | null> {
+    const values: Partial<typeof apiClientes.$inferInsert> = {};
+    if (input.nome !== undefined) values.nome = input.nome;
+    if (input.webhookUrl !== undefined) values.webhookUrl = input.webhookUrl;
+    if (input.status !== undefined) values.status = input.status;
+    if (Object.keys(values).length === 0) return this.findById(id);
+    const [row] = await this.db
+      .update(apiClientes)
+      .set(values)
+      .where(eq(apiClientes.id, id))
+      .returning();
+    return row
+      ? toApiClient(
+          row,
+          this.open(row.id, row.webhookSecretEnc),
+          this.open(row.id, row.requestSecretEnc),
+        )
+      : null;
+  }
+
+  async rotateKey(
+    id: string,
+    apiKeyHash: string,
+    apiKeyPrefix: string,
+    requestSecret: string,
+  ): Promise<ApiClient | null> {
+    const [row] = await this.db
+      .update(apiClientes)
+      .set({
+        apiKeyHash,
+        apiKeyPrefix,
+        requestSecretEnc: this.seal(id, requestSecret),
+      })
+      .where(eq(apiClientes.id, id))
+      .returning();
+    return row
+      ? toApiClient(
+          row,
+          this.open(row.id, row.webhookSecretEnc),
+          requestSecret,
+        )
+      : null;
+  }
+
+  async rotateWebhookSecret(id: string, webhookSecret: string): Promise<ApiClient | null> {
+    const [row] = await this.db
+      .update(apiClientes)
+      .set({ webhookSecretEnc: this.seal(id, webhookSecret) })
+      .where(eq(apiClientes.id, id))
+      .returning();
+    return row
+      ? toApiClient(
+          row,
+          webhookSecret,
+          this.open(row.id, row.requestSecretEnc),
+        )
+      : null;
+  }
+}
+
+function toApiClientWallet(row: typeof apiClienteWallets.$inferSelect): ApiClientWallet {
+  return {
+    id: row.id,
+    apiClienteId: row.apiClienteId,
+    label: row.label,
+    chain: row.chain,
+    address: checksumAddress(row.address),
+    criadoEm: row.criadoEm,
+  };
+}
+
+class DrizzleApiClientWalletRepository implements ApiClientWalletRepository {
+  constructor(private readonly db: Database) {}
+
+  async create(input: CreateApiClientWalletInput): Promise<ApiClientWallet> {
+    const [row] = await this.db
+      .insert(apiClienteWallets)
+      .values({
+        apiClienteId: input.apiClienteId,
+        label: input.label,
+        chain: input.chain.toLowerCase(),
+        address: normalizeAddress(input.address),
+      })
+      .returning();
+    if (!row) throw new Error('falha ao criar carteira do cliente');
+    return toApiClientWallet(row);
+  }
+
+  async findById(id: string): Promise<ApiClientWallet | null> {
+    const [row] = await this.db
+      .select()
+      .from(apiClienteWallets)
+      .where(eq(apiClienteWallets.id, id))
+      .limit(1);
+    return row ? toApiClientWallet(row) : null;
+  }
+
+  async findByClientAndAddress(
+    apiClienteId: string,
+    address: string,
+  ): Promise<ApiClientWallet | null> {
+    const [row] = await this.db
+      .select()
+      .from(apiClienteWallets)
       .where(
-        or(
-          inArray(cadastros.emailBidxAnterior, emailBidxes),
-          inArray(cadastros.emailBidx, emailBidxes),
+        and(
+          eq(apiClienteWallets.apiClienteId, apiClienteId),
+          eq(apiClienteWallets.address, normalizeAddress(address)),
         ),
       )
       .limit(1);
-    return row ? toStoredCustomer(row) : null;
+    return row ? toApiClientWallet(row) : null;
   }
 
-  async searchByEmailPrefixBidx(
-    prefixBidxes: string[],
-    limit: number,
-  ): Promise<StoredCustomer[]> {
-    if (prefixBidxes.length === 0) return [];
-    // Os tokens v2 sao gravados com prefixo "v2:" para nao colidir no PK.
-    const chaves = [
-      ...prefixBidxes.map((b) => b),
-      ...prefixBidxes.map((b) => `v2:${b}`),
-    ];
-    const rows = await this.db
-      .select({ c: cadastros })
-      .from(cadastrosPrefixos)
-      .innerJoin(cadastros, eq(cadastrosPrefixos.clienteId, cadastros.id))
-      .where(inArray(cadastrosPrefixos.prefixBidx, chaves))
-      .orderBy(asc(cadastros.criadoEm))
-      .limit(limit);
-    const vistos = new Set<string>();
-    const saida: StoredCustomer[] = [];
-    for (const r of rows) {
-      if (vistos.has(r.c.id)) continue;
-      vistos.add(r.c.id);
-      saida.push(toStoredCustomer(r.c));
-    }
-    return saida;
-  }
-
-  /** E4: pagina por id para a re-cifragem em lote. */
-  async listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]> {
-    const rows = afterId
-      ? await this.db
-          .select()
-          .from(cadastros)
-          .where(gt(cadastros.id, afterId))
-          .orderBy(asc(cadastros.id))
-          .limit(limit)
-      : await this.db
-          .select()
-          .from(cadastros)
-          .orderBy(asc(cadastros.id))
-          .limit(limit);
-    return rows.map(toStoredCustomer);
-  }
-
-  /** E4: regrava os blobs e os indices. */
-  async updateEncrypted(
-    id: string,
-    nomeEnc: Buffer,
-    emailEnc: Buffer,
-    emailBidx: string,
-    emailBidxAnterior: string | null,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx
-        .update(cadastros)
-        .set({ nomeEnc: enc(nomeEnc), emailEnc: enc(emailEnc), emailBidx, emailBidxAnterior })
-        .where(eq(cadastros.id, id));
-
-      await tx.delete(cadastrosPrefixos).where(eq(cadastrosPrefixos.clienteId, id));
-      const prefixos = [
-        ...prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
-        ...prefixBidxListV2.map((prefixBidx) => ({
-          prefixBidx: `v2:${prefixBidx}`,
-          prefixBidxV2: prefixBidx,
-        })),
-      ];
-      if (prefixos.length > 0) {
-        await tx
-          .insert(cadastrosPrefixos)
-          .values(prefixos.map((p) => ({ ...p, clienteId: id })))
-          .onConflictDoNothing();
-      }
-    });
-  }
-
-  async updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void> {
-    await this.db
-      .update(cadastros)
-      .set({ nomeMasked, emailMasked })
-      .where(eq(cadastros.id, id));
-  }
-
-  /** Bloco 4: reindexa apenas os prefixos, sem tocar nos blobs cifrados. */
-  async replacePrefixes(
-    id: string,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.delete(cadastrosPrefixos).where(eq(cadastrosPrefixos.clienteId, id));
-      const prefixos = [
-        ...prefixBidxList.map((prefixBidx) => ({ prefixBidx, prefixBidxV2: null })),
-        ...prefixBidxListV2.map((prefixBidx) => ({
-          prefixBidx: `v2:${prefixBidx}`,
-          prefixBidxV2: prefixBidx,
-        })),
-      ];
-      if (prefixos.length > 0) {
-        await tx
-          .insert(cadastrosPrefixos)
-          .values(prefixos.map((p) => ({ ...p, clienteId: id })))
-          .onConflictDoNothing();
-      }
-    });
-  }
-
-  async list(limit: number, offset: number): Promise<StoredCustomer[]> {
+  async listByClient(apiClienteId: string): Promise<ApiClientWallet[]> {
     const rows = await this.db
       .select()
-      .from(cadastros)
-      .orderBy(desc(cadastros.criadoEm))
-      .limit(limit)
-      .offset(offset);
-    return rows.map(toStoredCustomer);
+      .from(apiClienteWallets)
+      .where(eq(apiClienteWallets.apiClienteId, apiClienteId))
+      .orderBy(asc(apiClienteWallets.label));
+    return rows.map(toApiClientWallet);
   }
 
-  async count(): Promise<number> {
-    const [row] = await this.db.select({ n: count() }).from(cadastros);
-    return toNumber(row?.n);
+  async listAll(): Promise<ApiClientWallet[]> {
+    const rows = await this.db
+      .select()
+      .from(apiClienteWallets)
+      .orderBy(asc(apiClienteWallets.criadoEm));
+    return rows.map(toApiClientWallet);
+  }
+}
+
+class DrizzleNonceRepository implements NonceRepository {
+  constructor(private readonly db: Database) {}
+
+  async use(apiClienteId: string, nonce: string, expiresAt: Date): Promise<boolean> {
+    const rows = await this.db
+      .insert(apiNonces)
+      .values({ apiClienteId, nonce, expiraEm: expiresAt })
+      .onConflictDoNothing()
+      .returning({ nonce: apiNonces.nonce });
+    return rows.length > 0;
+  }
+
+  async cleanup(now: Date): Promise<number> {
+    const rows = await this.db
+      .delete(apiNonces)
+      .where(lte(apiNonces.expiraEm, now))
+      .returning({ nonce: apiNonces.nonce });
+    return rows.length;
   }
 }
 
@@ -305,7 +346,10 @@ class DrizzleCustomerRepository implements CustomerRepository {
 /* Ramp profiles                                                       */
 /* ------------------------------------------------------------------ */
 
-function toRampProfile(row: typeof rampProfiles.$inferSelect, hostApiKey: string | null): RampProfile {
+function toRampProfile(
+  row: typeof rampProfiles.$inferSelect,
+  hostApiKey: string | null,
+): RampProfile {
   return {
     id: row.id,
     label: row.label,
@@ -337,7 +381,6 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
     return enc(this.cipher.encrypt(key, id));
   }
 
-  /** Abre o envelope. Texto legado (antes da cifragem) e regravado cifrado. */
   private async open(id: string, stored: string | null): Promise<string | null> {
     if (!stored) return null;
     if (!this.cipher) return stored;
@@ -390,9 +433,7 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
     if (input.taxaTokenPorFiatBaseUnits !== undefined) {
       values.taxaTokenPorFiatBaseUnits = input.taxaTokenPorFiatBaseUnits;
     }
-    if (Object.keys(values).length === 0) {
-      return this.findById(id);
-    }
+    if (Object.keys(values).length === 0) return this.findById(id);
     const [row] = await this.db
       .update(rampProfiles)
       .set(values)
@@ -417,105 +458,73 @@ class DrizzleRampProfileRepository implements RampProfileRepository {
 }
 
 /* ------------------------------------------------------------------ */
-/* Cold wallets                                                        */
-/* ------------------------------------------------------------------ */
-
-function toColdWallet(row: typeof carteirasFrias.$inferSelect): ColdWallet {
-  return {
-    id: row.id,
-    label: row.label,
-    // Armazenado lowercase; exibido em checksum EIP-55.
-    address: checksumAddress(row.address),
-    chain: row.chain,
-    criadoEm: row.criadoEm,
-  };
-}
-
-class DrizzleColdWalletRepository implements ColdWalletRepository {
-  constructor(private readonly db: Database) {}
-
-  async create(input: CreateColdWalletInput): Promise<ColdWallet> {
-    const [row] = await this.db
-      .insert(carteirasFrias)
-      .values({
-        label: input.label,
-        address: normalizeAddress(input.address),
-        chain: input.chain.toLowerCase(),
-      })
-      .returning();
-    if (!row) throw new Error('falha ao criar carteira fria');
-    return toColdWallet(row);
-  }
-
-  async findById(id: string): Promise<ColdWallet | null> {
-    const [row] = await this.db
-      .select()
-      .from(carteirasFrias)
-      .where(eq(carteirasFrias.id, id))
-      .limit(1);
-    return row ? toColdWallet(row) : null;
-  }
-
-  async findByAddress(address: string): Promise<ColdWallet | null> {
-    const [row] = await this.db
-      .select()
-      .from(carteirasFrias)
-      .where(eq(carteirasFrias.address, normalizeAddress(address)))
-      .limit(1);
-    return row ? toColdWallet(row) : null;
-  }
-
-  async list(): Promise<ColdWallet[]> {
-    const rows = await this.db
-      .select()
-      .from(carteirasFrias)
-      .orderBy(asc(carteirasFrias.label));
-    return rows.map(toColdWallet);
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /* Links                                                               */
 /* ------------------------------------------------------------------ */
 
-function toPaymentLink(row: typeof linksGerados.$inferSelect): PaymentLink {
-  return {
-    id: row.id,
-    clienteId: row.clienteId,
-    rampProfileId: row.rampProfileId,
-    chain: row.chain,
-    asset: row.asset,
-    decimals: row.decimals,
-    moedaFiat: row.moedaFiat,
-    valorFiatCentavos: row.valorFiatCentavos,
-    valorFiatUnidades: row.valorFiatUnidades,
-    taxaTokenPorFiatBaseUnits: row.taxaTokenPorFiatBaseUnits,
-    expectedBaseUnits: row.expectedBaseUnits,
-    indiceHd: row.indiceHd,
-    caminhoDerivacao: row.caminhoDerivacao,
-    // Armazenado lowercase; exibido em checksum EIP-55.
-    enderecoDeposito: checksumAddress(row.enderecoDeposito),
-    carteiraFriaId: row.carteiraFriaId,
-    carteiraFriaEndereco: row.carteiraFriaEndereco
-      ? checksumAddress(row.carteiraFriaEndereco)
-      : null,
-    tokenContract: row.tokenContract.toLowerCase(),
-    rampUrl: row.rampUrl,
-    status: row.status as LinkStatus,
-    expiraEm: row.expiraEm,
-    criadoEm: row.criadoEm,
-  };
-}
-
 class DrizzleLinkRepository implements LinkRepository {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly cipher: DataCipher | null,
+  ) {}
+
+  private seal(id: string, token: string): string {
+    if (!this.cipher) return token;
+    return enc(this.cipher.encrypt(token, id));
+  }
+
+  private open(id: string, stored: string): string {
+    if (!this.cipher) return stored;
+    try {
+      return this.cipher.decrypt(dec(stored), id);
+    } catch {
+      return stored;
+    }
+  }
+
+  private hydrate(row: typeof linksGerados.$inferSelect): PaymentLink {
+    return {
+      id: row.id,
+      apiClienteId: row.apiClienteId,
+      externalId: row.externalId,
+      idempotencyKey: row.idempotencyKey,
+      requestHash: row.requestHash,
+      rampProfileId: row.rampProfileId,
+      chain: row.chain,
+      asset: row.asset,
+      tokenContract: row.tokenContract.toLowerCase(),
+      decimals: row.decimals,
+      moedaFiat: row.moedaFiat,
+      valorFiatCentavos: row.valorFiatCentavos,
+      valorFiatUnidades: row.valorFiatUnidades,
+      taxaTokenPorFiatBaseUnits: row.taxaTokenPorFiatBaseUnits,
+      expectedBaseUnits: row.expectedBaseUnits,
+      indiceHd: row.indiceHd,
+      caminhoDerivacao: row.caminhoDerivacao,
+      enderecoDeposito: checksumAddress(row.enderecoDeposito),
+      walletAddress: checksumAddress(row.walletAddress),
+      pageToken: this.open(row.id, row.pageTokenEnc),
+      pageTokenHash: row.pageTokenHash,
+      rampUrl: row.rampUrl,
+      status: row.status as LinkStatus,
+      motivoNaoRealizado: row.motivoNaoRealizado as NaoRealizadoMotivo | null,
+      valorRecebidoBaseUnits: row.valorRecebidoBaseUnits,
+      reembolsado: row.reembolsado,
+      expiraEm: row.expiraEm,
+      liquidacaoAte: row.liquidacaoAte,
+      criadoEm: row.criadoEm,
+    };
+  }
 
   async create(input: CreateLinkInput): Promise<PaymentLink> {
     return this.db.transaction(async (tx) => {
       const [row] = await tx
         .insert(linksGerados)
         .values({
-          clienteId: input.clienteId,
+          id: input.id,
+          apiClienteId: input.apiClienteId,
+          externalId: input.externalId,
+          idempotencyKey: input.idempotencyKey,
+          requestHash: input.requestHash,
           rampProfileId: input.rampProfileId,
           chain: input.chain,
           asset: input.asset,
@@ -529,30 +538,23 @@ class DrizzleLinkRepository implements LinkRepository {
           indiceHd: input.indiceHd,
           caminhoDerivacao: input.caminhoDerivacao,
           enderecoDeposito: normalizeAddress(input.enderecoDeposito),
-          carteiraFriaId: input.carteiraFriaId,
-          carteiraFriaEndereco: input.carteiraFriaEndereco
-            ? normalizeAddress(input.carteiraFriaEndereco)
-            : null,
+          walletAddress: normalizeAddress(input.walletAddress),
+          pageTokenHash: input.pageTokenHash,
+          pageTokenEnc: this.seal(input.id, input.pageToken),
           rampUrl: input.rampUrl,
           status: input.status,
           expiraEm: input.expiraEm,
+          liquidacaoAte: input.liquidacaoAte,
         })
         .returning();
       if (!row) throw new Error('falha ao criar link');
-      await tx.insert(cadastrosLinks).values({
-        clienteId: input.clienteId,
-        linkId: row.id,
-      });
       await tx
         .update(hdIndices)
         .set({ linkId: row.id })
         .where(
-          and(
-            eq(hdIndices.scope, HD_INDEX_SCOPE),
-            eq(hdIndices.indice, input.indiceHd),
-          ),
+          and(eq(hdIndices.scope, HD_INDEX_SCOPE), eq(hdIndices.indice, input.indiceHd)),
         );
-      return toPaymentLink(row);
+      return this.hydrate(row);
     });
   }
 
@@ -562,7 +564,7 @@ class DrizzleLinkRepository implements LinkRepository {
       .from(linksGerados)
       .where(eq(linksGerados.id, id))
       .limit(1);
-    return row ? toPaymentLink(row) : null;
+    return row ? this.hydrate(row) : null;
   }
 
   async findByDepositAddress(address: string): Promise<PaymentLink | null> {
@@ -571,16 +573,57 @@ class DrizzleLinkRepository implements LinkRepository {
       .from(linksGerados)
       .where(eq(linksGerados.enderecoDeposito, normalizeAddress(address)))
       .limit(1);
-    return row ? toPaymentLink(row) : null;
+    return row ? this.hydrate(row) : null;
   }
 
-  async listByCustomer(clienteId: string): Promise<PaymentLink[]> {
+  async findByPageTokenHash(hash: string): Promise<PaymentLink | null> {
+    const [row] = await this.db
+      .select()
+      .from(linksGerados)
+      .where(eq(linksGerados.pageTokenHash, hash))
+      .limit(1);
+    return row ? this.hydrate(row) : null;
+  }
+
+  async findByExternalId(apiClienteId: string, externalId: string): Promise<PaymentLink | null> {
+    const [row] = await this.db
+      .select()
+      .from(linksGerados)
+      .where(
+        and(
+          eq(linksGerados.apiClienteId, apiClienteId),
+          eq(linksGerados.externalId, externalId),
+        ),
+      )
+      .limit(1);
+    return row ? this.hydrate(row) : null;
+  }
+
+  async findByIdempotencyKey(
+    apiClienteId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentLink | null> {
+    const [row] = await this.db
+      .select()
+      .from(linksGerados)
+      .where(
+        and(
+          eq(linksGerados.apiClienteId, apiClienteId),
+          eq(linksGerados.idempotencyKey, idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return row ? this.hydrate(row) : null;
+  }
+
+  async listByClient(apiClienteId: string, limit: number): Promise<PaymentLink[]> {
     const rows = await this.db
       .select()
       .from(linksGerados)
-      .where(eq(linksGerados.clienteId, clienteId))
-      .orderBy(desc(linksGerados.criadoEm));
-    return rows.map(toPaymentLink);
+      .where(eq(linksGerados.apiClienteId, apiClienteId))
+      .orderBy(desc(linksGerados.criadoEm))
+      .limit(limit);
+    return rows.map((row) => this.hydrate(row));
   }
 
   async listAll(limit: number): Promise<PaymentLink[]> {
@@ -589,7 +632,7 @@ class DrizzleLinkRepository implements LinkRepository {
       .from(linksGerados)
       .orderBy(desc(linksGerados.criadoEm))
       .limit(limit);
-    return rows.map(toPaymentLink);
+    return rows.map((row) => this.hydrate(row));
   }
 
   async listByStatus(status: LinkStatus, limit: number): Promise<PaymentLink[]> {
@@ -599,14 +642,49 @@ class DrizzleLinkRepository implements LinkRepository {
       .where(eq(linksGerados.status, status))
       .orderBy(asc(linksGerados.criadoEm))
       .limit(limit);
-    return rows.map(toPaymentLink);
+    return rows.map((row) => this.hydrate(row));
+  }
+
+  async listExpiredPages(now: Date, limit: number): Promise<PaymentLink[]> {
+    const rows = await this.db
+      .select()
+      .from(linksGerados)
+      .where(and(eq(linksGerados.status, 'aguardando'), lte(linksGerados.expiraEm, now)))
+      .orderBy(asc(linksGerados.expiraEm))
+      .limit(limit);
+    return rows.map((row) => this.hydrate(row));
+  }
+
+  async listDueSettlement(now: Date, limit: number): Promise<PaymentLink[]> {
+    const rows = await this.db
+      .select()
+      .from(linksGerados)
+      .where(
+        and(
+          inArray(linksGerados.status, ['expirado', 'parcial']),
+          lte(linksGerados.liquidacaoAte, now),
+        ),
+      )
+      .orderBy(asc(linksGerados.liquidacaoAte))
+      .limit(limit);
+    return rows.map((row) => this.hydrate(row));
   }
 
   async updateStatus(id: string, status: LinkStatus): Promise<void> {
-    await this.db
-      .update(linksGerados)
-      .set({ status })
-      .where(eq(linksGerados.id, id));
+    await this.db.update(linksGerados).set({ status }).where(eq(linksGerados.id, id));
+  }
+
+  async updateSettlement(id: string, patch: SettlementPatch): Promise<void> {
+    const values: Partial<typeof linksGerados.$inferInsert> = {};
+    if (patch.motivoNaoRealizado !== undefined) {
+      values.motivoNaoRealizado = patch.motivoNaoRealizado;
+    }
+    if (patch.valorRecebidoBaseUnits !== undefined) {
+      values.valorRecebidoBaseUnits = patch.valorRecebidoBaseUnits;
+    }
+    if (patch.reembolsado !== undefined) values.reembolsado = patch.reembolsado;
+    if (Object.keys(values).length === 0) return;
+    await this.db.update(linksGerados).set(values).where(eq(linksGerados.id, id));
   }
 
   async listDepositAddresses(statuses: LinkStatus[]): Promise<string[]> {
@@ -654,13 +732,8 @@ class DrizzlePaymentRepository implements PaymentRepository {
 
     if (existing.length > 0) {
       const row = existing[0]!;
-      // Pagamento ja confirmado nao e reescrito por uma varredura normal;
-      // reorgs passam por revertAboveBlock antes de a regiao ser relida.
       if (row.status === 'confirmado') return toPayment(row);
 
-      // Re-deteccao (inclusive depois de um reorg) precisa atualizar o
-      // bloco e os dados on-chain. Antes o registro ficava preso no bloco
-      // antigo e a nova confirmacao calculava errado.
       const [updated] = await this.db
         .update(linksPagos)
         .set({
@@ -709,65 +782,14 @@ class DrizzlePaymentRepository implements PaymentRepository {
     return toPayment(row);
   }
 
-  /**
-   * Confirma o pagamento e cria o credito NA MESMA transacao.
-   *
-   * Separar as duas escritas abria uma janela em que um crash deixava o
-   * pagamento confirmado sem credito (dinheiro do cliente preso). O
-   * `onConflictDoNothing` do credito mantem a operacao idempotente.
-   */
-  async confirm(input: {
-    paymentId: string;
-    confirmacoes: number;
-    credit: CreateCreditInput | null;
-  }): Promise<{ payment: Payment; creditCreated: boolean }> {
-    return this.db.transaction(async (tx) => {
-      const [updated] = await tx
-        .update(linksPagos)
-        .set({ status: 'confirmado', confirmadoEm: new Date(), confirmacoes: input.confirmacoes })
-        .where(eq(linksPagos.id, input.paymentId))
-        .returning();
-      if (!updated) throw new Error(`pagamento nao encontrado: ${input.paymentId}`);
-
-      let creditCreated = false;
-      if (input.credit) {
-        const inserted = await tx
-          .insert(creditosCliente)
-          .values({
-            clienteId: input.credit.clienteId,
-            linkId: input.credit.linkId,
-            pagamentoId: input.credit.pagamentoId,
-            valorBaseUnits: input.credit.valorBaseUnits,
-            valorCentavos: input.credit.valorCentavos,
-            moeda: input.credit.moeda,
-            status: input.credit.status,
-          })
-          .onConflictDoNothing()
-          .returning({ id: creditosCliente.id });
-        creditCreated = inserted.length > 0;
-        if (!creditCreated) {
-          // Reorg seguido de nova inclusao: o credito existe, mas foi
-          // marcado como revertido. Restaura-lo e tao importante quanto
-          // criar; sem isso o pagamento confirma e o cliente fica sem saldo.
-          await tx
-            .update(creditosCliente)
-            .set({
-              status: input.credit.status,
-              valorBaseUnits: input.credit.valorBaseUnits,
-              valorCentavos: input.credit.valorCentavos,
-              moeda: input.credit.moeda,
-            })
-            .where(
-              and(
-                eq(creditosCliente.pagamentoId, input.credit.pagamentoId),
-                eq(creditosCliente.status, 'revertido'),
-              ),
-            );
-        }
-      }
-
-      return { payment: toPayment(updated), creditCreated };
-    });
+  async confirm(input: { paymentId: string; confirmacoes: number }): Promise<Payment> {
+    const [updated] = await this.db
+      .update(linksPagos)
+      .set({ status: 'confirmado', confirmadoEm: new Date(), confirmacoes: input.confirmacoes })
+      .where(eq(linksPagos.id, input.paymentId))
+      .returning();
+    if (!updated) throw new Error(`pagamento nao encontrado: ${input.paymentId}`);
+    return toPayment(updated);
   }
 
   async findByTxHash(txHash: string): Promise<Payment | null> {
@@ -798,23 +820,15 @@ class DrizzlePaymentRepository implements PaymentRepository {
     return rows.map(toPayment);
   }
 
-  /**
-   * Confirmados cujo credito nao foi criado OU cujo link nao chegou ao
-   * status final. Cobre o crash entre a confirmacao e a transicao/credito.
-   */
   async listForReconciliation(limit: number): Promise<Payment[]> {
     const rows = await this.db
       .select({ p: linksPagos })
       .from(linksPagos)
       .innerJoin(linksGerados, eq(linksPagos.linkId, linksGerados.id))
-      .leftJoin(creditosCliente, eq(creditosCliente.pagamentoId, linksPagos.id))
       .where(
         and(
           eq(linksPagos.status, 'confirmado'),
-          or(
-            isNull(creditosCliente.id),
-            notInArray(linksGerados.status, ['pago', 'parcial', 'pago_sem_gas', 'movido']),
-          ),
+          inArray(linksGerados.status, ['aguardando', 'expirado', 'parcial', 'nao_realizado']),
         ),
       )
       .orderBy(asc(linksPagos.bloco))
@@ -839,7 +853,6 @@ class DrizzlePaymentRepository implements PaymentRepository {
       .where(eq(linksPagos.id, paymentId));
   }
 
-  /** C4: pagamentos cujo bloco caiu no reorg (na regiao descartada). */
   async listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]> {
     const rows = await this.db
       .select({ p: linksPagos })
@@ -873,130 +886,6 @@ class DrizzlePaymentRepository implements PaymentRepository {
         ),
       )
       .returning({ id: linksPagos.id });
-    return rows.length;
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Credits                                                             */
-/* ------------------------------------------------------------------ */
-
-function toCredit(row: typeof creditosCliente.$inferSelect): CustomerCredit {
-  return {
-    id: row.id,
-    clienteId: row.clienteId,
-    linkId: row.linkId,
-    pagamentoId: row.pagamentoId,
-    valorBaseUnits: row.valorBaseUnits,
-    valorCentavos: row.valorCentavos === null || row.valorCentavos === undefined ? null : toBigInt(row.valorCentavos),
-    moeda: row.moeda,
-    status: row.status as CreditStatus,
-    criadoEm: row.criadoEm,
-  };
-}
-
-class DrizzleCreditRepository implements CreditRepository {
-  constructor(private readonly db: Database) {}
-
-  async create(input: CreateCreditInput): Promise<CustomerCredit> {
-    const [row] = await this.db
-      .insert(creditosCliente)
-      .values({
-        clienteId: input.clienteId,
-        linkId: input.linkId,
-        pagamentoId: input.pagamentoId,
-        valorBaseUnits: input.valorBaseUnits,
-        valorCentavos: input.valorCentavos,
-        moeda: input.moeda,
-        status: input.status,
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (row) return toCredit(row);
-    const existing = await this.findByPayment(input.pagamentoId);
-    if (existing) return existing;
-    throw new Error('falha ao creditar cliente');
-  }
-
-  async listByCustomer(clienteId: string): Promise<CustomerCredit[]> {
-    const rows = await this.db
-      .select()
-      .from(creditosCliente)
-      .where(eq(creditosCliente.clienteId, clienteId))
-      .orderBy(desc(creditosCliente.criadoEm));
-    return rows.map(toCredit);
-  }
-
-  async listByLink(linkId: string): Promise<CustomerCredit[]> {
-    const rows = await this.db
-      .select()
-      .from(creditosCliente)
-      .where(eq(creditosCliente.linkId, linkId))
-      .orderBy(desc(creditosCliente.criadoEm));
-    return rows.map(toCredit);
-  }
-
-  async listAll(limit: number): Promise<CustomerCredit[]> {
-    const rows = await this.db
-      .select()
-      .from(creditosCliente)
-      .orderBy(desc(creditosCliente.criadoEm))
-      .limit(limit);
-    return rows.map(toCredit);
-  }
-
-  async sumByCustomer(clienteId: string): Promise<bigint> {
-    const [row] = await this.db
-      .select({
-        total: sql<string>`coalesce(sum(${creditosCliente.valorCentavos}), 0)::text`,
-      })
-      .from(creditosCliente)
-      .where(
-        and(eq(creditosCliente.clienteId, clienteId), eq(creditosCliente.status, 'liberado')),
-      );
-    return toBigInt(row?.total);
-  }
-
-  async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {
-    const [row] = await this.db
-      .select()
-      .from(creditosCliente)
-      .where(eq(creditosCliente.pagamentoId, pagamentoId))
-      .limit(1);
-    return row ? toCredit(row) : null;
-  }
-
-  /** C4: credito de pagamento revertido por reorg deixa de valer. */
-  async revertByPaymentIds(pagamentoIds: string[]): Promise<number> {
-    if (pagamentoIds.length === 0) return 0;
-    const rows = await this.db
-      .update(creditosCliente)
-      .set({ status: 'revertido' })
-      .where(
-        and(
-          inArray(creditosCliente.pagamentoId, pagamentoIds),
-          inArray(creditosCliente.status, ['pendente', 'liberado']),
-        ),
-      )
-      .returning({ id: creditosCliente.id });
-    return rows.length;
-  }
-
-  async restoreByPaymentIds(
-    pagamentoIds: string[],
-    status: CreditStatus,
-  ): Promise<number> {
-    if (pagamentoIds.length === 0) return 0;
-    const rows = await this.db
-      .update(creditosCliente)
-      .set({ status })
-      .where(
-        and(
-          inArray(creditosCliente.pagamentoId, pagamentoIds),
-          eq(creditosCliente.status, 'revertido'),
-        ),
-      )
-      .returning({ id: creditosCliente.id });
     return rows.length;
   }
 }
@@ -1096,7 +985,6 @@ class DrizzleTransferRepository implements TransferRepository {
       .where(eq(movimentosInternos.id, id));
   }
 
-  /** D4: existe sweep registrado para este (link, nonce)? */
   async existsByNonce(linkId: string, nonce: number): Promise<boolean> {
     const [row] = await this.db
       .select({ id: movimentosInternos.id })
@@ -1143,7 +1031,6 @@ class DrizzleTransferRepository implements TransferRepository {
     return rows.map(toTransfer);
   }
 
-  /** C5: um sweep cujo bloco caiu no reorg precisa ser refeito. */
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {
     const rows = await this.db
       .update(movimentosInternos)
@@ -1196,7 +1083,130 @@ class DrizzleTransferRepository implements TransferRepository {
 }
 
 /* ------------------------------------------------------------------ */
-/* Cursors + HD indices                                                */
+/* Webhook outbox                                                      */
+/* ------------------------------------------------------------------ */
+
+function toWebhookEvent(row: typeof webhookOutbox.$inferSelect): WebhookEvent {
+  return {
+    id: row.id,
+    apiClienteId: row.apiClienteId,
+    linkId: row.linkId,
+    eventType: row.eventType as WebhookEventType,
+    payload: row.payload,
+    status: row.status as WebhookStatus,
+    attempts: row.attempts,
+    nextAttemptEm: row.nextAttemptEm,
+    lastError: row.lastError,
+    deliveredEm: row.deliveredEm,
+    criadoEm: row.criadoEm,
+  };
+}
+
+class DrizzleWebhookOutboxRepository implements WebhookOutboxRepository {
+  constructor(private readonly db: Database) {}
+
+  async enqueue(input: CreateWebhookEventInput): Promise<WebhookEvent | null> {
+    const [row] = await this.db
+      .insert(webhookOutbox)
+      .values({
+        apiClienteId: input.apiClienteId,
+        linkId: input.linkId,
+        eventType: input.eventType,
+        payload: input.payload,
+        nextAttemptEm: input.nextAttemptEm,
+      })
+      .onConflictDoNothing()
+      .returning();
+    return row ? toWebhookEvent(row) : null;
+  }
+
+  async findById(id: string): Promise<WebhookEvent | null> {
+    const [row] = await this.db
+      .select()
+      .from(webhookOutbox)
+      .where(eq(webhookOutbox.id, id))
+      .limit(1);
+    return row ? toWebhookEvent(row) : null;
+  }
+
+  async listDue(now: Date, limit: number): Promise<WebhookEvent[]> {
+    const rows = await this.db
+      .select()
+      .from(webhookOutbox)
+      .where(
+        and(
+          eq(webhookOutbox.status, 'pendente'),
+          lte(webhookOutbox.nextAttemptEm, now),
+        ),
+      )
+      .orderBy(asc(webhookOutbox.nextAttemptEm))
+      .limit(limit);
+    return rows.map(toWebhookEvent);
+  }
+
+  async listByLink(linkId: string): Promise<WebhookEvent[]> {
+    const rows = await this.db
+      .select()
+      .from(webhookOutbox)
+      .where(eq(webhookOutbox.linkId, linkId))
+      .orderBy(asc(webhookOutbox.criadoEm));
+    return rows.map(toWebhookEvent);
+  }
+
+  async listAll(limit: number): Promise<WebhookEvent[]> {
+    const rows = await this.db
+      .select()
+      .from(webhookOutbox)
+      .orderBy(desc(webhookOutbox.criadoEm))
+      .limit(limit);
+    return rows.map(toWebhookEvent);
+  }
+
+  async markDelivered(id: string): Promise<void> {
+    await this.db
+      .update(webhookOutbox)
+      .set({ status: 'entregue', deliveredEm: new Date(), lastError: null })
+      .where(eq(webhookOutbox.id, id));
+  }
+
+  async markFailed(
+    id: string,
+    input: {
+      attempts: number;
+      nextAttemptEm: Date;
+      lastError: string;
+      status?: 'pendente' | 'falhou';
+    },
+  ): Promise<void> {
+    await this.db
+      .update(webhookOutbox)
+      .set({
+        attempts: input.attempts,
+        nextAttemptEm: input.nextAttemptEm,
+        lastError: input.lastError.slice(0, 1_000),
+        status: input.status ?? 'pendente',
+      })
+      .where(eq(webhookOutbox.id, id));
+  }
+
+  async replay(id: string, now: Date): Promise<WebhookEvent | null> {
+    const [row] = await this.db
+      .update(webhookOutbox)
+      .set({
+        status: 'pendente',
+        attempts: 0,
+        nextAttemptEm: now,
+        lastError: null,
+        deliveredEm: null,
+      })
+      .where(eq(webhookOutbox.id, id))
+      .returning();
+    return row ? toWebhookEvent(row) : null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Cursors + anchors + HD indices                                      */
 /* ------------------------------------------------------------------ */
 
 class DrizzleCursorRepository implements CursorRepository {
@@ -1238,7 +1248,6 @@ class DrizzleCursorRepository implements CursorRepository {
       });
   }
 
-  /** C3: rebobina o cursor apos um reorg. */
   async rewind(
     chain: string,
     tokenContract: string,
@@ -1327,13 +1336,6 @@ class DrizzleAnchorRepository implements AnchorRepository {
   }
 }
 
-/**
- * Alocacao atomica de indice HD.
- *
- * Um endereco derivado e publico: reutilizar o mesmo indice poderia receber
- * fundos de um link antigo. Por isso o indice e unico por escopo e a
- * alocacao serializa com um advisory lock de transacao.
- */
 class DrizzleIndexAllocator implements IndexAllocator {
   constructor(private readonly db: Database) {}
 
@@ -1341,11 +1343,9 @@ class DrizzleIndexAllocator implements IndexAllocator {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         return await this.db.transaction(async (tx) => {
-          // Lock global: o endereco depende so do indice, nao do perfil.
           await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${scope}))`);
           const [row] = await tx
             .select({
-              // Considera TODAS as linhas: bancos antigos alocavam por perfil.
               next: sql<string>`coalesce(max(${hdIndices.indice}) + 1, 0)::text`,
             })
             .from(hdIndices);
@@ -1367,11 +1367,6 @@ class DrizzleIndexAllocator implements IndexAllocator {
     throw new Error('nao foi possivel alocar indice HD apos 5 tentativas');
   }
 
-  /**
-   * Devolve uma reserva que nunca virou link. O `link_id` e preenchido na
-   * mesma transacao que insere o link; se ele continua nulo, a reserva e
-   * seguramente descartavel. Indices ja usados nunca sao apagados.
-   */
   async release(scope: string, indice: number): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${scope}))`);
@@ -1397,14 +1392,8 @@ class DrizzleAuditRepository implements AuditRepository {
 
   async record(input: RecordAuditInput): Promise<void> {
     await this.db.transaction(async (tx) => {
-      // A3: sem este lock, duas transacoes concorrentes (API + worker) leem
-      // o mesmo antecesor e a cadeia de auditoria BIFURCA silenciosamente.
-      // O lock e por transacao (soltado no commit/rollback).
       await tx.execute(sql`select pg_advisory_xact_lock(${AUDIT_LOCK_ID})`);
 
-      // Ordenacao deterministica: criado_em desempata por `id`. O novo
-      // evento precisa ter timestamp estritamente maior que o anterior,
-      // senao o proximo `last` poderia voltar um evento e bifurcar a cadeia.
       const [last] = await tx
         .select({
           hash: eventosAuditoria.hash,
@@ -1421,8 +1410,6 @@ class DrizzleAuditRepository implements AuditRepository {
           : now;
       const id = randomUUID();
       const detalhes = input.detalhes ? JSON.stringify(input.detalhes) : null;
-      // v2: inclui id, criadoEm e ip. Antes so os campos de negocio entravam,
-      // entao trocar o IP de um evento nao quebrava o hash.
       const hash = createHash('sha256')
         .update(
           canonicalAuditPreimage([
@@ -1474,86 +1461,28 @@ class DrizzleAuditRepository implements AuditRepository {
 }
 
 /* ------------------------------------------------------------------ */
-/* Conta do cliente                                                    */
-/* ------------------------------------------------------------------ */
-
-class DrizzleAccountRepository implements AccountRepository {
-  constructor(private readonly db: Database) {}
-
-  async create(input: AccountRecord): Promise<void> {
-    await this.db.insert(contas).values({
-      clienteId: input.clienteId,
-      usuario: input.usuario,
-      senhaHash: input.senhaHash,
-    });
-  }
-
-  async findByUsuario(usuario: string): Promise<AccountRecord | null> {
-    const [row] = await this.db.select().from(contas).where(eq(contas.usuario, usuario)).limit(1);
-    return row
-      ? { clienteId: row.clienteId, usuario: row.usuario, senhaHash: row.senhaHash }
-      : null;
-  }
-
-  async findByClienteId(clienteId: string): Promise<AccountRecord | null> {
-    const [row] = await this.db
-      .select()
-      .from(contas)
-      .where(eq(contas.clienteId, clienteId))
-      .limit(1);
-    return row
-      ? { clienteId: row.clienteId, usuario: row.usuario, senhaHash: row.senhaHash }
-      : null;
-  }
-
-  async update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void> {
-    await this.db.update(contas).set(patch).where(eq(contas.clienteId, clienteId));
-  }
-
-  async createSession(input: {
-    id: string;
-    tokenHash: string;
-    clienteId: string;
-    expiraEm: Date;
-  }): Promise<void> {
-    await this.db.insert(sessoes).values(input);
-  }
-
-  async findSession(hash: string): Promise<SessionRecord | null> {
-    const [row] = await this.db
-      .select()
-      .from(sessoes)
-      .where(eq(sessoes.tokenHash, hash))
-      .limit(1);
-    return row ? { clienteId: row.clienteId, expiraEm: row.expiraEm } : null;
-  }
-
-  async deleteSession(hash: string): Promise<void> {
-    await this.db.delete(sessoes).where(eq(sessoes.tokenHash, hash));
-  }
-
-  async deleteCustomer(clienteId: string): Promise<void> {
-    await this.db.delete(cadastros).where(eq(cadastros.id, clienteId));
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /* Factory                                                             */
 /* ------------------------------------------------------------------ */
 
-export function createRepositories(db: Database, cipher: DataCipher | null = null): MotorRepositories {
+export function createRepositories(
+  db: Database,
+  cipher: DataCipher | null = null,
+): MotorRepositories {
   return {
-    customers: new DrizzleCustomerRepository(db),
+    apiClients: new DrizzleApiClientRepository(db, cipher),
+    apiClientWallets: new DrizzleApiClientWalletRepository(db),
+    nonces: new DrizzleNonceRepository(db),
     rampProfiles: new DrizzleRampProfileRepository(db, cipher),
-    coldWallets: new DrizzleColdWalletRepository(db),
-    links: new DrizzleLinkRepository(db),
+    links: new DrizzleLinkRepository(db, cipher),
     payments: new DrizzlePaymentRepository(db),
-    credits: new DrizzleCreditRepository(db),
     transfers: new DrizzleTransferRepository(db),
+    webhooks: new DrizzleWebhookOutboxRepository(db),
     cursors: new DrizzleCursorRepository(db),
     anchors: new DrizzleAnchorRepository(db),
     indices: new DrizzleIndexAllocator(db),
     audit: new DrizzleAuditRepository(db),
-    accounts: new DrizzleAccountRepository(db),
   };
 }
+
+/** Exportado para testes de contrato que precisam hashear uma API key. */
+export { sha256Hex };

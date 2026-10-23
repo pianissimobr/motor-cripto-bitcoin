@@ -1,8 +1,8 @@
-import { getAddress } from 'ethers';
 import { bootstrap } from '../src/bootstrap.js';
 
 /**
- * Seed do banco: perfis de integracao Ramp e carteira fria padrao.
+ * Seed do banco: perfis de integracao Ramp. As carteiras de destino sao
+ * cadastradas por cliente no admin/API.
  * Idempotente: pode rodar varias vezes.
  *
  * Uso: npm run seed
@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const atualizarTaxas = process.argv.includes('--update-rates');
   const USDC_POR_BRL = taxaFromEnv('SEED_USDC_POR_BRL', '180000');
   const USDT_POR_BRL = taxaFromEnv('SEED_USDT_POR_BRL', '180000');
-  const { config, logger, motor, close } = await bootstrap();
+  const { config, logger, motor, close } = await bootstrap(process.env, 'api');
 
   const perfis = [
     {
@@ -96,27 +96,10 @@ async function main(): Promise<void> {
     logger.info({ label: criado.label, id: criado.id }, 'perfil Ramp criado');
   }
 
-  const endereco = config.coldWallet.address;
-  if (endereco) {
-    const normalizado = getAddress(endereco);
-    const carteiras = await motor.repos.coldWallets.list();
-    const jaExiste = carteiras.find((c) => c.address.toLowerCase() === normalizado.toLowerCase());
-    if (jaExiste) {
-      logger.info({ label: jaExiste.label }, 'carteira fria ja cadastrada');
-    } else {
-      const criada = await motor.repos.coldWallets.create({
-        label: config.coldWallet.label,
-        address: normalizado,
-        chain: 'polygon',
-      });
-      logger.info({ id: criada.id, address: criada.address }, 'carteira fria criada');
-    }
-  } else {
-    logger.warn(
-      'COLD_WALLET_ADDRESS nao configurado: cadastre a carteira fria pela API ' +
-        'ou defina a variavel e rode o seed de novo',
-    );
-  }
+  logger.info(
+    'perfis Ramp prontos. Cadastre clientes e carteiras allowlisted pelo admin ' +
+      '(POST /admin/api/clientes e /admin/api/clientes/:id/wallets).',
+  );
 
   await close();
 }

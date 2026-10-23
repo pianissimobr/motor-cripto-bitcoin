@@ -14,15 +14,25 @@ export const LINK_STATUS = [
   'pago_sem_gas',
   'movido',
   'expirado',
-  'revogado',
+  'nao_realizado',
 ] as const;
 export type LinkStatus = (typeof LINK_STATUS)[number];
 
+/** Estados finais para efeito de webhook/contrato com o cliente. */
+export const LINK_FINAL_STATUS = ['pago', 'pago_sem_gas', 'movido', 'nao_realizado'] as const;
+export type LinkFinalStatus = (typeof LINK_FINAL_STATUS)[number];
+
+export const NAO_REALIZADO_MOTIVO = [
+  'nao_pago',
+  'valor_parcial',
+  'pagamento_apos_prazo',
+  'revogado',
+  'reorg',
+] as const;
+export type NaoRealizadoMotivo = (typeof NAO_REALIZADO_MOTIVO)[number];
+
 export const PAYMENT_STATUS = ['detectado', 'confirmado', 'revertido'] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUS)[number];
-
-export const CREDIT_STATUS = ['pendente', 'liberado', 'revertido'] as const;
-export type CreditStatus = (typeof CREDIT_STATUS)[number];
 
 export const TRANSFER_STATUS = [
   'pendente',
@@ -33,19 +43,40 @@ export const TRANSFER_STATUS = [
 ] as const;
 export type TransferStatus = (typeof TRANSFER_STATUS)[number];
 
-export const CUSTOMER_STATUS = ['ativo', 'inativo'] as const;
-export type CustomerStatus = (typeof CUSTOMER_STATUS)[number];
+export const API_CLIENT_STATUS = ['ativo', 'inativo'] as const;
+export type ApiClientStatus = (typeof API_CLIENT_STATUS)[number];
 
 export const PARAM_STYLE = ['legacy', 'unified'] as const;
 export type ParamStyle = (typeof PARAM_STYLE)[number];
 
-export type Customer = {
+export const WEBHOOK_EVENT_TYPE = ['realizado', 'nao_realizado'] as const;
+export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPE)[number];
+
+export const WEBHOOK_STATUS = ['pendente', 'entregue', 'falhou'] as const;
+export type WebhookStatus = (typeof WEBHOOK_STATUS)[number];
+
+export type ApiClient = {
   id: string;
   nome: string;
-  email: string;
-  emailMasked: string;
-  nomeMasked: string;
-  status: CustomerStatus;
+  /** Prefixo publico da chave, para exibir no admin sem revelar o segredo. */
+  apiKeyPrefix: string;
+  /** SHA-256 hex da API key. A chave em claro nunca e persistida. */
+  apiKeyHash: string;
+  webhookUrl: string;
+  /** Segredo HMAC dos webhooks. Fica cifrado em repouso. */
+  webhookSecret: string;
+  /** Segredo HMAC das requisicoes da API. Fica cifrado em repouso. */
+  requestSecret: string;
+  status: ApiClientStatus;
+  criadoEm: Date;
+};
+
+export type ApiClientWallet = {
+  id: string;
+  apiClienteId: string;
+  label: string;
+  chain: string;
+  address: string;
   criadoEm: Date;
 };
 
@@ -63,8 +94,7 @@ export type RampProfile = {
   hostLogoUrl?: string | null;
   /**
    * Taxa de referencia: quantos base units do token valem 1,00 unidade fiat.
-   * `null` = sem referencia (o motor credita apenas o valor efetivamente
-   * recebido, sem poder marcar o link como parcial).
+   * `null` = sem referencia (o motor nao consegue classificar valor parcial).
    */
   taxaTokenPorFiatBaseUnits: bigint | null;
   /** Chave de asset no formato unificado da Ramp (ex.: POLYGON_USDC). */
@@ -74,17 +104,15 @@ export type RampProfile = {
   criadoEm: Date;
 };
 
-export type ColdWallet = {
-  id: string;
-  label: string;
-  address: string;
-  chain: string;
-  criadoEm: Date;
-};
-
 export type PaymentLink = {
   id: string;
-  clienteId: string;
+  apiClienteId: string;
+  /** Identificador do pedido no sistema do cliente (idempotente por cliente). */
+  externalId: string;
+  /** Chave de idempotencia usada na criacao (header ou external_id). */
+  idempotencyKey: string;
+  /** SHA-256 do payload canonico, para detectar reuso indevido da chave. */
+  requestHash: string;
   rampProfileId: string;
   chain: string;
   asset: string;
@@ -95,8 +123,7 @@ export type PaymentLink = {
   valorFiatUnidades: number;
   /**
    * Taxa usada no instante da criacao do link: quantos base units do token
-   * valem 1,00 unidade de fiat. `null` = sem referencia (credita so o
-   * valor efetivamente recebido).
+   * valem 1,00 unidade de fiat. `null` = sem referencia.
    */
   taxaTokenPorFiatBaseUnits: bigint | null;
   /** Snapshot do valor esperado em base units, calculado com a taxa acima. */
@@ -104,20 +131,28 @@ export type PaymentLink = {
   indiceHd: number;
   caminhoDerivacao: string;
   enderecoDeposito: string;
-  /**
-   * A1: carteira fria de destino, snapshot da criacao do link.
-   * `null` para links legados (o sweeper cai no fallback por chain).
-   */
-  carteiraFriaId: string | null;
-  carteiraFriaEndereco: string | null;
+  /** Carteira allowlisted do cliente que recebe o sweep. */
+  walletAddress: string;
+  /** Token opaco da pagina publica (segredo bearer). */
+  pageToken: string;
+  /** SHA-256 hex do page token; e o que fica indexado para lookup. */
+  pageTokenHash: string;
+  /** URL oficial da Ramp. Nunca sai em resposta de API; so na pagina publica. */
   rampUrl: string;
   status: LinkStatus;
+  motivoNaoRealizado: NaoRealizadoMotivo | null;
+  /** Soma confirmada on-chain no momento da liquidacao. */
+  valorRecebidoBaseUnits: bigint;
+  /** True quando os fundos recebidos foram/estao sendo varridos ao cliente. */
+  reembolsado: boolean;
+  /** Fim da pagina/widget (60 min por padrao). */
   expiraEm: Date;
+  /** Fim da janela de verificacao on-chain (1 dia corrido por padrao). */
+  liquidacaoAte: Date;
   criadoEm: Date;
   // joins
   rampProfile?: RampProfile;
   totalRecebidoBaseUnits?: bigint;
-  creditoCentavos?: number;
 };
 
 export type Payment = {
@@ -134,21 +169,6 @@ export type Payment = {
   status: PaymentStatus;
   detectadoEm: Date;
   confirmadoEm?: Date | null;
-};
-
-export type CustomerCredit = {
-  id: string;
-  clienteId: string;
-  linkId: string;
-  pagamentoId: string;
-  /** Valor creditado em base units do token (fonte da verdade). */
-  valorBaseUnits: bigint;
-  /** Equivalente em fiat (centavos), quando ha taxa de referencia. */
-  valorCentavos: bigint | null;
-  /** Simbolo do token creditado (ex.: USDC). */
-  moeda: string;
-  status: CreditStatus;
-  criadoEm: Date;
 };
 
 /**
@@ -193,6 +213,21 @@ export type ChainAnchor = {
   tokenContract: string;
   bloco: number;
   hashBloco: string;
+};
+
+export type WebhookEvent = {
+  id: string;
+  apiClienteId: string;
+  linkId: string;
+  eventType: WebhookEventType;
+  /** JSON serializado exatamente como foi (ou sera) enviado. */
+  payload: string;
+  status: WebhookStatus;
+  attempts: number;
+  nextAttemptEm: Date;
+  lastError: string | null;
+  deliveredEm: Date | null;
+  criadoEm: Date;
 };
 
 export type AuditEvent = {

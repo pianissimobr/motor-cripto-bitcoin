@@ -1,687 +1,440 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import {
-  ConflictError,
-  ForbiddenError,
-  NotFoundError,
-  ValidationError,
-  isUniqueViolation,
-} from '../../core/domain/errors.js';
-import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
+import { ValidationError } from '../../core/domain/errors.js';
 import { collectAlerts, type GasSponsorBalance } from '../../core/alerts.js';
-import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
-import { stripHostApiKey } from '../../core/ramp/link-builder.js';
-import type { ColdWallet, Customer, RampProfile } from '../../core/domain/types.js';
 import type { Motor } from '../../core/index.js';
-import type { UpdateRampProfileInput } from '../../core/ports/index.js';
 import type { Logger } from '../../core/logger.js';
+import type { ApiClient } from '../../core/domain/types.js';
+import { TransferSubmissionError } from '../../core/chain/sweeper.js';
+import { renderPaymentPage } from './payment-page.js';
+import {
+  adminClientDto,
+  auditDto,
+  linkDto,
+  paymentDto,
+  rampProfileDto,
+  transferDto,
+  walletDto,
+  webhookDto,
+} from './serializers.js';
 
-/**
- * Rotas HTTP. Sao um adaptador fino: apenas validam entrada, chamam o
- * core e formatam a saida. Nenhuma regra de negocio mora aqui.
- */
+const uuid = z.string().uuid();
+function isHttpUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
 
-const cadastroSchema = z.object({
-  nome: z.string().min(2).max(200),
-  email: z.string().email().max(320),
-});
+const httpUrl = z.string().url().refine(isHttpUrl, 'use http(s)');
 
-const chainSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(40)
-  .regex(/^[a-z0-9][a-z0-9-]*$/i, 'chain invalida');
-
-const httpUrlSchema = z
-  .string()
-  .url()
-  .refine((value) => {
-    const protocol = new URL(value).protocol;
-    return protocol === 'https:' || protocol === 'http:';
-  }, 'URL deve usar http(s)');
-
-const linkSchema = z.object({
-  clienteId: z.string().uuid().optional(),
-  email: z.string().email().max(320).optional(),
-  valor: z.union([z.string().trim().min(1).max(20), z.number()]),
-  rampProfileId: z.string().uuid(),
-  coldWalletId: z.string().uuid().nullish(),
-  coldWalletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/).nullish(),
-  finalUrl: httpUrlSchema.nullish(),
-});
-
-const taxaTokenPorFiatBaseUnitsSchema = z
-  .union([
-    z.string().regex(/^\d+$/, 'taxa deve ser inteiro >= 0'),
-    z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-    z.bigint().nonnegative(),
-  ])
-  .nullish();
-
-const rampProfileSchema = z.object({
-  label: z.string().trim().min(1).max(80),
-  chain: chainSchema,
-  asset: z
-    .string()
-    .trim()
-    .min(1)
-    .max(20)
-    .regex(/^[A-Za-z0-9._-]+$/, 'asset invalido'),
-  tokenContract: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  decimals: z.number().int().min(0).max(18).default(6),
-  fiatCurrency: z
-    .string()
-    .regex(/^[A-Za-z]{3}$/, 'moeda fiat deve ter 3 letras')
-    .transform((value) => value.toUpperCase())
-    .default('BRL'),
-  baseUrl: httpUrlSchema,
-  paramStyle: z.enum(['legacy', 'unified']).default('legacy'),
-  hostAppName: z.string().trim().min(1).max(80).default('Motor Cripto'),
-  hostLogoUrl: httpUrlSchema.nullish(),
-  hostApiKey: z.string().max(500).nullish(),
-  rampAssetKey: z.string().trim().max(80).nullish(),
-  // BigInt nao cabe em JSON; aceita string decimal ou numero inteiro seguro.
-  taxaTokenPorFiatBaseUnits: taxaTokenPorFiatBaseUnitsSchema,
-});
-
-const rampProfilePatchSchema = z
+const createLinkSchema = z
   .object({
-    label: z.string().trim().min(1).max(80).optional(),
-    fiatCurrency: z
-      .string()
-      .regex(/^[A-Za-z]{3}$/, 'moeda fiat deve ter 3 letras')
-      .transform((value) => value.toUpperCase())
-      .optional(),
-    baseUrl: httpUrlSchema.optional(),
-    paramStyle: z.enum(['legacy', 'unified']).optional(),
-    hostAppName: z.string().trim().min(1).max(80).optional(),
-    hostLogoUrl: httpUrlSchema.nullish(),
-    hostApiKey: z.string().max(500).nullish(),
-    rampAssetKey: z.string().trim().max(80).nullish(),
-    taxaTokenPorFiatBaseUnits: taxaTokenPorFiatBaseUnitsSchema,
+    external_id: z.string().trim().min(1).max(200),
+    amount_cents: z.number().int().positive().max(100_000_000),
+    ramp_profile_id: uuid,
+    wallet_id: uuid,
+    final_url: httpUrl.nullish(),
+  })
+  .strict();
+
+const createClientSchema = z
+  .object({
+    nome: z.string().trim().min(2).max(200),
+    webhook_url: httpUrl,
+  })
+  .strict();
+
+const updateClientSchema = z
+  .object({
+    nome: z.string().trim().min(2).max(200).optional(),
+    webhook_url: httpUrl.optional(),
+    status: z.enum(['ativo', 'inativo']).optional(),
   })
   .strict()
-  .refine((body) => Object.keys(body).length > 0, {
-    message: 'informe ao menos um campo para atualizar',
-  });
+  .refine((body) => Object.keys(body).length > 0, 'informe ao menos um campo');
 
-const coldWalletSchema = z.object({
-  label: z.string().trim().min(1).max(80),
-  address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  chain: chainSchema,
-});
+const createWalletSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80),
+    chain: z.string().trim().min(1).max(40),
+    address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  })
+  .strict();
+
+const taxaSchema = z
+  .union([
+    z.string().regex(/^\d+$/),
+    z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  ])
+  .nullish()
+  .transform((value) => (value === null || value === undefined ? null : BigInt(value)));
+
+const rampProfileSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80),
+    chain: z.string().trim().min(1).max(40),
+    asset: z.string().trim().min(1).max(20),
+    token_contract: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    decimals: z.number().int().min(0).max(18).default(6),
+    fiat_currency: z
+      .string()
+      .regex(/^[A-Za-z]{3}$/)
+      .transform((value) => value.toUpperCase())
+      .default('BRL'),
+    base_url: httpUrl,
+    param_style: z.enum(['legacy', 'unified']).default('legacy'),
+    host_app_name: z.string().trim().min(1).max(80).default('Motor Cripto'),
+    host_logo_url: httpUrl.nullish(),
+    host_api_key: z.string().max(500).nullish(),
+    ramp_asset_key: z.string().trim().max(80).nullish(),
+    taxa_token_por_fiat_base_units: taxaSchema,
+  })
+  .strict();
+
+const rampProfilePatchSchema = rampProfileSchema
+  .partial()
+  .strict()
+  .refine((body) => Object.keys(body).length > 0, 'informe ao menos um campo');
+
+const limitSchema = z.coerce.number().int().min(1).max(200).default(50);
 
 export type RouteOptions = {
   motor: Motor;
   logger: Logger;
-  /** Saldo minimo do patrocinador de gas e consulta opcional do saldo real. */
-  gasSponsor?: {
+  gasSponsor: {
     minBalanceWei: bigint;
-    enabled: boolean;
+    configured: boolean;
     balances?: () => Promise<GasSponsorBalance[]>;
   };
 };
 
 export async function registerRoutes(app: FastifyInstance, options: RouteOptions): Promise<void> {
   const { motor, logger } = options;
-  const configGas = options.gasSponsor ?? { minBalanceWei: 0n, enabled: false };
-  const gasSponsorAtivo = configGas.enabled;
 
-  const revealPedido = (request: FastifyRequest): boolean => {
-    const raw = (request.query as { reveal?: unknown } | undefined)?.reveal;
-    if (raw !== 'true' && raw !== '1' && raw !== true) return false;
-    if (request.authScope === 'readonly') {
-      throw new ForbiddenError('token de leitura nao pode revelar PII');
-    }
-    return true;
-  };
-
-  /** PII so sai em claro com pedido explicito; o pedido fica auditado. */
-  const auditarReveal = async (
-    request: FastifyRequest,
-    entidadeId: string | null,
-    quantidade: number,
-  ): Promise<void> => {
-    await motor.repos.audit.record({
-      ator: 'api',
-      acao: 'pii.revelado',
-      entidade: 'cadastro',
-      entidadeId,
-      ip: request.ip,
-      detalhes: { quantidade, rota: request.url.split('?')[0] },
-    });
-  };
+  app.get('/health', async () => ({ ok: true, ts: new Date().toISOString() }));
 
   /* ---------------------------------------------------------------- */
-  /* Health + status                                                   */
+  /* Pagina publica                                                    */
   /* ---------------------------------------------------------------- */
 
-  app.get('/api/health', async () => ({ ok: true, ts: new Date().toISOString() }));
-
-  app.get('/api/auth/check', async (request) => ({
-    ok: true,
-    escopo: request.authScope ?? 'desconhecido',
-  }));
-
-  app.get('/api/motor/status', async () => {
-    const [clientes, perfis, carteiras, auditoria] = await Promise.all([
-      motor.repos.customers.count(),
-      motor.repos.rampProfiles.list(),
-      motor.repos.coldWallets.list(),
-      motor.repos.audit.list(5),
-    ]);
-    return {
-      clientes,
-      perfisRamp: perfis.map((p) => ({
-        id: p.id,
-        label: p.label,
-        chain: p.chain,
-        asset: p.asset,
-        paramStyle: p.paramStyle,
-      })),
-      carteirasFrias: carteiras.map((c) => ({ id: c.id, label: c.label, chain: c.chain })),
-      signer: motor.signer.describe(),
-      // Nome do campo dizia "xpub", mas o valor sempre foi o endereco da conta.
-      enderecoConta: motor.hdWallet.account.accountAddress,
-      prefixoDerivacao: motor.hdWallet.derivationPrefix,
-      ultimoEventoAuditoria: auditoria[0]?.criadoEm ?? null,
-    };
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* Cadastros                                                         */
-  /* ---------------------------------------------------------------- */
-
-  app.post('/api/cadastros', async (request, reply) => {
-    const body = cadastroSchema.parse(request.body);
-    const customer = await motor.customers.create(body);
-    await motor.repos.audit.record({
-      ator: 'api',
-      acao: 'cadastro.criado',
-      entidade: 'cadastro',
-      entidadeId: customer.id,
-      ip: request.ip,
-      detalhes: { emailMasked: customer.emailMasked },
-    });
-    // PII nao volta em claro na criacao: quem chamou ja conhece o que enviou.
-    return reply.code(201).send(serializeCustomer(customer, false));
-  });
-
-  app.get('/api/cadastros', async (request) => {
-    const query = z
-      .object({
-        email: z.string().email().max(320).optional(),
-        q: z.string().trim().min(1).max(64).optional(),
-        reveal: z.string().optional(),
-        limit: z.coerce.number().int().min(1).max(100).default(20),
-        offset: z.coerce.number().int().min(0).default(0),
-      })
-      .parse(request.query);
-
-    const reveal = revealPedido(request);
-
-    if (query.email) {
-      const found = await motor.customers.findByEmail(query.email);
-      if (!found) return { total: 0, clientes: [] };
-      if (reveal) await auditarReveal(request, found.id, 1);
-      return { total: 1, clientes: [serializeCustomer(found, reveal)] };
-    }
-    // Autocomplete dispara a cada tecla: aqui nunca se revela PII em claro,
-    // senao a cadeia de auditoria (com lock) viraria gargalo.
-    if (query.q) {
-      const found = await motor.customers.search(query.q, query.limit);
-      return {
-        total: found.length,
-        clientes: found.map((c) => serializeCustomer(c, false)),
-      };
-    }
-    const clientes = await motor.customers.list(query.limit, query.offset);
-    if (reveal) await auditarReveal(request, null, clientes.length);
-    return {
-      total: await motor.customers.count(),
-      clientes: clientes.map((c) => serializeCustomer(c, reveal)),
-    };
-  });
-
-  app.get('/api/cadastros/:id', async (request, reply) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const reveal = revealPedido(request);
-    const customer = await motor.customers.get(id);
-    if (!customer) return reply.code(404).send({ erro: 'cliente nao encontrado' });
-    if (reveal) await auditarReveal(request, customer.id, 1);
-    return serializeCustomer(customer, reveal);
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* Links de cobranca                                                 */
-  /* ---------------------------------------------------------------- */
-
-  app.post('/api/links', async (request, reply) => {
-    const body = linkSchema.parse(request.body);
-    let amountCents: number;
+  app.get<{ Params: { token: string } }>('/p/:token', async (request, reply) => {
     try {
-      amountCents = fiatToCents(body.valor);
-    } catch (err) {
-      throw new ValidationError(err instanceof Error ? err.message : 'valor invalido');
-    }
-
-    let clienteId = body.clienteId;
-    if (!clienteId) {
-      if (!body.email) {
-        return reply.code(400).send({ erro: 'informe clienteId ou email' });
-      }
-      const customer = await motor.customers.findByEmail(body.email);
-      if (!customer) return reply.code(404).send({ erro: 'cliente nao encontrado' });
-      clienteId = customer.id;
-    }
-
-    const link = await motor.links.create({
-      clienteId,
-      amountCents,
-      rampProfileId: body.rampProfileId,
-      coldWalletId: body.coldWalletId ?? null,
-      coldWalletAddress: body.coldWalletAddress ?? null,
-      finalUrl: body.finalUrl ?? null,
-      actor: 'api',
-      ip: request.ip,
-    });
-
-    // F1: QR gerado no servidor (a tela so embute o SVG).
-    let qr: { svg: string; dataUri: string } | null = null;
-    try {
-      const svg = await qrCodeSvg(link.rampUrl);
-      qr = { svg, dataUri: svgToDataUri(svg) };
-    } catch (err) {
-      logger.warn({ err, linkId: link.id }, 'falha ao gerar QR do link');
-    }
-
-    logger.info({ linkId: link.id }, 'link gerado via API');
-    return reply.code(201).send({
-      id: link.id,
-      rampUrl: link.rampUrl,
-      enderecoDeposito: link.enderecoDeposito,
-      carteiraFria: link.carteiraFriaEndereco,
-      valor: centsToFiat(link.valorFiatCentavos),
-      moeda: link.moedaFiat,
-      asset: link.asset,
-      chain: link.chain,
-      status: link.status,
-      qrcodeDataUri: qr?.dataUri ?? null,
-      expiraEm: link.expiraEm,
-      criadoEm: link.criadoEm,
-    });
-  });
-
-  app.get('/api/links/:id', async (request, reply) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const detail = await motor.links.detail(id);
-    if (!detail) return reply.code(404).send({ erro: 'link nao encontrado' });
-    const { link, payments, transfers, credits } = detail;
-    const adminView = request.authScope !== 'readonly';
-    const rampUrl = adminView ? await rampUrlParaAdmin(motor, link.rampUrl, link.rampProfileId) : stripHostApiKey(link.rampUrl);
-    return {
-      id: link.id,
-      clienteId: link.clienteId,
-      status: link.status,
-      valor: centsToFiat(link.valorFiatCentavos),
-      moeda: link.moedaFiat,
-      asset: link.asset,
-      chain: link.chain,
-      enderecoDeposito: link.enderecoDeposito,
-      ...(adminView ? { caminhoDerivacao: link.caminhoDerivacao } : {}),
-      rampUrl,
-      expiraEm: link.expiraEm,
-      criadoEm: link.criadoEm,
-      pagamentos: payments.map((p) => ({
-        id: p.id,
-        txHash: p.txHash,
-        valor: p.valorBaseUnits.toString(),
-        confirmacoes: p.confirmacoes,
-        bloco: p.bloco,
-        status: p.status,
-        deAddress: p.deAddress,
-        detectadoEm: p.detectadoEm,
-        confirmadoEm: p.confirmadoEm,
-      })),
-      movimentos: transfers.map((t) => ({
-        id: t.id,
-        kind: t.kind,
-        txHash: t.txHash,
-        status: t.status,
-        erro: t.erro,
-        valor: t.valorBaseUnits.toString(),
-        ...(adminView
-          ? { unsignedTransaction: parseUnsignedJson(t.unsignedTransaction) }
-          : {}),
-        criadoEm: t.criadoEm,
-      })),
-      creditos: credits.map((c) => ({
-        id: c.id,
-        valor: c.valorBaseUnits.toString(),
-        valorCentavos: c.valorCentavos?.toString() ?? null,
-        moeda: c.moeda,
-        status: c.status,
-        criadoEm: c.criadoEm,
-      })),
-    };
-  });
-
-  /**
-   * PSBT: recebe o raw assinado no hardware wallet e transmite.
-   * A unsigned fica em /api/links/:id; so o admin pode submeter.
-   */
-  app.post('/api/movimentos/:id/raw', async (request, reply) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const body = z
-      .object({
-        rawTransaction: z
-          .string()
-          .min(10)
-          .max(100_000)
-          .regex(/^0x(?:[0-9a-fA-F]{2})+$/, 'rawTransaction deve ser hex 0x'),
-      })
-      .parse(request.body);
-    const result = await motor.sweeper.submitSignedTransfer(id, body.rawTransaction);
-    return reply.code(202).send(result);
-  });
-
-  /** F1: o QR como SVG puro, para <img> ou download. */
-  app.get('/api/links/:id/qrcode.svg', async (request, reply) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const link = await motor.links.get(id);
-    if (!link) return reply.code(404).send({ erro: 'link nao encontrado' });
-    const rampUrl =
-      request.authScope === 'readonly'
-        ? stripHostApiKey(link.rampUrl)
-        : await rampUrlParaAdmin(motor, link.rampUrl, link.rampProfileId);
-    try {
-      const svg = await qrCodeSvg(rampUrl);
+      const link = await motor.links.getPublicByToken(request.params.token);
       return reply
-        .header('content-type', 'image/svg+xml; charset=utf-8')
-        .header('cache-control', 'private, max-age=300')
-        .header('content-disposition', 'inline; filename="link-pagamento.svg"')
-        .send(svg);
-    } catch (err) {
-      if (err instanceof QrCodeError) return reply.code(422).send({ erro: err.message });
-      throw err;
+        .header('cache-control', 'no-store')
+        .header('x-robots-tag', 'noindex, nofollow')
+        .type('text/html; charset=utf-8')
+        .send(await renderPaymentPage(link));
+    } catch {
+      return reply
+        .code(404)
+        .type('text/html; charset=utf-8')
+        .send('<!doctype html><meta charset="utf-8"><title>Nao encontrado</title><p>Pagina nao encontrada.</p>');
     }
   });
 
-  app.get('/api/links', async (request) => {
-    const query = z
-      .object({
-        clienteId: z.string().uuid().optional(),
-        limit: z.coerce.number().int().min(1).max(200).default(50),
-      })
-      .parse(request.query);
-    const links = query.clienteId
-      ? await motor.links.listByCustomer(query.clienteId)
-      : await motor.links.list(query.limit);
-    return {
-      total: links.length,
-      links: links.map((l) => ({
-        id: l.id,
-        clienteId: l.clienteId,
-        status: l.status,
-        valor: centsToFiat(l.valorFiatCentavos),
-        moeda: l.moedaFiat,
-        asset: l.asset,
-        chain: l.chain,
-        enderecoDeposito: l.enderecoDeposito,
-        criadoEm: l.criadoEm,
-        expiraEm: l.expiraEm,
-      })),
-    };
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* Creditos                                                          */
-  /* ---------------------------------------------------------------- */
-
-  app.get('/api/creditos', async (request, reply) => {
-    const query = z
-      .object({ clienteId: z.string().uuid().optional() })
-      .parse(request.query);
-    if (!query.clienteId) {
-      return reply.code(400).send({ erro: 'informe clienteId' });
-    }
-    const credits = await motor.repos.credits.listByCustomer(query.clienteId);
-    const totalCentavos = await motor.repos.credits.sumByCustomer(query.clienteId);
-    return {
-      totalCentavos: totalCentavos.toString(),
-      total: centsToFiat(totalCentavos),
-      creditos: credits.map((c) => ({
-        id: c.id,
-        linkId: c.linkId,
-        pagamentoId: c.pagamentoId,
-        valor: c.valorBaseUnits.toString(),
-        valorCentavos: c.valorCentavos?.toString() ?? null,
-        valorFiat: c.valorCentavos !== null ? centsToFiat(c.valorCentavos) : null,
-        moeda: c.moeda,
-        status: c.status,
-        criadoEm: c.criadoEm,
-      })),
-    };
-  });
-
-  /* ---------------------------------------------------------------- */
-  /* Perfis Ramp e carteiras frias                                     */
-  /* ---------------------------------------------------------------- */
-
-  app.get('/api/ramp-profiles', async () => {
-    const perfis = await motor.repos.rampProfiles.list();
-    return {
-      total: perfis.length,
-      perfis: perfis.map(serializeRampProfile),
-    };
-  });
-
-  app.post('/api/ramp-profiles', async (request, reply) => {
-    const body = rampProfileSchema.parse(request.body);
-    const taxa =
-      body.taxaTokenPorFiatBaseUnits === null || body.taxaTokenPorFiatBaseUnits === undefined
-        ? null
-        : BigInt(body.taxaTokenPorFiatBaseUnits);
-    let profile: RampProfile;
+  app.get<{ Params: { token: string } }>('/p/:token/status', async (request, reply) => {
     try {
-      profile = await motor.repos.rampProfiles.create({
-        ...body,
-        hostLogoUrl: body.hostLogoUrl ?? null,
-        hostApiKey: body.hostApiKey ?? null,
-        rampAssetKey: body.rampAssetKey ?? null,
-        taxaTokenPorFiatBaseUnits: taxa,
+      const link = await motor.links.getPublicByToken(request.params.token);
+      return reply.header('cache-control', 'no-store').send({
+        status: link.status,
+        motivo_nao_realizado: link.motivoNaoRealizado,
+        valor_fiat_centavos: link.valorFiatCentavos,
+        moeda_fiat: link.moedaFiat,
+        valor_recebido_base_units: link.valorRecebidoBaseUnits.toString(),
+        expira_em: link.expiraEm.toISOString(),
+        liquidacao_ate: link.liquidacaoAte.toISOString(),
       });
-    } catch (err) {
-      if (isUniqueViolation(err)) throw new ConflictError('perfil Ramp ja cadastrado');
-      throw err;
+    } catch {
+      return reply.code(404).send({ erro: 'pagina nao encontrada' });
     }
-    await motor.repos.audit.record({
-      ator: 'api',
-      acao: 'ramp_profile.criado',
-      entidade: 'ramp_profile',
-      entidadeId: profile.id,
-      ip: request.ip,
-    });
-    return reply.code(201).send({ id: profile.id, label: profile.label });
   });
 
-  app.patch('/api/ramp-profiles/:id', async (request) => {
-    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const body = rampProfilePatchSchema.parse(request.body);
+  /* ---------------------------------------------------------------- */
+  /* API do cliente                                                    */
+  /* ---------------------------------------------------------------- */
 
-    const patch: UpdateRampProfileInput = {};
-    if (body.label !== undefined) patch.label = body.label;
-    if (body.fiatCurrency !== undefined) patch.fiatCurrency = body.fiatCurrency;
-    if (body.baseUrl !== undefined) patch.baseUrl = body.baseUrl;
-    if (body.paramStyle !== undefined) patch.paramStyle = body.paramStyle;
-    if (body.hostAppName !== undefined) patch.hostAppName = body.hostAppName;
-    if (body.hostLogoUrl !== undefined) patch.hostLogoUrl = body.hostLogoUrl;
-    if (body.hostApiKey !== undefined) patch.hostApiKey = body.hostApiKey;
-    if (body.rampAssetKey !== undefined) patch.rampAssetKey = body.rampAssetKey;
-    if (body.taxaTokenPorFiatBaseUnits !== undefined) {
-      patch.taxaTokenPorFiatBaseUnits =
-        body.taxaTokenPorFiatBaseUnits === null
-          ? null
-          : BigInt(body.taxaTokenPorFiatBaseUnits);
-    }
-
-    const updated = await motor.repos.rampProfiles.update(id, patch);
-    if (!updated) throw new NotFoundError('perfil Ramp nao encontrado');
-
-    await motor.repos.audit.record({
-      ator: 'api',
-      acao: 'ramp_profile.atualizado',
-      entidade: 'ramp_profile',
-      entidadeId: updated.id,
+  app.post('/v1/links', async (request, reply) => {
+    const client = requireApiClient(request);
+    const body = createLinkSchema.parse(request.body ?? {});
+    const idempotencyKey = headerString(request, 'idempotency-key');
+    const result = await motor.links.create({
+      apiClienteId: client.id,
+      externalId: body.external_id,
+      idempotencyKey,
+      amountCents: body.amount_cents,
+      rampProfileId: body.ramp_profile_id,
+      walletId: body.wallet_id,
+      finalUrl: body.final_url ?? null,
+      actor: `api:${client.id}`,
       ip: request.ip,
-      detalhes: { campos: Object.keys(body) },
     });
-    return { perfil: serializeRampProfile(updated) };
+    return reply.code(result.reused ? 200 : 201).send({
+      data: linkDto(result.link, result.pageUrl),
+      reused: result.reused,
+    });
   });
 
-  app.get('/api/carteiras-frias', async () => {
-    const carteiras = await motor.repos.coldWallets.list();
+  app.get<{ Params: { id: string } }>('/v1/links/:id', async (request) => {
+    const client = requireApiClient(request);
+    const link = await motor.links.getForClient(client.id, request.params.id);
+    return { data: linkDto(link, motor.links.pageUrl(link.pageToken)) };
+  });
+
+  app.get('/v1/links', async (request) => {
+    const client = requireApiClient(request);
+    const query = limitSchema.parse((request.query as { limit?: string }).limit ?? 50);
+    const links = await motor.links.listForClient(client.id, query);
     return {
-      total: carteiras.length,
-      carteiras: carteiras.map((c) => ({
-        id: c.id,
-        label: c.label,
-        address: c.address,
-        chain: c.chain,
-        criadoEm: c.criadoEm,
-      })),
+      data: links.map((link) => linkDto(link, motor.links.pageUrl(link.pageToken))),
     };
   });
 
-  app.post('/api/carteiras-frias', async (request, reply) => {
-    const body = coldWalletSchema.parse(request.body);
-    let wallet: ColdWallet;
-    try {
-      wallet = await motor.repos.coldWallets.create(body);
-    } catch (err) {
-      if (isUniqueViolation(err)) throw new ConflictError('carteira fria ja cadastrada');
-      throw err;
-    }
-    await motor.repos.audit.record({
-      ator: 'api',
-      acao: 'carteira_fria.criada',
-      entidade: 'carteira_fria',
-      entidadeId: wallet.id,
-      ip: request.ip,
-      detalhes: { chain: wallet.chain },
-    });
-    return reply.code(201).send({ id: wallet.id, label: wallet.label });
+  app.post<{ Params: { id: string } }>('/v1/links/:id/revoke', async (request) => {
+    const client = requireApiClient(request);
+    await motor.links.getForClient(client.id, request.params.id);
+    const link = await motor.links.revoke(
+      request.params.id,
+      `api:${client.id}`,
+      request.ip,
+    );
+    return { data: linkDto(link, motor.links.pageUrl(link.pageToken)) };
+  });
+
+  app.get('/v1/ramp-profiles', async () => {
+    const profiles = await motor.repos.rampProfiles.list();
+    return { data: profiles.map(rampProfileDto) };
+  });
+
+  app.get('/v1/wallets', async (request) => {
+    const client = requireApiClient(request);
+    const wallets = await motor.apiClients.listWallets(client.id);
+    return { data: wallets.map(walletDto) };
   });
 
   /* ---------------------------------------------------------------- */
-  /* Alertas (F2)                                                      */
+  /* Admin                                                             */
   /* ---------------------------------------------------------------- */
 
-  app.get('/api/alerts', async () => {
-    let gasSponsorBalances: GasSponsorBalance[] | undefined;
-    if (gasSponsorAtivo && configGas.balances) {
-      try {
-        gasSponsorBalances = await configGas.balances();
-      } catch (err) {
-        // A checagem e operacional: uma falha de RPC nao pode derrubar a
-        // listagem de alertas. O coletor trata ausencia como atencao.
-        logger.warn({ err }, 'falha ao consultar saldo do gas sponsor');
-      }
-    }
+  app.post('/admin/api/clientes', async (request, reply) => {
+    const body = createClientSchema.parse(request.body ?? {});
+    const created = await motor.apiClients.create({
+      nome: body.nome,
+      webhookUrl: body.webhook_url,
+      ip: request.ip,
+    });
+    return reply.code(201).send({
+      data: adminClientDto(created.client),
+      api_key: created.apiKey,
+      request_secret: created.requestSecret,
+      webhook_secret: created.client.webhookSecret,
+    });
+  });
 
+  app.get('/admin/api/clientes', async () => {
+    const clients = await motor.apiClients.list();
+    return { data: clients.map(adminClientDto) };
+  });
+
+  app.get<{ Params: { id: string } }>('/admin/api/clientes/:id', async (request) => {
+    const client = await motor.apiClients.get(request.params.id);
+    const wallets = await motor.apiClients.listWallets(client.id);
+    return { data: { ...adminClientDto(client), wallets: wallets.map(walletDto) } };
+  });
+
+  app.patch<{ Params: { id: string } }>('/admin/api/clientes/:id', async (request) => {
+    const body = updateClientSchema.parse(request.body ?? {});
+    const client = await motor.apiClients.update(request.params.id, {
+      ...(body.nome !== undefined ? { nome: body.nome } : {}),
+      ...(body.webhook_url !== undefined ? { webhookUrl: body.webhook_url } : {}),
+      ...(body.status !== undefined ? { status: body.status } : {}),
+    });
+    return { data: adminClientDto(client) };
+  });
+
+  app.post<{ Params: { id: string } }>('/admin/api/clientes/:id/rotate-key', async (request) => {
+    const rotated = await motor.apiClients.rotateKey(request.params.id);
+    return {
+      data: adminClientDto(rotated.client),
+      api_key: rotated.apiKey,
+      request_secret: rotated.requestSecret,
+    };
+  });
+
+  app.post<{ Params: { id: string } }>(
+    '/admin/api/clientes/:id/rotate-webhook-secret',
+    async (request) => {
+      const rotated = await motor.apiClients.rotateWebhookSecret(request.params.id);
+      return { data: adminClientDto(rotated.client), webhook_secret: rotated.webhookSecret };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>('/admin/api/clientes/:id/wallets', async (request) => {
+    const wallets = await motor.apiClients.listWallets(request.params.id);
+    return { data: wallets.map(walletDto) };
+  });
+
+  app.post<{ Params: { id: string } }>('/admin/api/clientes/:id/wallets', async (request, reply) => {
+    const body = createWalletSchema.parse(request.body ?? {});
+    const wallet = await motor.apiClients.addWallet(request.params.id, body);
+    return reply.code(201).send({ data: walletDto(wallet) });
+  });
+
+  app.get('/admin/api/ramp-profiles', async () => {
+    const profiles = await motor.repos.rampProfiles.list();
+    return { data: profiles.map(rampProfileDto) };
+  });
+
+  app.post('/admin/api/ramp-profiles', async (request, reply) => {
+    const body = rampProfileSchema.parse(request.body ?? {});
+    const profile = await motor.repos.rampProfiles.create({
+      label: body.label,
+      chain: body.chain,
+      asset: body.asset,
+      tokenContract: body.token_contract,
+      decimals: body.decimals,
+      fiatCurrency: body.fiat_currency,
+      baseUrl: body.base_url,
+      paramStyle: body.param_style,
+      hostAppName: body.host_app_name,
+      hostLogoUrl: body.host_logo_url ?? null,
+      hostApiKey: body.host_api_key ?? null,
+      rampAssetKey: body.ramp_asset_key ?? null,
+      taxaTokenPorFiatBaseUnits: body.taxa_token_por_fiat_base_units,
+    });
+    return reply.code(201).send({ data: rampProfileDto(profile) });
+  });
+
+  app.patch<{ Params: { id: string } }>('/admin/api/ramp-profiles/:id', async (request) => {
+    const body = rampProfilePatchSchema.parse(request.body ?? {});
+    const profile = await motor.repos.rampProfiles.update(request.params.id, {
+      ...(body.label !== undefined ? { label: body.label } : {}),
+      ...(body.fiat_currency !== undefined ? { fiatCurrency: body.fiat_currency } : {}),
+      ...(body.base_url !== undefined ? { baseUrl: body.base_url } : {}),
+      ...(body.param_style !== undefined ? { paramStyle: body.param_style } : {}),
+      ...(body.host_app_name !== undefined ? { hostAppName: body.host_app_name } : {}),
+      ...(body.host_logo_url !== undefined ? { hostLogoUrl: body.host_logo_url } : {}),
+      ...(body.host_api_key !== undefined ? { hostApiKey: body.host_api_key } : {}),
+      ...(body.ramp_asset_key !== undefined ? { rampAssetKey: body.ramp_asset_key } : {}),
+      ...(body.taxa_token_por_fiat_base_units !== undefined
+        ? { taxaTokenPorFiatBaseUnits: body.taxa_token_por_fiat_base_units }
+        : {}),
+    });
+    if (!profile) return { data: null };
+    return { data: rampProfileDto(profile) };
+  });
+
+  app.get('/admin/api/links', async (request) => {
+    const limit = limitSchema.parse((request.query as { limit?: string }).limit ?? 50);
+    const links = await motor.links.list(limit);
+    return {
+      data: links.map((link) => linkDto(link, motor.links.pageUrl(link.pageToken))),
+    };
+  });
+
+  app.get<{ Params: { id: string } }>('/admin/api/links/:id', async (request) => {
+    const detail = await motor.links.detail(request.params.id);
+    if (!detail) return { data: null };
+    return {
+      data: {
+        link: linkDto(detail.link, motor.links.pageUrl(detail.link.pageToken)),
+        payments: detail.payments.map(paymentDto),
+        transfers: detail.transfers.map(transferDto),
+        webhooks: detail.webhooks.map(webhookDto),
+      },
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/admin/api/links/:id/revoke', async (request) => {
+    const link = await motor.links.revoke(request.params.id, 'admin', request.ip);
+    return { data: linkDto(link, motor.links.pageUrl(link.pageToken)) };
+  });
+
+  app.get('/admin/api/webhooks', async (request) => {
+    const limit = limitSchema.parse((request.query as { limit?: string }).limit ?? 50);
+    const events = await motor.repos.webhooks.listAll(limit);
+    return { data: events.map(webhookDto) };
+  });
+
+  app.post<{ Params: { id: string } }>('/admin/api/webhooks/:id/replay', async (request) => {
+    const event = await motor.webhooks.replay(request.params.id);
+    if (!event) return { data: null };
+    return { data: webhookDto(event) };
+  });
+
+  app.post<{ Params: { id: string } }>('/admin/api/sweeps/:id/submit', async (request) => {
+    const body = z.object({ raw_transaction: z.string().min(1) }).strict().parse(request.body ?? {});
+    try {
+      const result = await motor.sweeper.submitSignedTransfer(
+        request.params.id,
+        body.raw_transaction,
+      );
+      return { data: result };
+    } catch (err) {
+      if (err instanceof TransferSubmissionError) {
+        throw new ValidationError(err.message);
+      }
+      throw err;
+    }
+  });
+
+  app.get('/admin/api/audit', async (request) => {
+    const limit = limitSchema.parse((request.query as { limit?: string }).limit ?? 50);
+    const events = await motor.repos.audit.list(limit);
+    return { data: events.map(auditDto) };
+  });
+
+  app.get('/admin/api/alerts', async () => {
     const alertas = await collectAlerts({
       repos: motor.repos,
       logger,
-      gasSponsorMinBalanceWei: configGas.minBalanceWei,
-      gasSponsorConfigured: gasSponsorAtivo,
-      gasSponsorBalances,
+      gasSponsorMinBalanceWei: options.gasSponsor.minBalanceWei,
+      gasSponsorConfigured: options.gasSponsor.configured,
+      gasSponsorBalances: options.gasSponsor.balances
+        ? await options.gasSponsor.balances()
+        : undefined,
     });
-    return {
-      total: alertas.length,
-      critico: alertas.filter((a) => a.nivel === 'critico').length,
-      atencao: alertas.filter((a) => a.nivel === 'atencao').length,
-      info: alertas.filter((a) => a.nivel === 'info').length,
-      alertas,
-    };
+    return { data: alertas };
   });
 
-  /* ---------------------------------------------------------------- */
-  /* Auditoria                                                         */
-  /* ---------------------------------------------------------------- */
-
-  app.get('/api/auditoria', async (request) => {
-    const query = z
-      .object({ limit: z.coerce.number().int().min(1).max(200).default(50) })
-      .parse(request.query);
-    const eventos = await motor.repos.audit.list(query.limit);
+  app.get('/admin/api/status', async () => {
+    const [clients, profiles, links, webhooks] = await Promise.all([
+      motor.repos.apiClients.list(),
+      motor.repos.rampProfiles.list(),
+      motor.repos.links.listAll(200),
+      motor.repos.webhooks.listAll(200),
+    ]);
     return {
-      total: eventos.length,
-      eventos: eventos.map((e) => ({
-        id: e.id,
-        ator: e.ator,
-        acao: e.acao,
-        entidade: e.entidade,
-        entidadeId: e.entidadeId,
-        detalhes: e.detalhes,
-        ip: e.ip,
-        criadoEm: e.criadoEm,
-      })),
+      data: {
+        clientes: clients.length,
+        perfis_ramp: profiles.length,
+        links_recentes: links.length,
+        webhooks_recentes: webhooks.length,
+        links_por_status: countBy(links, (link) => link.status),
+        webhooks_por_status: countBy(webhooks, (event) => event.status),
+      },
     };
   });
 }
 
-/** Perfil sem segredo: hostApiKey nunca sai da API. */
-function serializeRampProfile(p: RampProfile) {
-  return {
-    id: p.id,
-    label: p.label,
-    chain: p.chain,
-    asset: p.asset,
-    tokenContract: p.tokenContract,
-    decimals: p.decimals,
-    fiatCurrency: p.fiatCurrency,
-    baseUrl: p.baseUrl,
-    paramStyle: p.paramStyle,
-    hostAppName: p.hostAppName,
-    hostLogoUrl: p.hostLogoUrl ?? null,
-    rampAssetKey: p.rampAssetKey ?? null,
-    taxaTokenPorFiatBaseUnits: p.taxaTokenPorFiatBaseUnits?.toString() ?? null,
-    criadoEm: p.criadoEm,
-  };
+function requireApiClient(request: FastifyRequest): ApiClient {
+  if (!request.apiClient) throw new ValidationError('cliente da API nao autenticado');
+  return request.apiClient;
 }
 
-function parseUnsignedJson(value: string | null): unknown {
-  if (!value) return null;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
+function headerString(request: FastifyRequest, name: string): string | null {
+  const value = request.headers[name];
+  if (Array.isArray(value)) return value[0] ?? null;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const item of items) {
+    const k = key(item);
+    out[k] = (out[k] ?? 0) + 1;
   }
-}
-
-/** URL completa para o admin. A persistida nao leva hostApiKey. */
-async function rampUrlParaAdmin(motor: Motor, rampUrl: string, rampProfileId: string): Promise<string> {
-  const limpa = stripHostApiKey(rampUrl);
-  const profile = await motor.repos.rampProfiles.findById(rampProfileId);
-  if (!profile?.hostApiKey) return limpa;
-  const url = new URL(limpa);
-  url.searchParams.set('hostApiKey', profile.hostApiKey);
-  return url.toString();
-}
-
-/**
- * Saida de cliente mascarada por padrao. `email` acompanha a revelacao para
- * que o front consiga montar a busca exata; sem reveal fica `null`.
- */
-function serializeCustomer(customer: Customer, reveal: boolean) {
-  return {
-    id: customer.id,
-    nome: reveal ? customer.nome : customer.nomeMasked,
-    email: reveal ? customer.email : null,
-    nomeMasked: customer.nomeMasked,
-    emailMasked: customer.emailMasked,
-    status: customer.status,
-    criadoEm: customer.criadoEm,
-  };
+  return out;
 }

@@ -1,15 +1,14 @@
 import { NotFoundError } from '../domain/errors.js';
 import { assertTransition, IllegalTransitionError } from '../domain/link-state.js';
-import type { LinkStatus } from '../domain/types.js';
+import type { LinkStatus, PaymentLink } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories } from '../ports/index.js';
 
 /**
- * A4: unico caminho para mudar o status de um link.
+ * Unico caminho para mudar o status de um link.
  *
- * Valida a transicao contra a tabela do dominio, persiste e registra
- * a auditoria com o motivo. O repositorio continua burro (nao valida);
- * a regra vive aqui, no core.
+ * Valida a transicao contra a tabela do dominio, persiste, audita e avisa o
+ * callback de webhook (quando configurado). O repositorio continua burro.
  */
 export type TransitionInput = {
   linkId: string;
@@ -22,11 +21,14 @@ export type TransitionInput = {
   allowSame?: boolean;
 };
 
+export type TransitionHook = (link: PaymentLink, to: LinkStatus) => Promise<void>;
+
 export class LinkStateMachine {
   constructor(
     private readonly deps: {
       repos: MotorRepositories;
       logger: Logger;
+      onTransition?: TransitionHook;
     },
   ) {}
 
@@ -54,6 +56,10 @@ export class LinkStateMachine {
       { linkId: input.linkId, de: link.status, para: input.to, motivo: input.reason },
       'status do link alterado',
     );
+
+    if (this.deps.onTransition) {
+      await this.deps.onTransition({ ...link, status: input.to }, input.to);
+    }
     return input.to;
   }
 

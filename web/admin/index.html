@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Motor Cripto - Admin</title>
+<link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+<header>
+  <strong>Motor Cripto</strong>
+  <span class="muted">API-only payments</span>
+  <button id="sair" class="ghost" hidden>Sair</button>
+</header>
+
+<main>
+  <section id="login" class="card narrow">
+    <h1>Admin</h1>
+    <p class="muted">Informe o ADMIN_TOKEN. Ele fica apenas nesta aba.</p>
+    <form id="login-form">
+      <label>Token admin<input id="admin-token" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Entrar</button>
+    </form>
+    <p id="login-erro" class="erro"></p>
+  </section>
+
+  <section id="painel" hidden>
+    <div class="grid">
+      <div class="card">
+        <h2>Novo cliente</h2>
+        <form id="cliente-form">
+          <label>Nome<input id="cliente-nome" required maxlength="200"></label>
+          <label>Webhook URL<input id="cliente-webhook" type="url" required placeholder="https://..."></label>
+          <button type="submit">Criar cliente</button>
+        </form>
+        <pre id="credenciais" class="credenciais" hidden></pre>
+      </div>
+
+      <div class="card">
+        <h2>Status</h2>
+        <div id="status" class="kv"></div>
+        <h2>Alertas</h2>
+        <ul id="alertas" class="lista"></ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Clientes</h2>
+      <div id="clientes" class="tabela"></div>
+    </div>
+
+    <div class="card">
+      <h2>Perfis Ramp</h2>
+      <div id="perfis" class="tabela"></div>
+    </div>
+
+    <div class="card">
+      <h2>Links recentes</h2>
+      <div id="links" class="tabela"></div>
+    </div>
+
+    <div class="card">
+      <h2>Webhooks recentes</h2>
+      <div id="webhooks" class="tabela"></div>
+    </div>
+  </section>
+</main>
+
+<script src="/admin/admin.js" type="module"></script>
+</body>
+</html>

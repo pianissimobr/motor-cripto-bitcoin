@@ -1,25 +1,25 @@
-import { DataCipher, BlindIndex } from './crypto/cipher.js';
 import { BlockchainMonitor, type MonitorOptions } from './chain/monitor.js';
 import { ReorgDetector } from './chain/reorg-detector.js';
 import { GasSponsor } from './chain/gas-sponsor.js';
 import { Sweeper, type SweeperOptions } from './chain/sweeper.js';
 import type { ProviderFactory } from './chain/provider.js';
-import type { CustomerRepository } from './ports/index.js';
 import type { Logger } from './logger.js';
-import { CustomerService } from './services/customer-service.js';
+import { ApiClientService } from './services/api-client-service.js';
 import { LinkService } from './services/link-service.js';
 import { LinkStateMachine } from './services/link-state-machine.js';
+import { SettlementService } from './services/settlement-service.js';
+import { WebhookService } from './services/webhook-service.js';
 import type { HdWallet } from './hd/hd-wallet.js';
 import type { Signer } from './signer/signer.js';
 import type { MotorRepositories } from './ports/index.js';
+import type { DataCipher } from './crypto/cipher.js';
 
 /**
  * Ponto de entrada do motor.
  *
- * O core nao conhece HTTP, banco concreto, framework nem CLI: ele recebe os
- * ports e as dependencias via injecao. Qualquer aplicacao pode importar este
- * pacote e usar `createMotor` para ter cobranca + confirmacao on-chain +
- * varredura para a carteira fria.
+ * O core nao conhece HTTP, banco concreto ou framework: recebe os ports e
+ * as dependencias via injecao. A API e o worker usam o mesmo `Motor`, mas
+ * apenas o worker recebe signer/keystore.
  */
 
 export type MotorOptions = {
@@ -29,60 +29,72 @@ export type MotorOptions = {
   providerFactory: ProviderFactory;
   gasSponsor: GasSponsor;
   logger: Logger;
-  dataKey: Buffer;
-  indexKey: Buffer;
-  /** Opcional: cipher ja montado com keyring (rotacao). */
   cipher?: DataCipher;
-  /** Opcional: blind index ja montado com chave ativa + anterior. */
-  blindIndex?: BlindIndex;
-  ttlHours: number;
-  /** Limite maximo do indice HD (HD_MAX_INDEX). */
+  ttlMinutes: number;
+  publicBaseUrl: string;
+  settlement: { days: number };
+  webhook: {
+    timeoutMs: number;
+    maxAttempts: number;
+  };
   maxIndex?: number;
   monitor?: Partial<MonitorOptions>;
   sweeper?: Partial<SweeperOptions>;
-  /** RPC de conferência. Se existir para a chain, o crédito exige acordo. */
   confirmProviderFactory?: ProviderFactory;
 };
 
 export type Motor = {
-  readonly customers: CustomerService;
+  readonly apiClients: ApiClientService;
   readonly links: LinkService;
-  /** A4: unico caminho para mudar status de link. */
   readonly linkState: LinkStateMachine;
+  readonly settlement: SettlementService;
+  readonly webhooks: WebhookService;
   readonly monitor: BlockchainMonitor;
   readonly sweeper: Sweeper;
   readonly repos: MotorRepositories;
   readonly signer: Signer;
   readonly hdWallet: HdWallet;
-  /** Operacao: consulta de saldo/alerta e provider por chain. */
   readonly gasSponsor: GasSponsor;
   readonly providerFactory: ProviderFactory;
 };
 
 export function createMotor(options: MotorOptions): Motor {
-  const cipher = options.cipher ?? new DataCipher(options.dataKey);
-  const blindIndex = options.blindIndex ?? new BlindIndex(options.indexKey);
   const logger = options.logger;
+  const tolerancePct = options.monitor?.tolerancePct ?? 1;
 
-  const customers = new CustomerService({
+  const apiClients = new ApiClientService({ repos: options.repos, logger });
+
+  const webhooks = new WebhookService({
     repos: options.repos,
-    cipher,
-    blindIndex,
     logger,
+    timeoutMs: options.webhook.timeoutMs,
+    maxAttempts: options.webhook.maxAttempts,
+  });
+
+  const linkState = new LinkStateMachine({
+    repos: options.repos,
+    logger,
+    onTransition: (link, to) => webhooks.enqueueForLink(link, to),
   });
 
   const links = new LinkService({
     repos: options.repos,
     hdWallet: options.hdWallet,
+    linkState,
     logger,
-    ttlHours: options.ttlHours,
+    ttlMinutes: options.ttlMinutes,
     maxIndex: options.maxIndex ?? 100_000,
+    publicBaseUrl: options.publicBaseUrl,
+    settlement: options.settlement,
   });
 
-  // A4: criado antes do monitor, que depende dele para mudar status.
-  const linkState = new LinkStateMachine({ repos: options.repos, logger });
+  const settlement = new SettlementService({
+    repos: options.repos,
+    linkState,
+    logger,
+    tolerancePct,
+  });
 
-  // C2/C3: detector de reorg (ancoras esparsas + busca do ancestral comum).
   const reorgDetector = new ReorgDetector({
     cursors: options.repos.cursors,
     anchors: options.repos.anchors,
@@ -98,7 +110,7 @@ export function createMotor(options: MotorOptions): Motor {
     reorgDetector,
     options: {
       confirmationsRequired: options.monitor?.confirmationsRequired ?? 10,
-      tolerancePct: options.monitor?.tolerancePct ?? 1,
+      tolerancePct,
       maxTopics: options.monitor?.maxTopics ?? 200,
       blockRange: options.monitor?.blockRange ?? 2_000,
       startBlock: options.monitor?.startBlock ?? 0,
@@ -123,14 +135,16 @@ export function createMotor(options: MotorOptions): Motor {
         options.sweeper?.gasSponsorMinBalanceWei ?? 100_000_000_000_000_000n,
       batchSize: options.sweeper?.batchSize ?? 10,
       reconcileBatchSize: options.sweeper?.reconcileBatchSize ?? 25,
-      tolerancePct: options.monitor?.tolerancePct ?? 1,
+      tolerancePct,
     },
   });
 
   return {
-    customers,
+    apiClients,
     links,
     linkState,
+    settlement,
+    webhooks,
     monitor,
     sweeper,
     repos: options.repos,
@@ -141,9 +155,11 @@ export function createMotor(options: MotorOptions): Motor {
   };
 }
 
-export { CustomerService } from './services/customer-service.js';
-export { LinkService } from './services/link-service.js';
+export { ApiClientService } from './services/api-client-service.js';
+export { LinkService, hashCreateLinkRequest, hashPageToken } from './services/link-service.js';
 export { LinkStateMachine } from './services/link-state-machine.js';
+export { SettlementService } from './services/settlement-service.js';
+export { WebhookService, buildWebhookPayload, signWebhook } from './services/webhook-service.js';
 export {
   LINK_TRANSITIONS,
   canTransition,
@@ -168,4 +184,3 @@ export { loadConfig } from './config.js';
 export type * from './domain/types.js';
 export type * from './ports/index.js';
 export type { Logger } from './logger.js';
-export type { CustomerRepository } from './ports/index.js';

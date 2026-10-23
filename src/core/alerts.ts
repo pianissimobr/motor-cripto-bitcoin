@@ -19,7 +19,7 @@ export type Alerta = {
   titulo: string;
   descricao: string;
   linkId?: string;
-  clienteId?: string;
+  apiClienteId?: string;
   /** Contexto extra para o operador (nunca PII em claro). */
   detalhe?: Record<string, unknown>;
 };
@@ -61,7 +61,7 @@ export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
         'O valor recebido esta fora da tolerancia. Revise se credita o valor ' +
         'recebido (padrao do motor) ou se exige o restante.',
       linkId: link.id,
-      clienteId: link.clienteId,
+      apiClienteId: link.apiClienteId,
       detalhe: {
         asset: link.asset,
         esperadoBaseUnits: link.expectedBaseUnits?.toString() ?? null,
@@ -85,7 +85,7 @@ export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
         ? 'O patrocinador de gas pode estar sem saldo. Recarregue-o.'
         : 'Configure GAS_SPONSOR_PRIVATE_KEY para o motor poder mover o valor.',
       linkId: link.id,
-      clienteId: link.clienteId,
+      apiClienteId: link.apiClienteId,
       detalhe: {
         asset: link.asset,
         enderecoDeposito: link.enderecoDeposito,
@@ -107,28 +107,28 @@ export async function collectAlerts(deps: AlertsDeps): Promise<Alerta[]> {
         titulo: 'Link expirado sem nenhum pagamento',
         descricao: 'O cliente abriu mas nao concluiu. Confira a taxa da Ramp.',
         linkId: link.id,
-        clienteId: link.clienteId,
+        apiClienteId: link.apiClienteId,
         detalhe: { expiraEm: link.expiraEm.toISOString() },
       });
     }
   }
 
   /* ---------------------------------------------------------------- */
-  /* Revogado, mas com dinheiro dentro                                 */
+  /* Nao realizado, mas com dinheiro dentro                            */
   /* ---------------------------------------------------------------- */
-  const revogados = await repos.links.listByStatus('revogado', 50);
-  for (const link of revogados) {
+  const naoRealizados = await repos.links.listByStatus('nao_realizado', 50);
+  for (const link of naoRealizados) {
     const total = await repos.payments.sumConfirmedByLink(link.id);
-    if (total > 0n) {
+    if (total > 0n && !link.reembolsado) {
       alertas.push({
         nivel: 'atencao',
-        codigo: 'link_revogado_com_valor',
-        titulo: 'Link revogado recebeu pagamento',
+        codigo: 'link_nao_realizado_com_valor',
+        titulo: 'Link nao realizado recebeu pagamento',
         descricao:
-          'O dinheiro chegou depois da revogacao. O motor nao recusa pagamento, ' +
-          'entao o valor foi creditado e sera movido. Confira se era esperado.',
+          'O dinheiro chegou fora do prazo ou em valor parcial. Ele sera varrido ' +
+          'para a carteira allowlisted do cliente; confirme se o sweep concluiu.',
         linkId: link.id,
-        clienteId: link.clienteId,
+        apiClienteId: link.apiClienteId,
         detalhe: { recebidoBaseUnits: total.toString(), asset: link.asset },
       });
     }

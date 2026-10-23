@@ -1,116 +1,91 @@
 import type {
+  ApiClient,
+  ApiClientStatus,
+  ApiClientWallet,
   AuditEvent,
   ChainAnchor,
   ChainCursor,
-  ColdWallet,
-  CreditStatus,
-  CustomerCredit,
-  CustomerStatus,
   InternalTransfer,
   LinkStatus,
+  NaoRealizadoMotivo,
   ParamStyle,
   Payment,
   PaymentLink,
   RampProfile,
   TransferKind,
   TransferStatus,
+  WebhookEvent,
+  WebhookEventType,
 } from '../domain/types.js';
 
 /**
  * Ports do motor: contratos que o core usa para falar com a persistencia.
  * O core nao conhece Drizzle, SQL ou qualquer driver — apenas estas interfaces.
- * Qualquer app que quiser reutilizar o motor implementa estes ports.
  */
 
-/**
- * Entrada de criacao de cliente: **apenas** material cifrado e o blind index.
- * O texto puro nunca chega na camada de persistencia.
- */
-export type CreateCustomerInput = {
+/* ------------------------------------------------------------------ */
+/* Clientes da API                                                     */
+/* ------------------------------------------------------------------ */
+
+export type CreateApiClientInput = {
   id: string;
-  nomeEnc: Buffer;
-  emailEnc: Buffer;
-  /** Indice ATIVO do e-mail (canonico e unico entre clientes). */
-  emailBidx: string;
-  /** Indice anterior, mantido durante a rotacao para a busca continuar valendo. */
-  emailBidxAnterior: string | null;
-  nomeMasked: string;
-  emailMasked: string;
-  status?: CustomerStatus;
-  /** Blind indexes dos prefixos do email (3..N chars) para busca parcial. */
-  prefixBidxList: string[];
-  /** E3: prefixos na versao 2. */
-  prefixBidxListV2: string[];
+  nome: string;
+  apiKeyHash: string;
+  apiKeyPrefix: string;
+  webhookUrl: string;
+  webhookSecret: string;
+  requestSecret: string;
 };
 
-/**
- * Cliente como esta armazenado (cifrado).
- * `emailBidx` = versao ativa do indice; `emailBidxAnterior` = a versao
- * antiga, mantida durante a rotacao para a busca continuar funcionando.
- */
-export type StoredCustomer = {
-  id: string;
-  nomeEnc: Buffer;
-  emailEnc: Buffer;
-  emailBidx: string;
-  emailBidxAnterior: string | null;
-  nomeMasked: string;
-  emailMasked: string;
-  status: CustomerStatus;
-  criadoEm: Date;
+export type UpdateApiClientInput = {
+  nome?: string;
+  webhookUrl?: string;
+  status?: ApiClientStatus;
 };
 
-export interface CustomerRepository {
-  create(input: CreateCustomerInput): Promise<StoredCustomer>;
-  findById(id: string): Promise<StoredCustomer | null>;
-  /** E3: busca exata em qualquer versao do indice ativo. */
-  findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null>;
-  /** E3: busca por prefixo em qualquer versao do indice ativo. */
-  searchByEmailPrefixBidx(prefixBidxes: string[], limit: number): Promise<StoredCustomer[]>;
-  list(limit: number, offset: number): Promise<StoredCustomer[]>;
-  count(): Promise<number>;
-  /** E4: linhas paginadas para a re-cifragem em lote. */
-  listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]>;
-  /** E4: grava os blobs cifrados novamente. */
-  updateEncrypted(
+export interface ApiClientRepository {
+  create(input: CreateApiClientInput): Promise<ApiClient>;
+  findById(id: string): Promise<ApiClient | null>;
+  findByApiKeyHash(apiKeyHash: string): Promise<ApiClient | null>;
+  list(): Promise<ApiClient[]>;
+  update(id: string, input: UpdateApiClientInput): Promise<ApiClient | null>;
+  rotateKey(
     id: string,
-    nomeEnc: Buffer,
-    emailEnc: Buffer,
-    emailBidx: string,
-    emailBidxAnterior: string | null,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void>;
-  /** Bloco 4: reconstroi os prefixos de um cliente (reindexacao). */
-  replacePrefixes(
-    id: string,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void>;
-  updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void>;
+    apiKeyHash: string,
+    apiKeyPrefix: string,
+    requestSecret: string,
+  ): Promise<ApiClient | null>;
+  rotateWebhookSecret(id: string, webhookSecret: string): Promise<ApiClient | null>;
 }
 
-export type AccountRecord = {
-  clienteId: string;
-  usuario: string;
-  senhaHash: string;
+export type CreateApiClientWalletInput = {
+  apiClienteId: string;
+  label: string;
+  chain: string;
+  address: string;
 };
 
-export type SessionRecord = {
-  clienteId: string;
-  expiraEm: Date;
-};
-
-export interface AccountRepository {
-  create(input: AccountRecord): Promise<void>;
-  findByUsuario(usuario: string): Promise<AccountRecord | null>;
-  findByClienteId(clienteId: string): Promise<AccountRecord | null>;
-  update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void>;
-  createSession(input: { id: string; tokenHash: string; clienteId: string; expiraEm: Date }): Promise<void>;
-  findSession(tokenHash: string): Promise<SessionRecord | null>;
-  deleteSession(tokenHash: string): Promise<void>;
-  deleteCustomer(clienteId: string): Promise<void>;
+export interface ApiClientWalletRepository {
+  create(input: CreateApiClientWalletInput): Promise<ApiClientWallet>;
+  findById(id: string): Promise<ApiClientWallet | null>;
+  findByClientAndAddress(
+    apiClienteId: string,
+    address: string,
+  ): Promise<ApiClientWallet | null>;
+  listByClient(apiClienteId: string): Promise<ApiClientWallet[]>;
+  listAll(): Promise<ApiClientWallet[]>;
 }
+
+/** Nonces de HMAC: um nonce so pode ser usado uma vez por cliente. */
+export interface NonceRepository {
+  /** true = nonce novo; false = replay (ja existia). */
+  use(apiClienteId: string, nonce: string, expiresAt: Date): Promise<boolean>;
+  cleanup(now: Date): Promise<number>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Ramp profiles                                                       */
+/* ------------------------------------------------------------------ */
 
 export type CreateRampProfileInput = {
   label: string;
@@ -141,21 +116,16 @@ export interface RampProfileRepository {
   list(): Promise<RampProfile[]>;
 }
 
-export type CreateColdWalletInput = {
-  label: string;
-  address: string;
-  chain: string;
-};
-
-export interface ColdWalletRepository {
-  create(input: CreateColdWalletInput): Promise<ColdWallet>;
-  findById(id: string): Promise<ColdWallet | null>;
-  findByAddress(address: string): Promise<ColdWallet | null>;
-  list(): Promise<ColdWallet[]>;
-}
+/* ------------------------------------------------------------------ */
+/* Links                                                               */
+/* ------------------------------------------------------------------ */
 
 export type CreateLinkInput = {
-  clienteId: string;
+  id: string;
+  apiClienteId: string;
+  externalId: string;
+  idempotencyKey: string;
+  requestHash: string;
   rampProfileId: string;
   chain: string;
   asset: string;
@@ -169,24 +139,47 @@ export type CreateLinkInput = {
   indiceHd: number;
   caminhoDerivacao: string;
   enderecoDeposito: string;
-  carteiraFriaId: string | null;
-  carteiraFriaEndereco: string;
+  walletAddress: string;
+  pageToken: string;
+  pageTokenHash: string;
   rampUrl: string;
   status: LinkStatus;
   expiraEm: Date;
+  liquidacaoAte: Date;
+};
+
+export type SettlementPatch = {
+  motivoNaoRealizado?: NaoRealizadoMotivo | null;
+  valorRecebidoBaseUnits?: bigint;
+  reembolsado?: boolean;
 };
 
 export interface LinkRepository {
   create(input: CreateLinkInput): Promise<PaymentLink>;
   findById(id: string): Promise<PaymentLink | null>;
   findByDepositAddress(address: string): Promise<PaymentLink | null>;
-  listByCustomer(clienteId: string): Promise<PaymentLink[]>;
+  findByPageTokenHash(hash: string): Promise<PaymentLink | null>;
+  findByExternalId(apiClienteId: string, externalId: string): Promise<PaymentLink | null>;
+  findByIdempotencyKey(
+    apiClienteId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentLink | null>;
+  listByClient(apiClienteId: string, limit: number): Promise<PaymentLink[]>;
   listAll(limit: number): Promise<PaymentLink[]>;
   listByStatus(status: LinkStatus, limit: number): Promise<PaymentLink[]>;
+  /** Links com pagina vencida que ainda estao 'aguardando'. */
+  listExpiredPages(now: Date, limit: number): Promise<PaymentLink[]>;
+  /** Links em janela de liquidacao vencida. */
+  listDueSettlement(now: Date, limit: number): Promise<PaymentLink[]>;
   updateStatus(id: string, status: LinkStatus): Promise<void>;
-  /** Enderecos de deposito por status, para montar o filtro de topics do monitor. */
+  updateSettlement(id: string, patch: SettlementPatch): Promise<void>;
+  /** Enderecos de deposito por status, para o filtro de topics do monitor. */
   listDepositAddresses(statuses: LinkStatus[]): Promise<string[]>;
 }
+
+/* ------------------------------------------------------------------ */
+/* Payments                                                            */
+/* ------------------------------------------------------------------ */
 
 export type UpsertPaymentInput = {
   linkId: string;
@@ -204,16 +197,11 @@ export type UpsertPaymentInput = {
 export interface PaymentRepository {
   /** Idempotente por (tx_hash, log_index). */
   upsert(input: UpsertPaymentInput): Promise<Payment>;
-  /** Confirma o pagamento e cria o credito atomicamente. */
-  confirm(input: {
-    paymentId: string;
-    confirmacoes: number;
-    credit: CreateCreditInput | null;
-  }): Promise<{ payment: Payment; creditCreated: boolean }>;
+  confirm(input: { paymentId: string; confirmacoes: number }): Promise<Payment>;
   findByTxHash(txHash: string): Promise<Payment | null>;
   listByLink(linkId: string): Promise<Payment[]>;
   listByStatus(status: Payment['status'], limit: number): Promise<Payment[]>;
-  /** Confirmados sem credito ou cujo link ficou com status defasado. */
+  /** Confirmados cujo link ainda nao chegou a um estado final. */
   listForReconciliation(limit: number): Promise<Payment[]>;
   sumConfirmedByLink(linkId: string): Promise<bigint>;
   updateConfirmations(paymentId: string, confirmacoes: number): Promise<void>;
@@ -226,28 +214,9 @@ export interface PaymentRepository {
   listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]>;
 }
 
-export type CreateCreditInput = {
-  clienteId: string;
-  linkId: string;
-  pagamentoId: string;
-  valorBaseUnits: bigint;
-  valorCentavos: bigint | null;
-  moeda: string;
-  status: CreditStatus;
-};
-
-export interface CreditRepository {
-  create(input: CreateCreditInput): Promise<CustomerCredit>;
-  listByCustomer(clienteId: string): Promise<CustomerCredit[]>;
-  listByLink(linkId: string): Promise<CustomerCredit[]>;
-  listAll(limit: number): Promise<CustomerCredit[]>;
-  sumByCustomer(clienteId: string): Promise<bigint>;
-  findByPayment(pagamentoId: string): Promise<CustomerCredit | null>;
-  /** C4: reverte os creditos ligados a pagamentos revogados. */
-  revertByPaymentIds(pagamentoIds: string[]): Promise<number>;
-  /** Reorg revertido: reativa um credito que havia sido revogado. */
-  restoreByPaymentIds(pagamentoIds: string[], status: CreditStatus): Promise<number>;
-}
+/* ------------------------------------------------------------------ */
+/* Internal transfers (sweeps)                                         */
+/* ------------------------------------------------------------------ */
 
 export type CreateTransferInput = {
   linkId: string;
@@ -304,6 +273,43 @@ export interface TransferRepository {
   listInFlight(limit: number): Promise<InternalTransfer[]>;
 }
 
+/* ------------------------------------------------------------------ */
+/* Webhook outbox                                                      */
+/* ------------------------------------------------------------------ */
+
+export type CreateWebhookEventInput = {
+  apiClienteId: string;
+  linkId: string;
+  eventType: WebhookEventType;
+  payload: string;
+  nextAttemptEm: Date;
+};
+
+export interface WebhookOutboxRepository {
+  /** null quando ja existe evento do mesmo tipo para o link. */
+  enqueue(input: CreateWebhookEventInput): Promise<WebhookEvent | null>;
+  findById(id: string): Promise<WebhookEvent | null>;
+  listDue(now: Date, limit: number): Promise<WebhookEvent[]>;
+  listByLink(linkId: string): Promise<WebhookEvent[]>;
+  listAll(limit: number): Promise<WebhookEvent[]>;
+  markDelivered(id: string): Promise<void>;
+  markFailed(
+    id: string,
+    input: {
+      attempts: number;
+      nextAttemptEm: Date;
+      lastError: string;
+      status?: 'pendente' | 'falhou';
+    },
+  ): Promise<void>;
+  /** Recoloca um evento na fila (admin replay). */
+  replay(id: string, now: Date): Promise<WebhookEvent | null>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Cursors / anchors / HD index / audit                                */
+/* ------------------------------------------------------------------ */
+
 export interface CursorRepository {
   get(chain: string, tokenContract: string): Promise<ChainCursor | null>;
   set(chain: string, tokenContract: string, bloco: number, hashBloco: string | null): Promise<void>;
@@ -352,16 +358,16 @@ export interface AuditRepository {
 
 /** Repositorio agregado, entregue ao core como unico objeto. */
 export type MotorRepositories = {
-  customers: CustomerRepository;
+  apiClients: ApiClientRepository;
+  apiClientWallets: ApiClientWalletRepository;
+  nonces: NonceRepository;
   rampProfiles: RampProfileRepository;
-  coldWallets: ColdWalletRepository;
   links: LinkRepository;
   payments: PaymentRepository;
-  credits: CreditRepository;
   transfers: TransferRepository;
+  webhooks: WebhookOutboxRepository;
   cursors: CursorRepository;
   anchors: AnchorRepository;
   indices: IndexAllocator;
   audit: AuditRepository;
-  accounts: AccountRepository;
 };

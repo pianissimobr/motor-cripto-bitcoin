@@ -3,8 +3,11 @@
 
 Ordem de propósito:
   1. segredos, banco, carteira HD (a que recebe os pagamentos)
-  2. pede o ENDEREÇO da carteira fria (a chave dela não nasce aqui)
+  2. cria a carteira de POL usada para patrocinar gas
   3. só no final mostra o endereço da carteira de POL, para o pedágio inicial
+
+O destino dos sweeps é cadastrado por cliente no admin (`/admin/`), nunca
+no `.env`.
 
 O pedágio é um envio comum de POL na rede Polygon. Não é uma cobrança Ramp.
 """
@@ -127,10 +130,7 @@ def fill_secrets() -> None:
     example_token = "troque-este-token-por-um-valor-aleatorio-longo"
     if len(current.get("DATA_ENCRYPTION_KEY", "")) < 8:
         write_env_key("DATA_ENCRYPTION_KEY", openssl_rand("-base64"))
-        say("DATA_ENCRYPTION_KEY gerada (cifra nome, e-mail e chave Ramp).")
-    if len(current.get("DATA_INDEX_KEY", "")) < 8:
-        write_env_key("DATA_INDEX_KEY", openssl_rand("-base64"))
-        say("DATA_INDEX_KEY gerada (carimbo de busca do e-mail).")
+        say("DATA_ENCRYPTION_KEY gerada (cifra segredos e token da pagina).")
     token = current.get("ADMIN_TOKEN", "")
     if len(token) < 32 or token == example_token:
         write_env_key("ADMIN_TOKEN", secrets.token_hex(32))
@@ -220,34 +220,10 @@ def init_hd_wallet() -> None:
         sys.exit("Parado. A seed não foi confirmada. O keystore já está em data/keystore.json.")
 
 
-def ask_cold_address(gas_address: str) -> None:
-    current = read_env().get("COLD_WALLET_ADDRESS", "")
-    if ADDRESS_RE.match(current):
-        say(f"\nCarteira fria já está no .env: {current}")
-        return
-
-    say("\nAgora o endereço da carteira fria.")
-    say("Crie essa carteira fora daqui (aparelho ou máquina offline).")
-    say("Cole só o endereço 0x. Não cole a chave privada nem a seed.")
-    while True:
-        typed = input("Endereço 0x da carteira fria: ").strip()
-        if PRIVATE_KEY_RE.match(typed):
-            say("Isso parece uma chave privada. Não grave isso aqui. Cole o endereço público 0x.")
-            continue
-        if not ADDRESS_RE.match(typed):
-            say("Endereço inválido. Esperado: 0x e mais 40 caracteres hexadecimais.")
-            continue
-        if typed.lower() == gas_address.lower():
-            say("Esse é o endereço da carteira de POL, não o da fria.")
-            continue
-        checksum = node_eval(
-            "import { getAddress } from 'ethers';"
-            "console.log(getAddress(process.env.MOTOR_START_KEY));",
-            key=typed,
-        )
-        write_env_key("COLD_WALLET_ADDRESS", checksum)
-        say(f"Carteira fria registrada: {checksum}")
-        return
+def explain_admin_setup() -> None:
+    say("\nCarteiras de destino dos sweeps ficam por cliente, no admin.")
+    say("Depois de subir, abra /admin/, crie o cliente e cadastre a carteira")
+    say("allowlisted dele. Nenhuma carteira fria global vai para o .env.")
 
 
 def pol_balance(address: str) -> int | None:
@@ -341,7 +317,7 @@ def main() -> None:
 
     init_hd_wallet()
     gas_address = create_gas_wallet()
-    ask_cold_address(gas_address)
+    explain_admin_setup()
 
     say("\nCriando tabelas e os perfis de USDC/USDT.")
     run(["npm", "run", "migrate"])

@@ -51,6 +51,14 @@ const weiFromEnv = (def: string) =>
 export const SignerMode = z.enum(['local', 'remote', 'psbt']);
 export type SignerMode = z.infer<typeof SignerMode>;
 
+function isHttpUrl(value: string): boolean {
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
 export const EnvSchema = z
   .object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -58,12 +66,6 @@ export const EnvSchema = z
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
   ADMIN_TOKEN: z.string().min(16, 'ADMIN_TOKEN precisa ter ao menos 16 caracteres'),
-  // Token opcional de leitura: permite GET/HEAD sem poder mutar nada.
-  // String vazia (= desabilitado) e tratada como ausente.
-  READONLY_TOKEN: z.preprocess(
-    (v) => (v === '' ? undefined : v),
-    z.string().min(16, 'READONLY_TOKEN precisa ter ao menos 16 caracteres').optional(),
-  ),
   // `trustProxy` cego deixa qualquer cliente forjar X-Forwarded-For e burlar
   // rate limit / poluir o IP da auditoria. Default: nao confiar.
   TRUST_PROXY: boolish.default(false),
@@ -77,21 +79,11 @@ export const EnvSchema = z
   ),
 
   DATA_ENCRYPTION_KEY: z.string().min(1, 'DATA_ENCRYPTION_KEY obrigatorio (32 bytes base64)'),
-  DATA_INDEX_KEY: z.string().min(1, 'DATA_INDEX_KEY obrigatorio (32 bytes base64)'),
   // E2: keyring de cifragem. JSON { "k1": "<b64 32>", "k2": "<b64 32>" }.
   // Opcional: se ausente, usa DATA_ENCRYPTION_KEY como chave unica "k1".
   KEYRING: z.string().optional(),
   DATA_ACTIVE_KID: z.string().default('k1'),
   DATA_LEGACY_KID: z.string().optional(),
-  // E3: chave do blind index em versao 2 (rotacao do indice).
-  DATA_INDEX_KEY_V2: z.string().optional(),
-  DATA_INDEX_ACTIVE_V2: z.string().default('v2'),
-  DATA_INDEX_LOOKUP_BOTH: z
-    .union([z.boolean(), z.string()])
-    .optional()
-    .transform((v) =>
-      v === undefined ? true : typeof v === 'boolean' ? v : v !== 'false' && v !== '0',
-    ),
 
   HD_XPUB: z.string().min(1, 'HD_XPUB obrigatorio (xpub de conta m/44\'/60\'/0\')'),
   HD_DERIVATION_PREFIX: z.string().default('0'),
@@ -138,7 +130,7 @@ export const EnvSchema = z
   RAMP_BASE_URL: z
     .string()
     .url('deve ser uma URL absoluta')
-    .refine((v) => ['http:', 'https:'].includes(new URL(v).protocol), 'deve usar http(s)')
+    .refine(isHttpUrl, 'deve usar http(s)')
     .default('https://buy.ramp.network/'),
   RAMP_PARAM_STYLE: z.enum(['legacy', 'unified']).default('legacy'),
   RAMP_HOST_APP_NAME: z.string().trim().min(1).max(80).default('Motor Cripto'),
@@ -147,7 +139,7 @@ export const EnvSchema = z
     z
       .string()
       .url('deve ser uma URL absoluta')
-      .refine((v) => ['http:', 'https:'].includes(new URL(v).protocol), 'deve usar http(s)')
+      .refine(isHttpUrl, 'deve usar http(s)')
       .optional(),
   ),
   RAMP_FIAT_CURRENCY: z
@@ -155,13 +147,19 @@ export const EnvSchema = z
     .regex(/^[A-Za-z]{3}$/, 'deve ter 3 letras')
     .transform((v) => v.toUpperCase())
     .default('BRL'),
-  LINK_TTL_HOURS: intFromEnv(72, { min: 1 }),
+  /** URL publica usada para montar a pagina de pagamento /p/:token. */
+  PUBLIC_BASE_URL: z
+    .string()
+    .url('deve ser uma URL absoluta')
+    .refine(isHttpUrl, 'deve usar http(s)')
+    .default('http://localhost:4578'),
+  /** Tempo de vida da pagina/widget. O pagamento on-chain continua depois. */
+  LINK_TTL_MINUTES: intFromEnv(60, { min: 1 }),
+  /** Janela de liquidacao apos o fim da pagina, em dias corridos. */
+  SETTLEMENT_DAYS: intFromEnv(1, { min: 0 }),
 
-  COLD_WALLET_ADDRESS: z.preprocess(
-    (v) => (v === '' ? undefined : v),
-    z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'deve ser um endereco 0x + 40 hex').optional(),
-  ),
-  COLD_WALLET_LABEL: z.string().trim().min(1).max(80).default('Cold Wallet Principal'),
+  WEBHOOK_TIMEOUT_MS: intFromEnv(10_000, { min: 1_000 }),
+  WEBHOOK_MAX_ATTEMPTS: intFromEnv(6, { min: 1 }),
   })
   .superRefine((env, ctx) => {
     if (env.GAS_SPONSOR_PRIVATE_KEY && env.GAS_SPONSOR_ADDRESS) {
@@ -203,31 +201,6 @@ export const EnvSchema = z
         code: 'custom',
         path: ['ADMIN_TOKEN'],
         message: 'em producao precisa ter ao menos 32 caracteres e nao pode ser o valor de exemplo',
-      });
-    }
-    if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['SIGNER_PASSPHRASE'],
-        message: 'SIGNER_PASSPHRASE obrigatorio em producao (keystore cifrado)',
-      });
-    }
-    if (
-      env.SIGNER_MODE === 'local' &&
-      env.SIGNER_PASSPHRASE &&
-      env.SIGNER_PASSPHRASE.length < 16
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['SIGNER_PASSPHRASE'],
-        message: 'em producao precisa ter ao menos 16 caracteres',
-      });
-    }
-    if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_TOKEN) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['SIGNER_REMOTE_TOKEN'],
-        message: 'SIGNER_REMOTE_TOKEN obrigatorio em producao',
       });
     }
     if (
@@ -282,20 +255,11 @@ function buildCrypto(env: Env): AppConfig['crypto'] {
     throw new Error(`DATA_LEGACY_KID="${legacyKid}" nao existe no keyring`);
   }
 
-  const indexKey = decodeKey(env.DATA_INDEX_KEY, 'DATA_INDEX_KEY');
-  const indexKeyV2 = env.DATA_INDEX_KEY_V2
-    ? decodeKey(env.DATA_INDEX_KEY_V2, 'DATA_INDEX_KEY_V2')
-    : null;
-
   return {
     keyring,
     activeKid,
     legacyKid,
     dataKey: keyring[legacyKid]!,
-    indexKey,
-    indexKeyV2,
-    indexKidV2: env.DATA_INDEX_ACTIVE_V2,
-    indexLookupBoth: env.DATA_INDEX_LOOKUP_BOTH,
   };
 }
 
@@ -306,8 +270,6 @@ export type AppConfig = {
     host: string;
     logLevel: string;
     adminToken: string;
-    /** Token opcional so-leitura (GET/HEAD). */
-    readonlyToken?: string;
     trustProxy: boolean;
     isProduction: boolean;
   };
@@ -319,12 +281,6 @@ export type AppConfig = {
     legacyKid: string;
     /** Compatibilidade: chave unica (primeira do keyring). */
     dataKey: Buffer;
-    /** Blind index: chave atual e, na rotacao, tambem a anterior. */
-    indexKey: Buffer;
-    indexKeyV2: Buffer | null;
-    indexKidV2: string;
-    /** Consulta nas duas chaves durante a transicao. */
-    indexLookupBoth: boolean;
   };
   hd: {
     xpub: string;
@@ -366,8 +322,13 @@ export type AppConfig = {
     hostLogoUrl?: string;
     fiatCurrency: string;
   };
-  links: { ttlHours: number };
-  coldWallet: { address?: string; label: string };
+  publicBaseUrl: string;
+  links: { ttlMinutes: number };
+  settlement: { days: number };
+  webhook: {
+    timeoutMs: number;
+    maxAttempts: number;
+  };
 };
 
 function decodeKey(raw: string, name: string): Buffer {
@@ -380,7 +341,13 @@ function decodeKey(raw: string, name: string): Buffer {
   return buf;
 }
 
-export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
+export type ConfigRole = 'api' | 'worker';
+
+export function loadConfig(
+  source: NodeJS.ProcessEnv = process.env,
+  options: { role?: ConfigRole } = {},
+): AppConfig {
+  const role = options.role ?? 'worker';
   const parsed = EnvSchema.safeParse(source);
   if (!parsed.success) {
     const issues = parsed.error.issues
@@ -390,6 +357,29 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   const env = parsed.data;
   if (env.NODE_ENV === 'production') {
+    if (role !== 'api') {
+      const problemas: string[] = [];
+      if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
+        problemas.push(
+          'SIGNER_PASSPHRASE: SIGNER_PASSPHRASE obrigatorio em producao (keystore cifrado)',
+        );
+      }
+      if (
+        env.SIGNER_MODE === 'local' &&
+        env.SIGNER_PASSPHRASE &&
+        env.SIGNER_PASSPHRASE.length < 16
+      ) {
+        problemas.push('SIGNER_PASSPHRASE: em producao precisa ter ao menos 16 caracteres');
+      }
+      if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_TOKEN) {
+        problemas.push('SIGNER_REMOTE_TOKEN: SIGNER_REMOTE_TOKEN obrigatorio em producao');
+      }
+      if (problemas.length > 0) {
+        throw new Error(
+          `Configuracao invalida:\n${problemas.map((p) => `  - ${p}`).join('\n')}`,
+        );
+      }
+    }
     const rpcInseguro = Object.entries(source).find(
       ([key, value]) =>
         key.startsWith('RPC_URL_') &&
@@ -411,7 +401,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       host: env.HOST,
       logLevel: env.LOG_LEVEL,
       adminToken: env.ADMIN_TOKEN,
-      readonlyToken: env.READONLY_TOKEN,
       trustProxy: env.TRUST_PROXY,
       isProduction: env.NODE_ENV === 'production',
     },
@@ -457,10 +446,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       hostLogoUrl: env.RAMP_HOST_LOGO_URL || undefined,
       fiatCurrency: env.RAMP_FIAT_CURRENCY,
     },
-    links: { ttlHours: env.LINK_TTL_HOURS },
-    coldWallet: {
-      address: env.COLD_WALLET_ADDRESS || undefined,
-      label: env.COLD_WALLET_LABEL,
+    publicBaseUrl: env.PUBLIC_BASE_URL.replace(/\/+$/, ''),
+    links: { ttlMinutes: env.LINK_TTL_MINUTES },
+    settlement: { days: env.SETTLEMENT_DAYS },
+    webhook: {
+      timeoutMs: env.WEBHOOK_TIMEOUT_MS,
+      maxAttempts: env.WEBHOOK_MAX_ATTEMPTS,
     },
   };
 }

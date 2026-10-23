@@ -16,7 +16,6 @@ function config() {
       ADMIN_TOKEN: 'a'.repeat(32),
       DATABASE_URL: 'postgres://motor:senha@localhost:5432/motor',
       DATA_ENCRYPTION_KEY: KEY,
-      DATA_INDEX_KEY: KEY,
       HD_XPUB: account.neuter().extendedKey,
       SIGNER_MODE: 'local',
       SIGNER_PASSPHRASE: 'segredo-longo',

@@ -2,7 +2,7 @@ import { bootstrap } from '../bootstrap.js';
 import { createLockClient } from '../adapters/db/client.js';
 
 /**
- * Worker: monitor on-chain + varredura para a carteira fria.
+ * Worker: monitor on-chain, liquidacao, sweep e webhooks.
  *
  * Roda em processo separado da API. Um advisory lock de SESSAO garante que
  * apenas uma instancia do worker exista por banco (evita sweep duplo). O
@@ -58,7 +58,6 @@ async function main(): Promise<void> {
             logs: monitorResult.logsVarridos,
             detectados: monitorResult.pagamentosDetectados,
             confirmados: monitorResult.pagamentosConfirmados,
-            creditos: monitorResult.creditosCriados,
           },
           'ciclo do monitor',
         );
@@ -69,6 +68,40 @@ async function main(): Promise<void> {
     } catch (err) {
       // Uma falha no monitor nao pode impedir o sweeper de rodar.
       logger.error({ err }, 'falha no ciclo do monitor');
+    }
+
+    try {
+      const settlementResult = await motor.settlement.runCycle();
+      if (
+        settlementResult.paginasExpiradas > 0 ||
+        settlementResult.liquidados > 0 ||
+        settlementResult.naoRealizados > 0
+      ) {
+        logger.info(settlementResult, 'ciclo de liquidacao');
+      }
+      for (const erro of settlementResult.erros) {
+        logger.error({ erro }, 'erro na liquidacao');
+      }
+    } catch (err) {
+      logger.error({ err }, 'falha no ciclo de liquidacao');
+    }
+
+    try {
+      const webhookResult = await motor.webhooks.runCycle();
+      if (webhookResult.tentativas > 0) {
+        logger.info(webhookResult, 'ciclo de webhooks');
+      }
+      for (const erro of webhookResult.erros) {
+        logger.error({ erro }, 'erro no webhook');
+      }
+    } catch (err) {
+      logger.error({ err }, 'falha no ciclo de webhooks');
+    }
+
+    try {
+      await motor.repos.nonces.cleanup(new Date());
+    } catch (err) {
+      logger.warn({ err }, 'falha ao limpar nonces expirados');
     }
 
     try {

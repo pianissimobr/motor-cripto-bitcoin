@@ -16,19 +16,19 @@ import {
 
 /**
  * Sweeper: move os tokens recebidos do endereco derivado (temporario) para a
- * carteira fria (destino final), assim que o pagamento tem confirmacoes.
+ * carteira allowlisted do cliente (destino final), assim que o pagamento tem confirmacoes.
  *
  * Passos:
  *  1. le o saldo do token no endereco derivado
  *  2. garante gas nativo (patrocinador) no endereco derivado
- *  3. monta e assina o transfer ERC-20 -> carteira fria
+ *  3. monta e assina o transfer ERC-20 -> carteira allowlisted do cliente
  *  4. transmite e acompanha a confirmacao
  *
  * Idempotencia: um link so vira 'movido' uma vez; o registro em
  * `movimentos_internos` guarda o tx_hash para reconciliacao.
  */
 
-const SWEEPABLE_STATUSES = ['pago', 'parcial', 'pago_sem_gas'] as const;
+const SWEEPABLE_STATUSES = ['pago', 'pago_sem_gas', 'nao_realizado'] as const;
 
 export type SweeperOptions = {
   gasSponsorAmountWei: bigint;
@@ -108,6 +108,7 @@ export class Sweeper {
         const links = await this.deps.repos.links.listByStatus(status, this.deps.options.batchSize);
         for (const link of links) {
           if (processados.has(link.id)) continue;
+          if (link.status === 'nao_realizado' && link.reembolsado) continue;
           processados.add(link.id);
           result.processados++;
           try {
@@ -140,7 +141,7 @@ export class Sweeper {
    */
   private async reconcileStrandedBalances(result: SweepResult): Promise<void> {
     const { repos, logger } = this.deps;
-    const candidates: PaymentLink['status'][] = ['movido', 'expirado', 'revogado'];
+    const candidates: PaymentLink['status'][] = ['movido', 'expirado'];
 
     for (const status of candidates) {
       const links = await repos.links.listByStatus(status, this.deps.options.reconcileBatchSize);
@@ -213,7 +214,14 @@ export class Sweeper {
             // Ha saldo preso COM pagamento conciliado: ressuscita o link
             // para a fila de sweep.
             const novo = await this.recomputeStatus(link);
-            await repos.links.updateStatus(link.id, novo);
+            if (novo !== link.status) {
+              await this.deps.linkState.transition({
+                linkId: link.id,
+                to: novo,
+                reason: `saldo preso com pagamento conciliado (${saldo} ${link.asset})`,
+                actor: 'sweeper',
+              });
+            }
             result.resgatados++;
             logger.warn(
               { linkId: link.id, de: status, para: novo, saldo: saldo.toString() },
@@ -306,9 +314,9 @@ export class Sweeper {
       return 'ignorado';
     }
 
-    let carteiraFria: string;
+    let destino: string;
     try {
-      carteiraFria = await this.resolveColdWallet(link);
+      destino = await this.resolveDestination(link);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const ja = (await repos.transfers.findByLink(link.id)).some((t) => t.erro === message);
@@ -316,7 +324,7 @@ export class Sweeper {
         await repos.transfers.create({
           linkId: link.id,
           deAddress: link.enderecoDeposito,
-          paraAddress: link.carteiraFriaEndereco ?? '',
+          paraAddress: link.walletAddress,
           valorBaseUnits: saldo,
           status: 'falhou',
           erro: message,
@@ -336,7 +344,7 @@ export class Sweeper {
       logger.error({ linkId: link.id, motivo: message }, 'sweep recusado: destino fora do cadastro');
       return 'ignorado';
     }
-    const data = encodeTransfer(carteiraFria, saldo);
+    const data = encodeTransfer(destino, saldo);
 
     let gasLimit = 120_000n;
     try {
@@ -373,7 +381,7 @@ export class Sweeper {
       if (
         existente.unsignedTransaction &&
         existente.valorBaseUnits === saldo &&
-        existente.paraAddress.toLowerCase() === carteiraFria.toLowerCase()
+        existente.paraAddress.toLowerCase() === destino.toLowerCase()
       ) {
         try {
           const unsigned = JSON.parse(existente.unsignedTransaction) as UnsignedTransaction;
@@ -402,7 +410,7 @@ export class Sweeper {
         unsignedTransaction: null,
         erro: null,
         valorBaseUnits: saldo,
-        paraAddress: carteiraFria,
+        paraAddress: destino,
         bloco: null,
       });
       transfer = {
@@ -413,14 +421,14 @@ export class Sweeper {
         unsignedTransaction: null,
         erro: null,
         valorBaseUnits: saldo,
-        paraAddress: carteiraFria,
+        paraAddress: destino,
         bloco: null,
       };
     } else {
       transfer = await repos.transfers.create({
         linkId: link.id,
         deAddress: link.enderecoDeposito,
-        paraAddress: carteiraFria,
+        paraAddress: destino,
         valorBaseUnits: saldo,
         status: 'pendente',
         chain: link.chain,
@@ -843,13 +851,13 @@ export class Sweeper {
           nonce: nonceRecuperado,
           token: link.tokenContract,
           chain: link.chain,
-          motivo: 'saldo zero e nonce consumido sem sweep confirmado para a carteira fria',
+          motivo: 'saldo zero e nonce consumido sem sweep confirmado para a carteira do cliente',
         },
       });
     }
     logger.error(
       { linkId: link.id, nonceAtual },
-      'saldo zero e nonce consumido sem prova de que o destino foi a carteira fria',
+      'saldo zero e nonce consumido sem prova de que o destino foi a carteira do cliente',
     );
     return 'ignorado';
   }
@@ -884,7 +892,12 @@ export class Sweeper {
 
   private async ensureMovido(link: PaymentLink, reason: string): Promise<void> {
     const atual = await this.deps.repos.links.findById(link.id);
-    if (!atual || atual.status === 'movido') return;
+    if (!atual) return;
+    if (atual.status === 'nao_realizado') {
+      await this.deps.repos.links.updateSettlement(link.id, { reembolsado: true });
+      return;
+    }
+    if (atual.status === 'movido') return;
     await this.deps.linkState.transition({
       linkId: link.id,
       to: 'movido',
@@ -1027,7 +1040,7 @@ export class Sweeper {
         'gas nativo residual devolvido para a carteira de gas',
       );
     } catch (err) {
-      // Falha aqui e cosmetica: o token ja esta seguro na carteira fria.
+      // Falha aqui e cosmetica: o token ja esta seguro na carteira do cliente.
       // Nao vale falhar o sweep por causa de poeira.
       logger.warn(
         { err, linkId: link.id },
@@ -1052,40 +1065,21 @@ export class Sweeper {
    * Destino do sweep.
    *
    * O endereco persistido no link so vale se ainda estiver em
-   * `carteiras_frias` na mesma chain. Um UPDATE no banco para um endereco
-   * desconhecido nao e assinado.
+   * `api_cliente_wallets` do proprio cliente, na mesma chain. Um UPDATE no
+   * banco para um endereco desconhecido nao e assinado.
    */
-  private async resolveColdWallet(link: {
-    id: string;
-    rampProfileId: string;
-    chain: string;
-    carteiraFriaEndereco: string | null;
-  }): Promise<string> {
-    const wallets = await this.deps.repos.coldWallets.list();
-    const daChain = wallets.filter((w) => w.chain.toLowerCase() === link.chain.toLowerCase());
-
-    if (link.carteiraFriaEndereco) {
-      const cadastrada = daChain.find(
-        (w) => w.address.toLowerCase() === link.carteiraFriaEndereco!.toLowerCase(),
-      );
-      if (!cadastrada) {
-        throw new Error(
-          'destino do sweep nao esta cadastrado em carteiras_frias para esta chain',
-        );
-      }
-      return cadastrada.address;
-    }
-
-    const candidate = daChain[0];
-    if (candidate) {
-      this.deps.logger.warn(
-        { linkId: link.id, chain: link.chain, fallback: candidate.address },
-        'link legado sem destino persistido: usando carteira fria cadastrada da chain',
-      );
-      return candidate.address;
-    }
-    throw new Error(
-      `nenhuma carteira fria para a chain "${link.chain}" e o link nao tem destino persistido`,
+  private async resolveDestination(link: PaymentLink): Promise<string> {
+    const wallets = await this.deps.repos.apiClientWallets.listByClient(link.apiClienteId);
+    const wallet = wallets.find(
+      (w) =>
+        w.chain.toLowerCase() === link.chain.toLowerCase() &&
+        w.address.toLowerCase() === link.walletAddress.toLowerCase(),
     );
+    if (!wallet) {
+      throw new Error(
+        'destino do sweep nao esta mais allowlisted para o cliente nesta chain',
+      );
+    }
+    return getAddress(wallet.address);
   }
 }

@@ -8,32 +8,23 @@ function baseEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     ADMIN_TOKEN: 'a'.repeat(32),
     DATABASE_URL: 'postgres://motor:senha@localhost:5432/motor',
     DATA_ENCRYPTION_KEY: KEY,
-    DATA_INDEX_KEY: KEY,
     HD_XPUB: 'xpub6ExemploDeConta',
     ...overrides,
   };
 }
 
 describe('P1: guards de configuracao', () => {
-  it('aplica defaults seguros (trustProxy=false, sem token read-only)', () => {
+  it('aplica defaults seguros e nao exige chave de blind index', () => {
     const config = loadConfig(baseEnv());
     expect(config.server.trustProxy).toBe(false);
-    expect(config.server.readonlyToken).toBeUndefined();
     expect(config.chain.tolerancePct).toBe(1);
     expect(config.chain.confirmationsRequired).toBe(10);
+    expect(config.crypto.keyring.k1).toBeDefined();
   });
 
-  it('trata READONLY_TOKEN vazio como desabilitado', () => {
-    const config = loadConfig(baseEnv({ READONLY_TOKEN: '' }));
-    expect(config.server.readonlyToken).toBeUndefined();
-  });
-
-  it('aceita TRUST_PROXY explicito e READONLY_TOKEN', () => {
-    const config = loadConfig(
-      baseEnv({ TRUST_PROXY: '1', READONLY_TOKEN: 'r'.repeat(32) }),
-    );
+  it('aceita TRUST_PROXY explicito', () => {
+    const config = loadConfig(baseEnv({ TRUST_PROXY: '1' }));
     expect(config.server.trustProxy).toBe(true);
-    expect(config.server.readonlyToken).toBe('r'.repeat(32));
   });
 
   it.each([
@@ -47,7 +38,7 @@ describe('P1: guards de configuracao', () => {
     ['MONITOR_ANCHOR_INTERVAL', '0'],
     ['HD_MAX_INDEX', '-1'],
     ['HD_ACCOUNT_INDEX', '-1'],
-    ['LINK_TTL_HOURS', '0'],
+    ['LINK_TTL_MINUTES', '0'],
   ])('rejeita %s=%s', (nome, valor) => {
     expect(() => loadConfig(baseEnv({ [nome]: valor }))).toThrow(/Configuracao invalida/);
   });
@@ -97,12 +88,13 @@ describe('P1: guards de configuracao', () => {
     expect(semChave.gasSponsor.privateKey).toBeUndefined();
   });
 
-  it('valida URL/moeda do Ramp e endereco da carteira fria', () => {
-    const config = loadConfig(
-      baseEnv({ RAMP_FIAT_CURRENCY: 'brl', COLD_WALLET_ADDRESS: '' }),
-    );
+  it('valida URL/moeda do Ramp e defaults da pagina/liquidacao', () => {
+    const config = loadConfig(baseEnv({ RAMP_FIAT_CURRENCY: 'brl' }));
     expect(config.ramp.fiatCurrency).toBe('BRL');
-    expect(config.coldWallet.address).toBeUndefined();
+    expect(config.publicBaseUrl).toBe('http://localhost:4578');
+    expect(config.links.ttlMinutes).toBe(60);
+    expect(config.settlement.days).toBe(1);
+    expect(config.webhook.maxAttempts).toBe(6);
 
     expect(() => loadConfig(baseEnv({ RAMP_BASE_URL: 'javascript:alert(1)' }))).toThrow(
       /Configuracao invalida/,
@@ -110,18 +102,24 @@ describe('P1: guards de configuracao', () => {
     expect(() =>
       loadConfig(baseEnv({ RAMP_HOST_LOGO_URL: 'ftp://exemplo/logo.png' })),
     ).toThrow(/Configuracao invalida/);
-    expect(() =>
-      loadConfig(baseEnv({ COLD_WALLET_ADDRESS: '0x123' })),
-    ).toThrow(/Configuracao invalida/);
+    expect(() => loadConfig(baseEnv({ PUBLIC_BASE_URL: 'nao-e-url' }))).toThrow(
+      /Configuracao invalida/,
+    );
+    expect(() => loadConfig(baseEnv({ SETTLEMENT_DAYS: '-1' }))).toThrow(
+      /Configuracao invalida/,
+    );
+    expect(loadConfig(baseEnv({ SETTLEMENT_DAYS: '3' })).settlement.days).toBe(3);
   });
 
   it('exige URL quando o signer e remoto', () => {
     expect(() => loadConfig(baseEnv({ SIGNER_MODE: 'remote' }))).toThrow(/Configuracao invalida/);
   });
 
-  it('em producao exige passphrase do keystore local', () => {
+  it('em producao exige passphrase do keystore local para o worker', () => {
     expect(() =>
-      loadConfig(baseEnv({ NODE_ENV: 'production', SIGNER_MODE: 'local' })),
+      loadConfig(baseEnv({ NODE_ENV: 'production', SIGNER_MODE: 'local' }), {
+        role: 'worker',
+      }),
     ).toThrow(/Configuracao invalida/);
 
     const config = loadConfig(
@@ -130,8 +128,28 @@ describe('P1: guards de configuracao', () => {
         SIGNER_MODE: 'local',
         SIGNER_PASSPHRASE: 'segredo-producao1',
       }),
+      { role: 'worker' },
     );
     expect(config.signer.mode).toBe('local');
+  });
+
+  it('a API em producao nao exige passphrase nem token do signer', () => {
+    const local = loadConfig(
+      baseEnv({ NODE_ENV: 'production', SIGNER_MODE: 'local' }),
+      { role: 'api' },
+    );
+    expect(local.signer.mode).toBe('local');
+    expect(local.signer.passphrase).toBeUndefined();
+
+    const remoto = loadConfig(
+      baseEnv({
+        NODE_ENV: 'production',
+        SIGNER_MODE: 'remote',
+        SIGNER_REMOTE_URL: 'https://signer.exemplo',
+      }),
+      { role: 'api' },
+    );
+    expect(remoto.signer.remoteToken).toBeUndefined();
   });
 
   it('em producao exige https no signer remoto e o token', () => {

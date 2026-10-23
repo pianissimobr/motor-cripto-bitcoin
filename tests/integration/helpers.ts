@@ -86,18 +86,17 @@ export async function truncateAll(handle: DatabaseHandle): Promise<void> {
   await handle.sql.unsafe(`
     TRUNCATE TABLE
       eventos_auditoria,
-      creditos_cliente,
+      webhook_outbox,
       movimentos_internos,
       links_pagos,
-      cadastros_links,
+      api_nonces,
       hd_indices,
       links_gerados,
+      api_cliente_wallets,
+      api_clientes,
       chain_anchors,
       chain_cursors,
-      carteiras_frias,
-      ramp_profiles,
-      cadastros_prefixos,
-      cadastros
+      ramp_profiles
     RESTART IDENTITY CASCADE
   `);
 }

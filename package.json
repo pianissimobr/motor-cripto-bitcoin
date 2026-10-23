@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Motor reutilizavel de pagamentos on-chain: link Ramp (conta pessoal) -> HD Wallet -> sweep automatico para carteira fria",
+  "description": "Motor API-only de pagamentos on-chain: link Ramp -> HD Wallet -> sweep para carteira allowlisted do cliente",
   "engines": {
     "node": ">=22"
   },
@@ -20,9 +20,6 @@
     "wallet:init": "tsx scripts/init-wallet.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify:monitor": "tsx scripts/verify-monitor.ts",
-    "rotate:keys": "tsx scripts/rotate-keys.ts",
-    "reindex:prefixes": "tsx scripts/reindex-prefixes.ts",
     "test:integration": "vitest run -c vitest.integration.config.ts",
     "smoke": "tsx scripts/smoke.ts"
   },

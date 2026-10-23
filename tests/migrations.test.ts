@@ -31,29 +31,39 @@ describe('migracoes: journal e snapshots em sincronia', () => {
     }
   });
 
-  it('o snapshot final reflete o schema endurecido', () => {
-    const snap = readJson<Snapshot>('0011_snapshot.json');
-    const cadastros = snap.tables['public.cadastros']!;
-    expect(cadastros.columns.email_bidx_anterior).toBeDefined();
-    expect(cadastros.indexes.cadastros_email_bidx_anterior_idx?.isUnique).toBe(false);
+  it('o snapshot final reflete o schema API-only', () => {
+    const snap = readJson<Snapshot>('0013_snapshot.json');
 
-    const prefixos = snap.tables['public.cadastros_prefixos']!;
-    expect(prefixos.compositePrimaryKeys.cadastros_prefixos_cliente_prefix_pk?.columns).toEqual([
-      'cliente_id',
-      'prefix_bidx',
-    ]);
-    expect(prefixos.indexes.cadastros_prefixos_prefix_idx).toBeDefined();
+    for (const removida of ['cadastros', 'contas', 'sessoes', 'creditos_cliente', 'carteiras_frias']) {
+      expect(snap.tables[`public.${removida}`]).toBeUndefined();
+    }
+
+    const clientes = snap.tables['public.api_clientes']!;
+    expect(clientes.columns.request_secret_enc?.notNull).toBe(true);
+    expect(clientes.columns.webhook_secret_enc?.notNull).toBe(true);
+    expect(clientes.indexes.api_clientes_api_key_hash_uq?.isUnique).toBe(true);
+
+    const wallets = snap.tables['public.api_cliente_wallets']!;
+    expect(
+      wallets.indexes.api_cliente_wallets_cliente_chain_address_uq?.isUnique,
+    ).toBe(true);
+
+    const links = snap.tables['public.links_gerados']!;
+    expect(links.columns.api_cliente_id?.notNull).toBe(true);
+    expect(links.columns.wallet_address?.notNull).toBe(true);
+    expect(links.columns.page_token_hash?.notNull).toBe(true);
+    expect(links.columns.liquidacao_ate?.notNull).toBe(true);
+    expect(links.columns.motivo_nao_realizado?.notNull).toBe(false);
+    expect(links.indexes.links_gerados_cliente_external_uq?.isUnique).toBe(true);
+    expect(links.indexes.links_gerados_cliente_idem_uq?.isUnique).toBe(true);
+    expect(links.indexes.links_gerados_page_token_uq?.isUnique).toBe(true);
+
+    const webhooks = snap.tables['public.webhook_outbox']!;
+    expect(webhooks.indexes.webhook_outbox_link_event_uq?.isUnique).toBe(true);
+    expect(webhooks.columns.next_attempt_em?.notNull).toBe(true);
 
     const movimentos = snap.tables['public.movimentos_internos']!;
-    expect(movimentos.columns.kind?.notNull).toBe(true);
-    expect(movimentos.columns.raw_transaction?.notNull).toBe(false);
-    expect(movimentos.columns.unsigned_transaction?.notNull).toBe(false);
     expect(movimentos.indexes.movimentos_internos_link_kind_nonce_uq?.isUnique).toBe(true);
-
     expect(snap.tables['public.hd_indices']!.indexes.hd_indices_indice_uq?.isUnique).toBe(true);
-    expect(
-      snap.tables['public.links_gerados']!.indexes.links_gerados_indice_hd_uq?.isUnique,
-    ).toBe(true);
-    expect(snap.tables['public.creditos_cliente']!.columns.valor_centavos?.type).toBe('bigint');
   });
 });

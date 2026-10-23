@@ -1,30 +1,29 @@
 /**
- * A4: tabela de transicoes de status do link.
+ * Transicoes de status do link.
  *
- * Antes, `updateStatus` era uma escrita cega: qualquer estado podia ir
- * para qualquer estado. Isso mascarava bugs (um link 'movido' voltando
- * para 'pago' sem explicacao, por exemplo) e nao deixava rastro do motivo.
+ * O link nasce `aguardando` (pagina ativa). Quando a pagina vence ele vira
+ * `expirado`, mas a janela de liquidacao on-chain continua. No fim dessa
+ * janela ele termina em `pago` (valor cheio) ou `nao_realizado` (sem
+ * pagamento / valor parcial / pagamento apos o prazo / revogado / reorg).
  *
- * Regra de ouro do motor: **nunca recusar dinheiro que chegou**.
- * Pagamento fora do prazo ou em link revogado e creditado, mas o link
- * precisa de uma transicao explicita para isso.
+ * `nao_realizado` e terminal. Dinheiro que chega depois ainda e detectado,
+ * registrado em `valorRecebidoBaseUnits` e varrido para a carteira do
+ * cliente, mas nao muda mais o status.
  */
 
 import { ConflictError } from './errors.js';
 import type { LinkStatus } from './types.js';
 
 export const LINK_TRANSITIONS: Record<LinkStatus, readonly LinkStatus[]> = {
-  aguardando: ['pago', 'parcial', 'pago_sem_gas', 'expirado', 'revogado'],
-  // 'aguardando' e permitido apenas para reorg: o pagamento deixou de existir.
-  pago: ['aguardando', 'parcial', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
-  parcial: ['aguardando', 'pago', 'movido', 'pago_sem_gas', 'expirado', 'revogado'],
-  pago_sem_gas: ['aguardando', 'pago', 'parcial', 'movido', 'expirado', 'revogado'],
-  // 'movido' so volta atras por reorg ou reconciliacao (A5).
+  aguardando: ['pago', 'parcial', 'pago_sem_gas', 'expirado', 'nao_realizado'],
+  // `aguardando` so volta por reorg: o pagamento deixou de existir.
+  pago: ['aguardando', 'parcial', 'pago_sem_gas', 'movido', 'nao_realizado'],
+  parcial: ['aguardando', 'pago', 'pago_sem_gas', 'expirado', 'nao_realizado'],
+  pago_sem_gas: ['aguardando', 'pago', 'parcial', 'movido', 'nao_realizado'],
+  // `movido` so volta atras por reorg.
   movido: ['aguardando', 'pago', 'parcial'],
-  // pagamento fora do prazo: o dinheiro chegou, entao entra.
-  expirado: ['pago', 'parcial', 'revogado'],
-  // link revogado mas o dinheiro apareceu assim mesmo.
-  revogado: ['pago', 'parcial'],
+  expirado: ['aguardando', 'pago', 'parcial', 'pago_sem_gas', 'nao_realizado'],
+  nao_realizado: [],
 };
 
 export function canTransition(from: LinkStatus, to: LinkStatus): boolean {
@@ -38,7 +37,7 @@ export class IllegalTransitionError extends ConflictError {
   ) {
     super(
       `transicao de status invalida: ${from} -> ${to}. ` +
-        `Permitidas a partir de ${from}: ${LINK_TRANSITIONS[from].join(', ')}`,
+        `Permitidas a partir de ${from}: ${LINK_TRANSITIONS[from].join(', ') || '(nenhuma)'}`,
       'transicao_invalida',
     );
   }

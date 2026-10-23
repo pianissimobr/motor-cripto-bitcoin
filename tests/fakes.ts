@@ -1,153 +1,166 @@
 import { randomUUID } from 'node:crypto';
 import type {
-  AccountRecord,
-  AccountRepository,
   AnchorRepository,
+  ApiClientRepository,
+  ApiClientWalletRepository,
   AuditRepository,
-  ColdWalletRepository,
-  CreateColdWalletInput,
-  CreateCreditInput,
-  CreateCustomerInput,
+  CreateApiClientInput,
+  CreateApiClientWalletInput,
   CreateLinkInput,
   CreateRampProfileInput,
-  UpdateRampProfileInput,
   CreateTransferInput,
-  CreditRepository,
+  CreateWebhookEventInput,
   CursorRepository,
-  CustomerRepository,
   IndexAllocator,
   LinkRepository,
   MotorRepositories,
+  NonceRepository,
   PaymentRepository,
   RampProfileRepository,
   RecordAuditInput,
-  SessionRecord,
-  StoredCustomer,
+  SettlementPatch,
   TransferRepository,
+  UpdateApiClientInput,
+  UpdateRampProfileInput,
   UpsertPaymentInput,
+  WebhookOutboxRepository,
 } from '../src/core/ports/index.js';
 import type {
+  ApiClient,
+  ApiClientWallet,
   AuditEvent,
   ChainAnchor,
   ChainCursor,
-  ColdWallet,
-  CustomerCredit,
   InternalTransfer,
   LinkStatus,
   Payment,
   PaymentLink,
   RampProfile,
+  TransferKind,
+  TransferStatus,
+  WebhookEvent,
 } from '../src/core/domain/types.js';
 
-/**
- * Repositorios em memoria para testar o core sem banco.
- * Implementam os mesmos ports usados em producao (Drizzle).
- */
+export class FakeApiClientRepository implements ApiClientRepository {
+  readonly rows: ApiClient[] = [];
 
-export class FakeCustomerRepository implements CustomerRepository {
-  readonly rows: StoredCustomer[] = [];
-
-  async create(input: CreateCustomerInput): Promise<StoredCustomer> {
-    // Espelha o unique canonico de `cadastros.email_bidx`.
-    if (this.rows.some((r) => r.emailBidx === input.emailBidx)) {
-      const err = new Error('email ja cadastrado') as Error & { code?: string };
-      err.code = '23505';
-      throw err;
-    }
-    const row: StoredCustomer = {
+  async create(input: CreateApiClientInput): Promise<ApiClient> {
+    const row: ApiClient = {
       id: input.id,
-      nomeEnc: input.nomeEnc,
-      emailEnc: input.emailEnc,
-      emailBidx: input.emailBidx,
-      emailBidxAnterior: input.emailBidxAnterior,
-      nomeMasked: input.nomeMasked,
-      emailMasked: input.emailMasked,
-      status: input.status ?? 'ativo',
+      nome: input.nome,
+      apiKeyPrefix: input.apiKeyPrefix,
+      apiKeyHash: input.apiKeyHash,
+      webhookUrl: input.webhookUrl,
+      webhookSecret: input.webhookSecret,
+      requestSecret: input.requestSecret,
+      status: 'ativo',
       criadoEm: new Date(),
     };
     this.rows.push(row);
-    this.prefixos.set(row.id, [...input.prefixBidxList, ...input.prefixBidxListV2]);
-    return row;
+    return { ...row };
   }
 
-  async findById(id: string): Promise<StoredCustomer | null> {
-    const r = this.rows.find((x) => x.id === id);
-    return r ? { ...r } : null;
+  async findById(id: string): Promise<ApiClient | null> {
+    const row = this.rows.find((r) => r.id === id);
+    return row ? { ...row } : null;
   }
 
-  /** Tokens de prefixo gravados ao criar o cliente (chave ativa + anterior). */
-  private readonly prefixos = new Map<string, string[]>();
+  async findByApiKeyHash(apiKeyHash: string): Promise<ApiClient | null> {
+    const row = this.rows.find((r) => r.apiKeyHash === apiKeyHash);
+    return row ? { ...row } : null;
+  }
 
-  async findByEmailBidx(emailBidxes: string[]): Promise<StoredCustomer | null> {
-    const r = this.rows.find(
-      (c) =>
-        emailBidxes.includes(c.emailBidx) ||
-        (c.emailBidxAnterior !== null && emailBidxes.includes(c.emailBidxAnterior)),
+  async list(): Promise<ApiClient[]> {
+    return this.rows.map((r) => ({ ...r }));
+  }
+
+  async update(id: string, input: UpdateApiClientInput): Promise<ApiClient | null> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return null;
+    if (input.nome !== undefined) row.nome = input.nome;
+    if (input.webhookUrl !== undefined) row.webhookUrl = input.webhookUrl;
+    if (input.status !== undefined) row.status = input.status;
+    return { ...row };
+  }
+
+  async rotateKey(
+    id: string,
+    apiKeyHash: string,
+    apiKeyPrefix: string,
+    requestSecret: string,
+  ): Promise<ApiClient | null> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return null;
+    row.apiKeyHash = apiKeyHash;
+    row.apiKeyPrefix = apiKeyPrefix;
+    row.requestSecret = requestSecret;
+    return { ...row };
+  }
+
+  async rotateWebhookSecret(id: string, webhookSecret: string): Promise<ApiClient | null> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return null;
+    row.webhookSecret = webhookSecret;
+    return { ...row };
+  }
+}
+
+export class FakeApiClientWalletRepository implements ApiClientWalletRepository {
+  readonly rows: ApiClientWallet[] = [];
+
+  async create(input: CreateApiClientWalletInput): Promise<ApiClientWallet> {
+    const row: ApiClientWallet = {
+      id: randomUUID(),
+      apiClienteId: input.apiClienteId,
+      label: input.label,
+      chain: input.chain,
+      address: input.address,
+      criadoEm: new Date(),
+    };
+    this.rows.push(row);
+    return { ...row };
+  }
+
+  async findById(id: string): Promise<ApiClientWallet | null> {
+    const row = this.rows.find((r) => r.id === id);
+    return row ? { ...row } : null;
+  }
+
+  async findByClientAndAddress(
+    apiClienteId: string,
+    address: string,
+  ): Promise<ApiClientWallet | null> {
+    const row = this.rows.find(
+      (r) =>
+        r.apiClienteId === apiClienteId &&
+        r.address.toLowerCase() === address.toLowerCase(),
     );
-    return r ? { ...r } : null;
+    return row ? { ...row } : null;
   }
 
-  async searchByEmailPrefixBidx(
-    prefixBidxes: string[],
-    limit: number,
-  ): Promise<StoredCustomer[]> {
-    const out: StoredCustomer[] = [];
-    const tokens = new Set(prefixBidxes);
-    for (const c of this.rows) {
-      const gravados = this.prefixos.get(c.id) ?? [];
-      if (gravados.some((t) => tokens.has(t))) out.push({ ...c });
-      if (out.length >= limit) break;
-    }
-    return out;
+  async listByClient(apiClienteId: string): Promise<ApiClientWallet[]> {
+    return this.rows.filter((r) => r.apiClienteId === apiClienteId).map((r) => ({ ...r }));
   }
 
-  async listAllForRotation(afterId: string | null, limit: number): Promise<StoredCustomer[]> {
-    const sorted = this.rows.slice().sort((a, b) => a.id.localeCompare(b.id));
-    const inicio = afterId
-      ? Math.max(0, sorted.findIndex((r) => r.id > afterId))
-      : 0;
-    return sorted.slice(inicio, inicio + limit).map((r) => ({ ...r }));
+  async listAll(): Promise<ApiClientWallet[]> {
+    return this.rows.map((r) => ({ ...r }));
+  }
+}
+
+export class FakeNonceRepository implements NonceRepository {
+  readonly used = new Set<string>();
+
+  async use(apiClienteId: string, nonce: string, expiresAt: Date): Promise<boolean> {
+    const key = `${apiClienteId}:${nonce}`;
+    if (this.used.has(key)) return false;
+    this.used.add(key);
+    void expiresAt;
+    return true;
   }
 
-  async updateEncrypted(
-    id: string,
-    nomeEnc: Buffer,
-    emailEnc: Buffer,
-    emailBidx: string,
-    emailBidxAnterior: string | null,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void> {
-    const r = this.rows.find((x) => x.id === id);
-    if (!r) return;
-    r.nomeEnc = nomeEnc;
-    r.emailEnc = emailEnc;
-    r.emailBidx = emailBidx;
-    r.emailBidxAnterior = emailBidxAnterior;
-    this.prefixos.set(id, [...prefixBidxList, ...prefixBidxListV2]);
-  }
-
-  async updateMasks(id: string, nomeMasked: string, emailMasked: string): Promise<void> {
-    const r = this.rows.find((x) => x.id === id);
-    if (!r) return;
-    r.nomeMasked = nomeMasked;
-    r.emailMasked = emailMasked;
-  }
-
-  async replacePrefixes(
-    id: string,
-    prefixBidxList: string[],
-    prefixBidxListV2: string[],
-  ): Promise<void> {
-    this.prefixos.set(id, [...prefixBidxList, ...prefixBidxListV2]);
-  }
-
-  async list(limit: number, offset: number): Promise<StoredCustomer[]> {
-    return this.rows.slice(offset, offset + limit);
-  }
-
-  async count(): Promise<number> {
-    return this.rows.length;
+  async cleanup(now: Date): Promise<number> {
+    void now;
+    return 0;
   }
 }
 
@@ -173,7 +186,7 @@ export class FakeRampProfileRepository implements RampProfileRepository {
       criadoEm: new Date(),
     };
     this.rows.push(row);
-    return row;
+    return { ...row };
   }
 
   async update(id: string, input: UpdateRampProfileInput): Promise<RampProfile | null> {
@@ -194,41 +207,12 @@ export class FakeRampProfileRepository implements RampProfileRepository {
   }
 
   async findById(id: string): Promise<RampProfile | null> {
-    const r = this.rows.find((x) => x.id === id);
-    return r ? { ...r } : null;
+    const row = this.rows.find((x) => x.id === id);
+    return row ? { ...row } : null;
   }
 
   async list(): Promise<RampProfile[]> {
-    return this.rows;
-  }
-}
-
-export class FakeColdWalletRepository implements ColdWalletRepository {
-  readonly rows: ColdWallet[] = [];
-
-  async create(input: CreateColdWalletInput): Promise<ColdWallet> {
-    const row: ColdWallet = {
-      id: randomUUID(),
-      label: input.label,
-      address: input.address,
-      chain: input.chain,
-      criadoEm: new Date(),
-    };
-    this.rows.push(row);
-    return row;
-  }
-
-  async findById(id: string): Promise<ColdWallet | null> {
-    const r = this.rows.find((x) => x.id === id);
-    return r ? { ...r } : null;
-  }
-
-  async findByAddress(address: string): Promise<ColdWallet | null> {
-    return this.rows.find((r) => r.address.toLowerCase() === address.toLowerCase()) ?? null;
-  }
-
-  async list(): Promise<ColdWallet[]> {
-    return this.rows;
+    return this.rows.map((r) => ({ ...r }));
   }
 }
 
@@ -237,60 +221,101 @@ export class FakeLinkRepository implements LinkRepository {
 
   async create(input: CreateLinkInput): Promise<PaymentLink> {
     const row: PaymentLink = {
-      id: randomUUID(),
-      clienteId: input.clienteId,
-      rampProfileId: input.rampProfileId,
-      chain: input.chain,
-      asset: input.asset,
-      tokenContract: input.tokenContract,
-      decimals: input.decimals,
-      moedaFiat: input.moedaFiat,
-      valorFiatCentavos: input.valorFiatCentavos,
-      valorFiatUnidades: input.valorFiatUnidades,
-      taxaTokenPorFiatBaseUnits: input.taxaTokenPorFiatBaseUnits,
-      expectedBaseUnits: input.expectedBaseUnits,
-      indiceHd: input.indiceHd,
-      caminhoDerivacao: input.caminhoDerivacao,
-      enderecoDeposito: input.enderecoDeposito,
-      carteiraFriaId: input.carteiraFriaId,
-      carteiraFriaEndereco: input.carteiraFriaEndereco,
-      rampUrl: input.rampUrl,
-      status: input.status,
-      expiraEm: input.expiraEm,
+      ...input,
+      valorRecebidoBaseUnits: 0n,
+      motivoNaoRealizado: null,
+      reembolsado: false,
       criadoEm: new Date(),
     };
     this.rows.push(row);
-    return row;
+    return { ...row };
   }
 
   async findById(id: string): Promise<PaymentLink | null> {
-    // Cópia: um repo real hidrata do banco. Sem isso, updateStatus mutaria
-    // o mesmo objeto que o caller já tem em mãos.
-    const r = this.rows.find((x) => x.id === id);
-    return r ? { ...r } : null;
+    const row = this.rows.find((r) => r.id === id);
+    return row ? { ...row } : null;
   }
 
   async findByDepositAddress(address: string): Promise<PaymentLink | null> {
-    return (
-      this.rows.find((r) => r.enderecoDeposito.toLowerCase() === address.toLowerCase()) ?? null
+    const row = this.rows.find(
+      (r) => r.enderecoDeposito.toLowerCase() === address.toLowerCase(),
     );
+    return row ? { ...row } : null;
   }
 
-  async listByCustomer(clienteId: string): Promise<PaymentLink[]> {
-    return this.rows.filter((r) => r.clienteId === clienteId).map((r) => ({ ...r }));
+  async findByPageTokenHash(hash: string): Promise<PaymentLink | null> {
+    const row = this.rows.find((r) => r.pageTokenHash === hash);
+    return row ? { ...row } : null;
+  }
+
+  async findByExternalId(apiClienteId: string, externalId: string): Promise<PaymentLink | null> {
+    const row = this.rows.find(
+      (r) => r.apiClienteId === apiClienteId && r.externalId === externalId,
+    );
+    return row ? { ...row } : null;
+  }
+
+  async findByIdempotencyKey(
+    apiClienteId: string,
+    idempotencyKey: string,
+  ): Promise<PaymentLink | null> {
+    const row = this.rows.find(
+      (r) => r.apiClienteId === apiClienteId && r.idempotencyKey === idempotencyKey,
+    );
+    return row ? { ...row } : null;
+  }
+
+  async listByClient(apiClienteId: string, limit: number): Promise<PaymentLink[]> {
+    return this.rows
+      .filter((r) => r.apiClienteId === apiClienteId)
+      .sort((a, b) => b.criadoEm.getTime() - a.criadoEm.getTime())
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
   }
 
   async listAll(limit: number): Promise<PaymentLink[]> {
-    return this.rows.slice(0, limit).map((r) => ({ ...r }));
+    return this.rows
+      .slice()
+      .sort((a, b) => b.criadoEm.getTime() - a.criadoEm.getTime())
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
   }
 
   async listByStatus(status: LinkStatus, limit: number): Promise<PaymentLink[]> {
     return this.rows.filter((r) => r.status === status).slice(0, limit).map((r) => ({ ...r }));
   }
 
+  async listExpiredPages(now: Date, limit: number): Promise<PaymentLink[]> {
+    return this.rows
+      .filter((r) => r.status === 'aguardando' && r.expiraEm <= now)
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
+  async listDueSettlement(now: Date, limit: number): Promise<PaymentLink[]> {
+    return this.rows
+      .filter(
+        (r) =>
+          (r.status === 'expirado' || r.status === 'parcial') &&
+          r.liquidacaoAte <= now,
+      )
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
   async updateStatus(id: string, status: LinkStatus): Promise<void> {
     const row = this.rows.find((r) => r.id === id);
     if (row) row.status = status;
+  }
+
+  async updateSettlement(id: string, patch: SettlementPatch): Promise<void> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return;
+    if (patch.motivoNaoRealizado !== undefined) row.motivoNaoRealizado = patch.motivoNaoRealizado;
+    if (patch.valorRecebidoBaseUnits !== undefined) {
+      row.valorRecebidoBaseUnits = patch.valorRecebidoBaseUnits;
+    }
+    if (patch.reembolsado !== undefined) row.reembolsado = patch.reembolsado;
   }
 
   async listDepositAddresses(statuses: LinkStatus[]): Promise<string[]> {
@@ -301,102 +326,67 @@ export class FakeLinkRepository implements LinkRepository {
 export class FakePaymentRepository implements PaymentRepository {
   readonly rows: Payment[] = [];
 
-  constructor(private readonly credits?: FakeCreditRepository) {}
+  constructor(private readonly links: FakeLinkRepository) {}
 
   async upsert(input: UpsertPaymentInput): Promise<Payment> {
     const existing = this.rows.find(
-      (r) => r.txHash === input.txHash && r.logIndex === input.logIndex,
+      (r) =>
+        r.txHash.toLowerCase() === input.txHash.toLowerCase() &&
+        r.logIndex === input.logIndex,
     );
-    if (existing) {
-      if (existing.status === 'confirmado') return existing;
-      existing.status = input.status;
-      existing.bloco = input.bloco;
-      existing.valorBaseUnits = input.valorBaseUnits;
-      existing.deAddress = input.deAddress;
-      existing.paraAddress = input.paraAddress;
-      existing.token = input.token;
-      existing.detectadoEm = input.detectadoEm;
-      existing.confirmacoes = input.status === 'confirmado' ? existing.confirmacoes : 0;
-      existing.confirmadoEm = input.status === 'confirmado' ? new Date() : null;
-      return existing;
-    }
+    if (existing) return { ...existing };
     const row: Payment = {
       id: randomUUID(),
-      linkId: input.linkId,
-      txHash: input.txHash,
-      logIndex: input.logIndex,
-      deAddress: input.deAddress,
-      paraAddress: input.paraAddress,
-      token: input.token,
-      valorBaseUnits: input.valorBaseUnits,
+      ...input,
+      txHash: input.txHash.toLowerCase(),
       confirmacoes: 0,
-      bloco: input.bloco,
-      status: input.status,
       detectadoEm: input.detectadoEm,
       confirmadoEm: input.status === 'confirmado' ? new Date() : null,
     };
     this.rows.push(row);
-    return row;
+    return { ...row };
   }
 
-  async confirm(input: {
-    paymentId: string;
-    confirmacoes: number;
-    credit: CreateCreditInput | null;
-  }): Promise<{ payment: Payment; creditCreated: boolean }> {
+  async confirm(input: { paymentId: string; confirmacoes: number }): Promise<Payment> {
     const row = this.rows.find((r) => r.id === input.paymentId);
-    if (!row) throw new Error(`pagamento nao encontrado: ${input.paymentId}`);
+    if (!row) throw new Error('pagamento nao encontrado');
     row.status = 'confirmado';
     row.confirmacoes = input.confirmacoes;
     row.confirmadoEm = new Date();
-
-    let creditCreated = false;
-    if (input.credit && this.credits) {
-      const existing = await this.credits.findByPayment(input.credit.pagamentoId);
-      if (!existing) {
-        await this.credits.create(input.credit);
-        creditCreated = true;
-      } else if (existing.status === 'revertido') {
-        await this.credits.restoreByPaymentIds(
-          [input.credit.pagamentoId],
-          input.credit.status,
-        );
-      }
-    }
-    return { payment: { ...row }, creditCreated };
+    return { ...row };
   }
 
   async findByTxHash(txHash: string): Promise<Payment | null> {
-    const r = this.rows.find((x) => x.txHash === txHash);
-    return r ? { ...r } : null;
-  }
-
-  async listForReconciliation(limit: number): Promise<Payment[]> {
-    const out: Payment[] = [];
-    for (const r of this.rows) {
-      if (r.status !== 'confirmado') continue;
-      const hasCredit = this.credits
-        ? Boolean(await this.credits.findByPayment(r.id))
-        : false;
-      if (hasCredit) continue;
-      out.push({ ...r });
-      if (out.length >= limit) break;
-    }
-    return out;
+    const row = this.rows.find((r) => r.txHash.toLowerCase() === txHash.toLowerCase());
+    return row ? { ...row } : null;
   }
 
   async listByLink(linkId: string): Promise<Payment[]> {
-    return this.rows.filter((r) => r.linkId === linkId);
+    return this.rows.filter((r) => r.linkId === linkId).map((r) => ({ ...r }));
   }
 
   async listByStatus(status: Payment['status'], limit: number): Promise<Payment[]> {
-    return this.rows.filter((r) => r.status === status).slice(0, limit);
+    return this.rows.filter((r) => r.status === status).slice(0, limit).map((r) => ({ ...r }));
+  }
+
+  async listForReconciliation(limit: number): Promise<Payment[]> {
+    return this.rows
+      .filter((p) => {
+        const link = this.links.rows.find((l) => l.id === p.linkId);
+        return (
+          p.status === 'confirmado' &&
+          link !== undefined &&
+          ['aguardando', 'expirado', 'parcial', 'nao_realizado'].includes(link.status)
+        );
+      })
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
   }
 
   async sumConfirmedByLink(linkId: string): Promise<bigint> {
     return this.rows
       .filter((r) => r.linkId === linkId && r.status === 'confirmado')
-      .reduce((acc, r) => acc + r.valorBaseUnits, 0n);
+      .reduce((total, r) => total + r.valorBaseUnits, 0n);
   }
 
   async updateConfirmations(paymentId: string, confirmacoes: number): Promise<void> {
@@ -405,89 +395,30 @@ export class FakePaymentRepository implements PaymentRepository {
   }
 
   async listConfirmedAboveBlock(chain: string, bloco: number): Promise<Payment[]> {
-    // O fake nao tem join com links; usa o bloco do proprio pagamento.
     return this.rows
-      .filter((r) => r.bloco > bloco && ['detectado', 'confirmado'].includes(r.status))
+      .filter((p) => {
+        const link = this.links.rows.find((l) => l.id === p.linkId);
+        return (
+          link?.chain === chain &&
+          p.bloco > bloco &&
+          ['detectado', 'confirmado'].includes(p.status)
+        );
+      })
       .map((r) => ({ ...r }));
   }
 
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {
     let n = 0;
-    for (const r of this.rows) {
-      if (r.bloco > bloco && ['detectado', 'confirmado'].includes(r.status)) {
-        Object.assign(r, { status: 'revertido', confirmadoEm: null, confirmacoes: 0 });
-        n++;
-      }
-    }
-    return n;
-  }
-}
-
-export class FakeCreditRepository implements CreditRepository {
-  readonly rows: CustomerCredit[] = [];
-
-  async create(input: CreateCreditInput): Promise<CustomerCredit> {
-    const existing = this.rows.find((r) => r.pagamentoId === input.pagamentoId);
-    if (existing) return existing;
-    const row: CustomerCredit = {
-      id: randomUUID(),
-      clienteId: input.clienteId,
-      linkId: input.linkId,
-      pagamentoId: input.pagamentoId,
-      valorBaseUnits: input.valorBaseUnits,
-      valorCentavos: input.valorCentavos,
-      moeda: input.moeda,
-      status: input.status,
-      criadoEm: new Date(),
-    };
-    this.rows.push(row);
-    return row;
-  }
-
-  async listByCustomer(clienteId: string): Promise<CustomerCredit[]> {
-    return this.rows.filter((r) => r.clienteId === clienteId);
-  }
-
-  async listByLink(linkId: string): Promise<CustomerCredit[]> {
-    return this.rows.filter((r) => r.linkId === linkId);
-  }
-
-  async listAll(limit: number): Promise<CustomerCredit[]> {
-    return this.rows.slice(0, limit);
-  }
-
-  async sumByCustomer(clienteId: string): Promise<bigint> {
-    return this.rows
-      .filter((r) => r.clienteId === clienteId && r.status === 'liberado')
-      .reduce((acc, r) => acc + (r.valorCentavos ?? 0n), 0n);
-  }
-
-  async findByPayment(pagamentoId: string): Promise<CustomerCredit | null> {
-    const r = this.rows.find((x) => x.pagamentoId === pagamentoId);
-    return r ? { ...r } : null;
-  }
-
-  async revertByPaymentIds(pagamentoIds: string[]): Promise<number> {
-    const set = new Set(pagamentoIds);
-    let n = 0;
-    for (const r of this.rows) {
-      if (set.has(r.pagamentoId) && ['pendente', 'liberado'].includes(r.status)) {
-        r.status = 'revertido';
-        n++;
-      }
-    }
-    return n;
-  }
-
-  async restoreByPaymentIds(
-    pagamentoIds: string[],
-    status: CustomerCredit['status'],
-  ): Promise<number> {
-    const set = new Set(pagamentoIds);
-    let n = 0;
-    for (const r of this.rows) {
-      if (set.has(r.pagamentoId) && r.status === 'revertido') {
-        r.status = status;
+    for (const payment of this.rows) {
+      const link = this.links.rows.find((l) => l.id === payment.linkId);
+      if (
+        link?.chain === chain &&
+        payment.bloco > bloco &&
+        ['detectado', 'confirmado'].includes(payment.status)
+      ) {
+        payment.status = 'revertido';
+        payment.confirmadoEm = null;
+        payment.confirmacoes = 0;
         n++;
       }
     }
@@ -517,7 +448,7 @@ export class FakeTransferRepository implements TransferRepository {
       criadoEm: new Date(),
     };
     this.rows.push(row);
-    return row;
+    return { ...row };
   }
 
   async update(
@@ -546,14 +477,13 @@ export class FakeTransferRepository implements TransferRepository {
 
   async findByLinkKindNonce(
     linkId: string,
-    kind: InternalTransfer['kind'],
+    kind: TransferKind,
     nonce: number,
   ): Promise<InternalTransfer | null> {
-    return (
-      this.rows.find(
-        (r) => r.linkId === linkId && r.kind === kind && r.nonce === nonce,
-      ) ?? null
+    const row = this.rows.find(
+      (r) => r.linkId === linkId && r.kind === kind && r.nonce === nonce,
     );
+    return row ? { ...row } : null;
   }
 
   async listInFlight(limit: number): Promise<InternalTransfer[]> {
@@ -569,14 +499,14 @@ export class FakeTransferRepository implements TransferRepository {
 
   async revertAboveBlock(chain: string, bloco: number): Promise<number> {
     let n = 0;
-    for (const r of this.rows) {
+    for (const row of this.rows) {
       if (
-        r.chain === chain &&
-        r.bloco !== null &&
-        r.bloco > bloco &&
-        ['enviado', 'confirmado', 'patrocinado'].includes(r.status)
+        row.chain === chain &&
+        row.bloco !== null &&
+        row.bloco > bloco &&
+        ['enviado', 'confirmado', 'patrocinado'].includes(row.status)
       ) {
-        Object.assign(r, {
+        Object.assign(row, {
           status: 'pendente',
           txHash: null,
           rawTransaction: null,
@@ -591,15 +521,105 @@ export class FakeTransferRepository implements TransferRepository {
   }
 
   async findById(id: string): Promise<InternalTransfer | null> {
-    return this.rows.find((r) => r.id === id) ?? null;
+    const row = this.rows.find((r) => r.id === id);
+    return row ? { ...row } : null;
   }
 
   async findByLink(linkId: string): Promise<InternalTransfer[]> {
-    return this.rows.filter((r) => r.linkId === linkId);
+    return this.rows.filter((r) => r.linkId === linkId).map((r) => ({ ...r }));
   }
 
-  async listByStatus(status: InternalTransfer['status'], limit: number): Promise<InternalTransfer[]> {
+  async listByStatus(status: TransferStatus, limit: number): Promise<InternalTransfer[]> {
     return this.rows.filter((r) => r.status === status).slice(0, limit).map((r) => ({ ...r }));
+  }
+}
+
+export class FakeWebhookOutboxRepository implements WebhookOutboxRepository {
+  readonly rows: WebhookEvent[] = [];
+
+  async enqueue(input: CreateWebhookEventInput): Promise<WebhookEvent | null> {
+    if (
+      this.rows.some(
+        (r) => r.linkId === input.linkId && r.eventType === input.eventType,
+      )
+    ) {
+      return null;
+    }
+    const row: WebhookEvent = {
+      id: randomUUID(),
+      apiClienteId: input.apiClienteId,
+      linkId: input.linkId,
+      eventType: input.eventType,
+      payload: input.payload,
+      status: 'pendente',
+      attempts: 0,
+      nextAttemptEm: input.nextAttemptEm,
+      lastError: null,
+      deliveredEm: null,
+      criadoEm: new Date(),
+    };
+    this.rows.push(row);
+    return { ...row };
+  }
+
+  async findById(id: string): Promise<WebhookEvent | null> {
+    const row = this.rows.find((r) => r.id === id);
+    return row ? { ...row } : null;
+  }
+
+  async listDue(now: Date, limit: number): Promise<WebhookEvent[]> {
+    return this.rows
+      .filter((r) => r.status === 'pendente' && r.nextAttemptEm <= now)
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
+  async listByLink(linkId: string): Promise<WebhookEvent[]> {
+    return this.rows.filter((r) => r.linkId === linkId).map((r) => ({ ...r }));
+  }
+
+  async listAll(limit: number): Promise<WebhookEvent[]> {
+    return this.rows
+      .slice()
+      .sort((a, b) => b.criadoEm.getTime() - a.criadoEm.getTime())
+      .slice(0, limit)
+      .map((r) => ({ ...r }));
+  }
+
+  async markDelivered(id: string): Promise<void> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return;
+    row.status = 'entregue';
+    row.deliveredEm = new Date();
+    row.lastError = null;
+  }
+
+  async markFailed(
+    id: string,
+    input: {
+      attempts: number;
+      nextAttemptEm: Date;
+      lastError: string;
+      status?: 'pendente' | 'falhou';
+    },
+  ): Promise<void> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return;
+    row.attempts = input.attempts;
+    row.nextAttemptEm = input.nextAttemptEm;
+    row.lastError = input.lastError;
+    row.status = input.status ?? 'pendente';
+  }
+
+  async replay(id: string, now: Date): Promise<WebhookEvent | null> {
+    const row = this.rows.find((r) => r.id === id);
+    if (!row) return null;
+    row.status = 'pendente';
+    row.attempts = 0;
+    row.nextAttemptEm = now;
+    row.lastError = null;
+    row.deliveredEm = null;
+    return { ...row };
   }
 }
 
@@ -642,24 +662,20 @@ export class FakeAnchorRepository implements AnchorRepository {
   readonly rows: ChainAnchor[] = [];
 
   async record(anchor: ChainAnchor): Promise<void> {
-    const existe = this.rows.find(
+    const exists = this.rows.find(
       (r) =>
         r.chain === anchor.chain &&
         r.tokenContract === anchor.tokenContract.toLowerCase() &&
         r.bloco === anchor.bloco,
     );
-    if (existe) return;
-    this.rows.push({
-      ...anchor,
-      tokenContract: anchor.tokenContract.toLowerCase(),
-    });
+    if (exists) return;
+    this.rows.push({ ...anchor, tokenContract: anchor.tokenContract.toLowerCase() });
   }
 
   async list(chain: string, tokenContract: string, limit: number): Promise<ChainAnchor[]> {
     return this.rows
       .filter(
-        (r) =>
-          r.chain === chain && r.tokenContract === tokenContract.toLowerCase(),
+        (r) => r.chain === chain && r.tokenContract === tokenContract.toLowerCase(),
       )
       .sort((a, b) => b.bloco - a.bloco)
       .slice(0, limit)
@@ -668,11 +684,11 @@ export class FakeAnchorRepository implements AnchorRepository {
 
   async pruneAfter(chain: string, tokenContract: string, bloco: number): Promise<void> {
     for (let i = this.rows.length - 1; i >= 0; i--) {
-      const r = this.rows[i]!;
+      const row = this.rows[i]!;
       if (
-        r.chain === chain &&
-        r.tokenContract === tokenContract.toLowerCase() &&
-        r.bloco > bloco
+        row.chain === chain &&
+        row.tokenContract === tokenContract.toLowerCase() &&
+        row.bloco > bloco
       ) {
         this.rows.splice(i, 1);
       }
@@ -680,11 +696,11 @@ export class FakeAnchorRepository implements AnchorRepository {
   }
 
   async oldest(chain: string, tokenContract: string): Promise<ChainAnchor | null> {
-    const filtradas = this.rows.filter(
+    const filtered = this.rows.filter(
       (r) => r.chain === chain && r.tokenContract === tokenContract.toLowerCase(),
     );
-    if (filtradas.length === 0) return null;
-    return { ...filtradas.reduce((a, b) => (a.bloco <= b.bloco ? a : b)) };
+    if (filtered.length === 0) return null;
+    return { ...filtered.reduce((a, b) => (a.bloco <= b.bloco ? a : b)) };
   }
 }
 
@@ -701,7 +717,6 @@ export class FakeIndexAllocator implements IndexAllocator {
   }
 
   async release(scope: string, indice: number): Promise<void> {
-    // Espelha o allocator real: so a ultima reserva (o maximo) e liberada.
     const next = this.counters.get(scope) ?? 0;
     if (indice === next - 1) this.counters.set(scope, indice);
   }
@@ -724,7 +739,6 @@ export class FakeAuditRepository implements AuditRepository {
   }
 
   async list(limit: number): Promise<AuditEvent[]> {
-    // Espelha o repositorio real: mais recente primeiro.
     return this.rows
       .slice()
       .sort((a, b) => b.criadoEm.getTime() - a.criadoEm.getTime())
@@ -732,89 +746,20 @@ export class FakeAuditRepository implements AuditRepository {
   }
 }
 
-export class FakeAccountRepository implements AccountRepository {
-  readonly contas: AccountRecord[] = [];
-  readonly sessoes: Array<{ tokenHash: string; clienteId: string; expiraEm: Date }> = [];
-
-  constructor(
-    private readonly customers: FakeCustomerRepository,
-    private readonly links: FakeLinkRepository,
-  ) {}
-
-  async create(input: AccountRecord): Promise<void> {
-    if (this.contas.some((c) => c.usuario === input.usuario)) {
-      const err = new Error('duplicate key');
-      throw err;
-    }
-    this.contas.push({ ...input });
-  }
-
-  async findByUsuario(usuario: string): Promise<AccountRecord | null> {
-    return this.contas.find((c) => c.usuario === usuario) ?? null;
-  }
-
-  async findByClienteId(clienteId: string): Promise<AccountRecord | null> {
-    return this.contas.find((c) => c.clienteId === clienteId) ?? null;
-  }
-
-  async update(clienteId: string, patch: { usuario?: string; senhaHash?: string }): Promise<void> {
-    const row = this.contas.find((c) => c.clienteId === clienteId);
-    if (!row) return;
-    if (patch.usuario !== undefined) row.usuario = patch.usuario;
-    if (patch.senhaHash !== undefined) row.senhaHash = patch.senhaHash;
-  }
-
-  async createSession(input: {
-    id: string;
-    tokenHash: string;
-    clienteId: string;
-    expiraEm: Date;
-  }): Promise<void> {
-    this.sessoes.push({
-      tokenHash: input.tokenHash,
-      clienteId: input.clienteId,
-      expiraEm: input.expiraEm,
-    });
-  }
-
-  async findSession(tokenHash: string): Promise<SessionRecord | null> {
-    const row = this.sessoes.find((s) => s.tokenHash === tokenHash);
-    return row ? { clienteId: row.clienteId, expiraEm: row.expiraEm } : null;
-  }
-
-  async deleteSession(tokenHash: string): Promise<void> {
-    const i = this.sessoes.findIndex((s) => s.tokenHash === tokenHash);
-    if (i >= 0) this.sessoes.splice(i, 1);
-  }
-
-  async deleteCustomer(clienteId: string): Promise<void> {
-    const i = this.customers.rows.findIndex((r) => r.id === clienteId);
-    if (i >= 0) this.customers.rows.splice(i, 1);
-    for (let n = this.links.rows.length - 1; n >= 0; n--) {
-      if (this.links.rows[n]?.clienteId === clienteId) this.links.rows.splice(n, 1);
-    }
-    for (let n = this.contas.length - 1; n >= 0; n--) {
-      if (this.contas[n]?.clienteId === clienteId) this.contas.splice(n, 1);
-    }
-  }
-}
-
 export function createFakeRepositories(): MotorRepositories {
-  const credits = new FakeCreditRepository();
-  const customers = new FakeCustomerRepository();
   const links = new FakeLinkRepository();
   return {
-    customers,
+    apiClients: new FakeApiClientRepository(),
+    apiClientWallets: new FakeApiClientWalletRepository(),
+    nonces: new FakeNonceRepository(),
     rampProfiles: new FakeRampProfileRepository(),
-    coldWallets: new FakeColdWalletRepository(),
     links,
-    payments: new FakePaymentRepository(credits),
-    credits,
+    payments: new FakePaymentRepository(links),
     transfers: new FakeTransferRepository(),
+    webhooks: new FakeWebhookOutboxRepository(),
     cursors: new FakeCursorRepository(),
     anchors: new FakeAnchorRepository(),
     indices: new FakeIndexAllocator(),
     audit: new FakeAuditRepository(),
-    accounts: new FakeAccountRepository(customers, links),
   };
 }

@@ -7,7 +7,7 @@ import { createProviderFactory } from './core/chain/provider.js';
 import { GasSponsor } from './core/chain/gas-sponsor.js';
 import { loadConfig, type AppConfig } from './core/config.js';
 import { HdWallet } from './core/hd/hd-wallet.js';
-import { BlindIndex, DataCipher, Keyring } from './core/crypto/cipher.js';
+import { DataCipher, Keyring } from './core/crypto/cipher.js';
 import { createMotor, type Motor } from './core/index.js';
 import { AddressOnlySigner } from './core/signer/address-signer.js';
 import { LocalSigner } from './core/signer/local-signer.js';
@@ -42,7 +42,7 @@ export async function bootstrap(
 ): Promise<Bootstrap> {
   loadEnvFile();
   const source = role === 'api' ? omitSecrets(env) : env;
-  const config = loadConfig(source);
+  const config = loadConfig(source, { role });
   if (role === 'api') {
     for (const key of SECRET_ENV) delete process.env[key];
   }
@@ -91,16 +91,6 @@ export async function bootstrap(
           config.gasSponsor.minBalanceWei,
         );
 
-  // E1/E2/E3: blind index com a chave ativa e, na rotacao, tambem a anterior.
-  const blindIndex = config.crypto.indexKeyV2
-    ? BlindIndex.rotating(
-        config.crypto.indexKeyV2,
-        config.crypto.indexKidV2,
-        config.crypto.indexKey,
-        'v1',
-      )
-    : new BlindIndex(config.crypto.indexKey, 'v1');
-
   const motor = createMotor({
     repos,
     hdWallet,
@@ -108,11 +98,11 @@ export async function bootstrap(
     providerFactory,
     gasSponsor,
     logger,
-    dataKey: config.crypto.dataKey,
-    indexKey: config.crypto.indexKey,
     cipher,
-    blindIndex,
-    ttlHours: config.links.ttlHours,
+    ttlMinutes: config.links.ttlMinutes,
+    publicBaseUrl: config.publicBaseUrl,
+    settlement: config.settlement,
+    webhook: config.webhook,
     maxIndex: config.hd.maxIndex,
     monitor: {
       confirmationsRequired: config.chain.confirmationsRequired,

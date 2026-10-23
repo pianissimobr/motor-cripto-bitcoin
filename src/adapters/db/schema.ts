@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
@@ -12,90 +13,72 @@ import {
 } from 'drizzle-orm/pg-core';
 
 /**
- * Schema do motor.
+ * Schema do motor API-only.
  *
  * Regras:
  *  - dinheiro fiat em centavos (integer); token em base units (bigint)
- *  - PII cifrada em bytea + blind index (char 64) para busca
- *  - endereco de deposito e tx_hash com indice unico (idempotencia)
+ *  - segredos (webhook secret, page token) cifrados em repouso
+ *  - endereco de deposito, indice HD, external_id e page token unicos
  */
 
-export const cadastros = pgTable(
-  'cadastros',
+export const apiClientes = pgTable(
+  'api_clientes',
   {
-    id: uuid('id').primaryKey(),
-    nomeEnc: text('nome_enc').notNull(),
-    emailEnc: text('email_enc').notNull(),
-    emailBidx: text('email_bidx').notNull(),
-    /**
-     * Bloco 4: token do indice anterior durante a rotacao. O indice ATIVO
-     * fica sempre em `email_bidx` (canonico e unico); a busca consulta as
-     * duas colunas enquanto a chave antiga existir.
-     */
-    emailBidxAnterior: text('email_bidx_anterior'),
-    nomeMasked: text('nome_masked').notNull(),
-    emailMasked: text('email_masked').notNull(),
+    id: uuid('id').primaryKey().defaultRandom(),
+    nome: text('nome').notNull(),
+    /** SHA-256 hex da API key. A chave em claro so existe na criacao. */
+    apiKeyHash: text('api_key_hash').notNull(),
+    /** Prefixo publico para exibir no admin (ex.: mk_live_ab12). */
+    apiKeyPrefix: text('api_key_prefix').notNull(),
+    webhookUrl: text('webhook_url').notNull(),
+    /** Segredo HMAC dos webhooks, cifrado com o id do cliente como AAD. */
+    webhookSecretEnc: text('webhook_secret_enc').notNull(),
+    /** Segredo HMAC das requisicoes da API, cifrado com o id do cliente. */
+    requestSecretEnc: text('request_secret_enc').notNull(),
     status: text('status').notNull().default('ativo'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('cadastros_email_bidx_uq').on(t.emailBidx),
-    index('cadastros_email_bidx_anterior_idx').on(t.emailBidxAnterior),
-    index('cadastros_criado_em_idx').on(t.criadoEm),
+    uniqueIndex('api_clientes_api_key_hash_uq').on(t.apiKeyHash),
+    index('api_clientes_status_idx').on(t.status),
   ],
 );
 
-/** Login do cliente. Separado do token de administração da loja. */
-export const contas = pgTable(
-  'contas',
+export const apiClienteWallets = pgTable(
+  'api_cliente_wallets',
   {
-    clienteId: uuid('cliente_id')
-      .primaryKey()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
-    usuario: text('usuario').notNull(),
-    senhaHash: text('senha_hash').notNull(),
-    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('contas_usuario_uq').on(t.usuario)],
-);
-
-export const sessoes = pgTable(
-  'sessoes',
-  {
-    id: uuid('id').primaryKey(),
-    tokenHash: text('token_hash').notNull(),
-    clienteId: uuid('cliente_id')
+    id: uuid('id').primaryKey().defaultRandom(),
+    apiClienteId: uuid('api_cliente_id')
       .notNull()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
-    expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+      .references(() => apiClientes.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    chain: text('chain').notNull(),
+    address: text('address').notNull(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [uniqueIndex('sessoes_token_hash_uq').on(t.tokenHash)],
-);
-
-export const cadastrosPrefixos = pgTable(
-  'cadastros_prefixos',
-  {
-    prefixBidx: text('prefix_bidx').notNull(),
-    /**
-     * E3: token v2 cru (o token tambem vai em `prefix_bidx` com o prefixo
-     * literal "v2:"). Mantido para diagnostico; a busca usa `prefix_bidx`.
-     */
-    prefixBidxV2: text('prefix_bidx_v2'),
-    clienteId: uuid('cliente_id')
-      .notNull()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
   },
   (t) => [
-    // Bloco 4: o token so e unico DENTRO do cliente. Antes o PK era apenas
-    // o token e dois clientes com o mesmo prefixo colidiam entre si.
-    primaryKey({
-      name: 'cadastros_prefixos_cliente_prefix_pk',
-      columns: [t.clienteId, t.prefixBidx],
-    }),
-    index('cadastros_prefixos_prefix_idx').on(t.prefixBidx),
-    index('cadastros_prefixos_cliente_idx').on(t.clienteId),
-    index('cadastros_prefixos_v2_idx').on(t.prefixBidxV2),
+    uniqueIndex('api_cliente_wallets_cliente_chain_address_uq').on(
+      t.apiClienteId,
+      t.chain,
+      t.address,
+    ),
+    index('api_cliente_wallets_cliente_idx').on(t.apiClienteId),
+  ],
+);
+
+/** Nonces de HMAC. Um nonce so vale uma vez por cliente. */
+export const apiNonces = pgTable(
+  'api_nonces',
+  {
+    apiClienteId: uuid('api_cliente_id')
+      .notNull()
+      .references(() => apiClientes.id, { onDelete: 'cascade' }),
+    nonce: text('nonce').notNull(),
+    expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.apiClienteId, t.nonce] }),
+    index('api_nonces_expira_em_idx').on(t.expiraEm),
   ],
 );
 
@@ -123,28 +106,16 @@ export const rampProfiles = pgTable(
   (t) => [uniqueIndex('ramp_profiles_label_uq').on(t.label)],
 );
 
-export const carteirasFrias = pgTable(
-  'carteiras_frias',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    label: text('label').notNull(),
-    address: text('address').notNull(),
-    chain: text('chain').notNull(),
-    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('carteiras_frias_address_uq').on(t.address),
-    uniqueIndex('carteiras_frias_label_uq').on(t.label),
-  ],
-);
-
 export const linksGerados = pgTable(
   'links_gerados',
   {
-    id: uuid('id').primaryKey().defaultRandom(),
-    clienteId: uuid('cliente_id')
+    id: uuid('id').primaryKey(),
+    apiClienteId: uuid('api_cliente_id')
       .notNull()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
+      .references(() => apiClientes.id, { onDelete: 'restrict' }),
+    externalId: text('external_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    requestHash: text('request_hash').notNull(),
     rampProfileId: uuid('ramp_profile_id')
       .notNull()
       .references(() => rampProfiles.id, { onDelete: 'restrict' }),
@@ -160,41 +131,34 @@ export const linksGerados = pgTable(
     indiceHd: integer('indice_hd').notNull(),
     caminhoDerivacao: text('caminho_derivacao').notNull(),
     enderecoDeposito: text('endereco_deposito').notNull(),
+    /** Destino do sweep: carteira allowlisted do cliente. */
+    walletAddress: text('wallet_address').notNull(),
+    pageTokenHash: text('page_token_hash').notNull(),
+    /** Token da pagina cifrado (AAD = id do link). */
+    pageTokenEnc: text('page_token_enc').notNull(),
     rampUrl: text('ramp_url').notNull(),
-    /**
-     * A1: destino do sweep persistido no momento da criacao do link.
-     * Antes o sweeper resolvia sozinho e ignorava a escolha do operador.
-     * Nullable para preservar links legados criados antes da correcao.
-     */
-    carteiraFriaId: uuid('carteira_fria_id').references(() => carteirasFrias.id, {
-      onDelete: 'set null',
-    }),
-    carteiraFriaEndereco: text('carteira_fria_endereco'),
     status: text('status').notNull().default('aguardando'),
+    motivoNaoRealizado: text('motivo_nao_realizado'),
+    valorRecebidoBaseUnits: bigint('valor_recebido_base_units', { mode: 'bigint' })
+      .notNull()
+      .default(sql`0`),
+    reembolsado: boolean('reembolsado').notNull().default(false),
     expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+    liquidacaoAte: timestamp('liquidacao_ate', { withTimezone: true }).notNull(),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('links_gerados_endereco_uq').on(t.enderecoDeposito),
     uniqueIndex('links_gerados_indice_hd_uq').on(t.indiceHd),
-    index('links_gerados_cliente_idx').on(t.clienteId),
+    uniqueIndex('links_gerados_page_token_uq').on(t.pageTokenHash),
+    uniqueIndex('links_gerados_cliente_external_uq').on(t.apiClienteId, t.externalId),
+    uniqueIndex('links_gerados_cliente_idem_uq').on(t.apiClienteId, t.idempotencyKey),
+    index('links_gerados_cliente_idx').on(t.apiClienteId),
     index('links_gerados_status_idx').on(t.status),
+    index('links_gerados_expira_em_idx').on(t.expiraEm),
+    index('links_gerados_liquidacao_ate_idx').on(t.liquidacaoAte),
     index('links_gerados_criado_em_idx').on(t.criadoEm),
   ],
-);
-
-export const cadastrosLinks = pgTable(
-  'cadastros_links',
-  {
-    clienteId: uuid('cliente_id')
-      .notNull()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
-    linkId: uuid('link_id')
-      .notNull()
-      .references(() => linksGerados.id, { onDelete: 'cascade' }),
-    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [primaryKey({ columns: [t.clienteId, t.linkId] })],
 );
 
 export const linksPagos = pgTable(
@@ -223,31 +187,6 @@ export const linksPagos = pgTable(
   ],
 );
 
-export const creditosCliente = pgTable(
-  'creditos_cliente',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    clienteId: uuid('cliente_id')
-      .notNull()
-      .references(() => cadastros.id, { onDelete: 'cascade' }),
-    linkId: uuid('link_id')
-      .notNull()
-      .references(() => linksGerados.id, { onDelete: 'cascade' }),
-    pagamentoId: uuid('pagamento_id')
-      .notNull()
-      .references(() => linksPagos.id, { onDelete: 'cascade' }),
-    valorBaseUnits: bigint('valor_base_units', { mode: 'bigint' }).notNull(),
-    valorCentavos: bigint('valor_centavos', { mode: 'bigint' }),
-    moeda: text('moeda').notNull(),
-    status: text('status').notNull().default('pendente'),
-    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    uniqueIndex('creditos_cliente_pagamento_uq').on(t.pagamentoId),
-    index('creditos_cliente_cliente_idx').on(t.clienteId),
-  ],
-);
-
 export const movimentosInternos = pgTable(
   'movimentos_internos',
   {
@@ -261,16 +200,11 @@ export const movimentosInternos = pgTable(
     txHash: text('tx_hash'),
     status: text('status').notNull().default('pendente'),
     erro: text('erro'),
-    /** C5: chain e bloco do sweep, para detectar se ele caiu num reorg. */
     chain: text('chain').notNull().default('polygon'),
     bloco: integer('bloco'),
-    /** D4: nonce do endereco derivado; garante um sweep por nonce. */
     nonce: integer('nonce'),
-    /** Separa sweep do token, dust nativo e recuperacao sintetica. */
     kind: text('kind').notNull().default('sweep'),
-    /** Raw assinada persistida antes do broadcast (recuperacao pos-crash). */
     rawTransaction: text('raw_transaction'),
-    /** JSON da transacao unsigned no modo PSBT. */
     unsignedTransaction: text('unsigned_transaction'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -279,6 +213,32 @@ export const movimentosInternos = pgTable(
     index('movimentos_internos_status_idx').on(t.status),
     index('movimentos_internos_bloco_idx').on(t.chain, t.bloco),
     uniqueIndex('movimentos_internos_link_kind_nonce_uq').on(t.linkId, t.kind, t.nonce),
+  ],
+);
+
+export const webhookOutbox = pgTable(
+  'webhook_outbox',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    apiClienteId: uuid('api_cliente_id')
+      .notNull()
+      .references(() => apiClientes.id, { onDelete: 'cascade' }),
+    linkId: uuid('link_id')
+      .notNull()
+      .references(() => linksGerados.id, { onDelete: 'cascade' }),
+    eventType: text('event_type').notNull(),
+    payload: text('payload').notNull(),
+    status: text('status').notNull().default('pendente'),
+    attempts: integer('attempts').notNull().default(0),
+    nextAttemptEm: timestamp('next_attempt_em', { withTimezone: true }).notNull().defaultNow(),
+    lastError: text('last_error'),
+    deliveredEm: timestamp('delivered_em', { withTimezone: true }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('webhook_outbox_link_event_uq').on(t.linkId, t.eventType),
+    index('webhook_outbox_due_idx').on(t.status, t.nextAttemptEm),
+    index('webhook_outbox_link_idx').on(t.linkId),
   ],
 );
 

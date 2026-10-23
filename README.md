@@ -1,422 +1,274 @@
 # Motor Cripto
 
-Motor reutilizavel de pagamentos on-chain para **vendedores sem conta business na Ramp**.
-
-O fluxo completo:
-
-```
-cliente paga o link da Ramp
-   -> stablecoin cai num endereco HD exclusivo daquele link
-   -> motor detecta a entrada lendo a blockchain (substitui o webhook da Ramp)
-   -> credito do cliente registrado no banco
-   -> valor transferido automaticamente para a carteira fria
-```
-
-O nucleo (`src/core`) nao depende de HTTP, framework nem banco concreto: ele recebe
-**ports** (interfaces) por injecao. Qualquer aplicacao pode importar o motor e
-usar `createMotor()` para ter cobranca + confirmacao on-chain + sweep.
-
----
-
-## Sumario
-
-- [Arquitetura](#arquitetura)
-- [Setup](#setup)
-- [Uso](#uso)
-- [Modelo de dados](#modelo-de-dados)
-- [Seguranca](#seguranca)
-- [API HTTP](#api-http)
-- [Operacao](#operacao)
-- [Decisoes e limitacoes](#decisoes-e-limitacoes)
-
----
-
-## Arquitetura
+Motor **API-only** de pagamentos on-chain. O cliente da API cria uma cobrança,
+recebe uma pagina hospedada em `/p/<token>` e um webhook quando o pagamento
+chega a um estado final. O valor recebido e varrido para uma carteira
+allowlisted do proprio cliente.
 
 ```
-src/
-├── core/                    O MOTOR (sem framework, sem driver de banco)
-│   ├── index.ts             createMotor(config) -> { customers, links, monitor, sweeper }
-│   ├── config.ts            validacao de ambiente (zod), falha no boot
-│   ├── domain/              tipos, estados, aritmetica de dinheiro
-│   ├── hd/                  derivacao xpub + keystore cifrado
-│   ├── ramp/                construtor de URL (estilos legacy e unified)
-│   ├── chain/               monitor, sweeper, gas sponsor, ERC-20
-│   ├── signer/              LocalSigner | RemoteSigner | PsbtSigner
-│   ├── crypto/              AES-256-GCM, blind index (HMAC), mascaras
-│   └── ports/               interfaces de repositorio
-├── adapters/
-│   ├── db/                  Drizzle + Postgres (implementa os ports)
-│   └── http/                Fastify (rotas finas sobre o core)
-├── worker/                  processo monitor + sweeper
-└── server.ts                boot do HTTP
-
-web/                         as duas telas (vanilla, sem CDN)
-db/migrations/               migrations (drizzle-kit + SQL manual)
-scripts/                     init-wallet, seed, verify-monitor
+cliente da API
+   POST /v1/links  ->  link + page_url
+                          |
+                          v
+                 /p/<token>  (Ramp + QR + endereco)
+                          |
+                  monitor on-chain
+                          |
+             pago / nao_realizado
+                    |             |
+                 webhook       sweep para carteira
+                               allowlisted do cliente
 ```
 
-**Regra do core:** `src/core` nao importa `fastify`, `drizzle-orm` nem `postgres`.
-Ele so conhece `ethers` (ECDSA/ABI) e `zod`.
+## O que mudou
 
----
+- Nao existe mais portal/cadastro de cliente final, creditos ou carteira fria global.
+- O destino do sweep e uma carteira **do cliente**, cadastrada no admin.
+- A API autentica com API key **e** assinatura HMAC por requisicao.
+- O papel `api` nao recebe signer, keystore nem chave de gas.
+- A URL da Ramp nunca sai em resposta de API; ela so aparece na pagina publica.
 
-## Setup
-
-### Pre-requisitos
+## Requisitos
 
 - Node.js >= 22
-- Docker (para o Postgres)
-- Uma chave JSON-RPC de Polygon (a publica do publicnode funciona, mas e limitada)
+- Postgres 16
+- Docker Compose (para o banco local)
+- Um RPC de Polygon (e das demais chains que voce habilitar)
+- Uma carteira de gas com POL
 
-### 1. Infra
-
-```bash
-docker compose up -d db
-```
-
-### 2. Dependencias e configuracao
+## Subida local
 
 ```bash
-npm install
 cp .env.example .env
-```
-
-Gere os segredos:
-
-```bash
-# chaves de cifragem e blind index (32 bytes cada)
-openssl rand -base64 32   # DATA_ENCRYPTION_KEY
-openssl rand -base64 32   # DATA_INDEX_KEY
-openssl rand -hex 32      # ADMIN_TOKEN
-```
-
-### 3. HD Wallet
-
-```bash
-npm run wallet:init -- --passphrase "sua-senha-forte" --show-seed
-```
-
-Isso gera `data/keystore.json` (cifrado, permissao 0600) e imprime:
-
-- o **xpub de conta** (`m/44'/60'/0'`) -> va em `HD_XPUB` no `.env`
-- a **seed** (apenas com `--show-seed`) -> **guarde offline agora**. Perder a seed
-  significa perder os fundos que forem enviados para os enderecos derivados.
-
-### 4. Banco
-
-```bash
+# edite ADMIN_TOKEN, DATA_ENCRYPTION_KEY, HD_XPUB e RPC_URL_POLYGON
+npm install
+docker compose up -d db
 npm run migrate
 npm run seed
+npm run dev
 ```
 
-O seed cria os perfis de integracao Ramp (`Polygon USDC`, `Polygon USDT0`) e a
-carteira fria (se `COLD_WALLET_ADDRESS` estiver definido no `.env`).
+Abra `http://localhost:4578/admin/` e informe o `ADMIN_TOKEN`.
 
-Por padrao um perfil existente **nao** e alterado. Para sincronizar a taxa de
-referencia depois de mudar `SEED_USDC_POR_BRL`/`SEED_USDT_POR_BRL`:
+O worker roda separado:
 
 ```bash
-npm run seed -- --update-rates
+npm run worker
 ```
 
-A mesma taxa pode ser ajustada em um perfil especifico por
-`PATCH /api/ramp-profiles/:id` (token admin).
-
-### 5. Subir
+Para a primeira configuracao assistida:
 
 ```bash
-npm run dev      # API + telas em http://localhost:4578
-npm run worker   # monitor on-chain + sweep (processo separado)
+python3 start.py
 ```
 
-O worker usa um **advisory lock** do Postgres: apenas uma instancia roda por banco.
+## Variaveis essenciais
 
----
+| Variavel | Uso |
+|---|---|
+| `DATABASE_URL` | Postgres |
+| `ADMIN_TOKEN` | Bearer do admin e do worker |
+| `DATA_ENCRYPTION_KEY` | AES-256-GCM para segredos e token da pagina |
+| `HD_XPUB` | xpub **de conta** `m/44'/60'/0'` |
+| `SIGNER_KEYSTORE_PATH` / `SIGNER_PASSPHRASE` | xprv cifrado usado so pelo worker |
+| `GAS_SPONSOR_PRIVATE_KEY` | POL para patrocinar o sweep; so no worker |
+| `PUBLIC_BASE_URL` | base de `page_url` |
+| `LINK_TTL_MINUTES` | validade da pagina (padrao 60) |
+| `SETTLEMENT_DAYS` | janela on-chain em dias corridos (padrao 1) |
+| `WEBHOOK_TIMEOUT_MS` / `WEBHOOK_MAX_ATTEMPTS` | entrega de webhook |
+| `CONFIRMATIONS_REQUIRED` | confirmacoes on-chain |
+| `PAYMENT_TOLERANCE_PCT` | tolerancia de valor |
 
-## Uso
+`LINK_TTL_HOURS` e `COLD_WALLET_ADDRESS` foram removidos.
 
-### Telas
+## Autenticacao da API
 
-| Pagina | Caminho | O que faz |
-|---|---|---|
-| Cadastro | `/cadastro.html` | nome + email do cliente |
-| Gerar cobranca | `/cobranca.html` | busca cliente, valor, id do ramp, carteira final -> gera o link |
+Toda rota `/v1/*` exige:
 
-Ambas pedem o `ADMIN_TOKEN` na barra superior (fica em `sessionStorage`).
+```http
+Authorization: Bearer mk_live_...
+X-Timestamp: 1792700000
+X-Nonce: um-valor-unico-com-8-a-128-chars
+X-Signature: v1=<hex>
+Content-Type: application/json
+```
 
-### Fluxo de programacao
+String canonica:
+
+```
+METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(rawBody)
+```
+
+Assinatura: `HMAC-SHA256(request_secret, canonica)`.
+
+- `PATH` nao inclui query string.
+- A janela de timestamp e de 300 segundos.
+- Cada nonce so pode ser usado uma vez por cliente.
+- O corpo assinado e o JSON exato enviado, sem reserializar.
+
+Exemplo em Node:
 
 ```ts
-import { createMotor, HdWallet, LocalSigner } from './src/core/index.js';
+import { createHash, createHmac } from 'node:crypto';
 
-const motor = createMotor({ repos, hdWallet, signer, providerFactory, gasSponsor, logger, dataKey, indexKey, ttlHours: 72 });
-
-const customer = await motor.customers.create({ nome: 'Maria', email: 'maria@example.com' });
-const link = await motor.links.create({
-  clienteId: customer.id,
-  amountCents: 15_000,
-  rampProfileId: profile.id,
-  coldWalletAddress: '0x...',
-});
-// link.rampUrl -> enviar ao cliente
+const body = JSON.stringify({ external_id: 'pedido-1', amount_cents: 10000 });
+const timestamp = Math.floor(Date.now() / 1000);
+const nonce = crypto.randomUUID();
+const canonical = [
+  'POST',
+  '/v1/links',
+  String(timestamp),
+  nonce,
+  createHash('sha256').update(body).digest('hex'),
+].join('\n');
+const signature = createHmac('sha256', requestSecret).update(canonical).digest('hex');
 ```
 
----
+## API do cliente
 
-## Modelo de dados
+### Criar link
 
-| Tabela | Papel |
-|---|---|
-| `cadastros` | clientes: nome e email **cifrados**, blind index do email, mascaras |
-| `cadastros_prefixos` | tokens de blind index por prefixo (busca parcial sem texto claro) |
-| `links_gerados` | um link por cobranca: valor, perfil Ramp, indice HD, endereco derivado, URL |
-| `cadastros_links` | relacao N:N cliente <-> link |
-| `links_pagos` | um registro por transferencia on-chain detectada (tx_hash + log_index unicos) |
-| `creditos_cliente` | credito do cliente, com o valor **efetivamente recebido** |
-| `ramp_profiles` | o "id do ramp": chain, asset, contrato, moeda, estilo de URL, taxa de referencia |
-| `carteiras_frias` | carteiras de destino final |
-| `movimentos_internos` | sweeps (endereco derivado -> carteira fria) |
-| `chain_cursors` | cursor do monitor por (chain, token) |
-| `hd_indices` | indices HD alocados (nunca reutilizados) |
-| `eventos_auditoria` | log append-only com hash encadeado |
+`POST /v1/links`
 
-### Convencao de dinheiro
+```json
+{
+  "external_id": "pedido-1",
+  "amount_cents": 10000,
+  "ramp_profile_id": "uuid",
+  "wallet_id": "uuid",
+  "final_url": "https://loja.example/obrigado"
+}
+```
 
-- fiat: **centavos** (inteiro). `15000` = R$ 150,00
-- token: **base units** (`bigint`). `27000000` = 27 USDC (6 decimais)
-- nunca float
+Header opcional: `Idempotency-Key`. Sem ele, usa-se `external_id`.
 
-`valorFiatUnidades` usa **unidades minimas** ISO-4217, que e o que a Ramp espera
-no parametro `inAssetValue` (`"10.00" EUR` -> `"1000"`).
+Resposta `201` (ou `200` com `reused: true`):
 
----
+```json
+{
+  "data": {
+    "id": "uuid",
+    "external_id": "pedido-1",
+    "status": "aguardando",
+    "valor_fiat_centavos": 10000,
+    "moeda_fiat": "BRL",
+    "expected_base_units": "18000000",
+    "endereco_deposito": "0x...",
+    "wallet_address": "0x...",
+    "expira_em": "...",
+    "liquidacao_ate": "...",
+    "page_url": "https://pay.example/p/..."
+  },
+  "reused": false
+}
+```
 
-## Seguranca
+Mesma chave + payload diferente retorna `409 idempotencia_conflitante`.
 
-### Chaves
-
-| Segredo | Onde fica | Observacao |
-|---|---|---|
-| seed / xprv | `data/keystore.json` cifrado (scrypt + AES-256-GCM, 0600) | gerada 1x, backup offline |
-| xpub de conta | `.env` (`HD_XPUB`) | **e segredo**: expoe todos os enderecos derivados e todo o historico |
-| `ADMIN_TOKEN` | `.env` | Bearer token da API |
-| `DATA_ENCRYPTION_KEY` | `.env` | AES-256-GCM da PII |
-| `DATA_INDEX_KEY` | `.env` | HMAC do blind index (chave separada) |
-
-O servidor de derivacao so precisa do **xpub**. A chave privada so e carregada
-pelo `LocalSigner`. Para producao, use `SIGNER_MODE=remote` (a transacao vai
-para um servico externo assinar) ou `psbt` (assinatura manual em hardware wallet).
-
-### PII
-
-- `nome` e `email`: AES-256-GCM, IV aleatorio por registro, **AAD = id do registro**
-  (trocar o ciphertext entre linhas quebra a autenticacao).
-- busca por email: **blind index** `HMAC-SHA256(index_key, email_normalizado)`.
-  O banco nao guarda o email em texto puro e o indice nao e reversivel.
-- busca por prefixo: tokens de blind index por prefixo (3..32 chars).
-  Trade-off conhecido: o **tamanho** do email e a frequencia de prefixos ficam
-  expostos no indice. A PK e `(cliente_id, prefix_bidx)`, entao dois clientes
-  com o mesmo prefixo nao se sobrescrevem.
-- `email_bidx` guarda sempre o indice **ativo** (unique); durante a rotacao o
-  token anterior fica em `email_bidx_anterior`. Para reconstruir a tabela de
-  prefixos apos uma rotacao, use `npm run reindex:prefixes` (aceita `--dry-run`).
-- a UI mostra mascarado por padrao (`m***@e***.com`).
-
-### API
-
-- `Authorization: Bearer` com comparacao em tempo constante
-- `ADMIN_TOKEN` escreve; `READONLY_TOKEN` so faz GET/HEAD e **nao** pode
-  `reveal=true`
-- `GET /api/auth/check` valida o token e informa o escopo (usado pela UI)
-- rate limit por IP (120/min)
-- CSP com `script-src 'self'` (sem CDN, sem script inline)
-- endereco de deposito **nunca** vem do cliente: e sempre derivado no servidor
-- ids de link sao aleatorios (128 bits), nunca sequenciais
-- logs de erro 500 guardam so o caminho da rota, nunca a query string
-- log de auditoria com hash encadeado cobrindo id, criadoEm, ip e negocio
-
-### Risco residual conhecido
-
-**O pagador pode editar o valor na URL da Ramp.** A URL carrega `fiatValue` e
-e editavel por quem paga. Mitigacao implementada: o credito usa **apenas** o
-valor recebido on-chain; divergencia com o esperado marca o link como `parcial`
-e o evento vai para a auditoria. A taxa de referencia (`taxa_token_por_fiat_base_units`
-no perfil Ramp) e um snapshot no momento da criacao do link — atualize-a quando
-o cambio USD/BRL mudar.
-
----
-
-## API HTTP
-
-Base: `http://localhost:4578`. Todas as rotas `/api/*` exigem `Authorization: Bearer $ADMIN_TOKEN`
-(exceto `/api/health`). Um `READONLY_TOKEN` opcional pode ser usado em GET/HEAD,
-mas nao consegue revelar PII (`reveal=true`).
+### Outras rotas
 
 | Metodo | Rota | Descricao |
 |---|---|---|
-| GET | `/api/health` | liveness |
-| GET | `/api/motor/status` | estado do motor (perfis, carteiras, signer) |
-| POST | `/api/cadastros` | `{ nome, email }` |
-| GET | `/api/cadastros?email=` | busca exata por email |
-| GET | `/api/cadastros?q=` | busca por prefixo (autocomplete) |
-| GET | `/api/cadastros/:id` | detalhe do cliente |
-| POST | `/api/links` | `{ email \| clienteId, valor, rampProfileId, coldWalletId \| coldWalletAddress }` |
-| GET | `/api/links/:id` | link + pagamentos + movimentos + creditos (inclui unsigned PSBT) |
-| POST | `/api/movimentos/:id/raw` | PSBT: submete o raw assinado (somente admin) |
-| GET | `/api/links?clienteId=` | links do cliente |
-| GET | `/api/creditos?clienteId=` | creditos do cliente |
-| GET/POST | `/api/ramp-profiles` | perfis de integracao Ramp (o "id do ramp") |
-| PATCH | `/api/ramp-profiles/:id` | atualiza label, taxa, URL, host e asset key (chain/contrato/decimais sao imutaveis) |
-| GET/POST | `/api/carteiras-frias` | carteiras de destino final |
-| GET | `/api/auditoria` | log de auditoria |
+| GET | `/v1/links` | links do cliente (`?limit=`) |
+| GET | `/v1/links/:id` | detalhe do link |
+| POST | `/v1/links/:id/revoke` | revoga link ainda nao pago |
+| GET | `/v1/ramp-profiles` | perfis Ramp ativos |
+| GET | `/v1/wallets` | carteiras allowlisted do cliente |
 
-Exemplo:
+O cliente precisa usar o `wallet_id` de uma carteira sua, na mesma chain do
+perfil Ramp.
 
-```bash
-curl -X POST http://localhost:4578/api/links \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"email":"maria@example.com","valor":"150,00","rampProfileId":"<uuid>",
-       "coldWalletAddress":"0x..."}'
+## Pagina publica
+
+- `GET /p/:token` — HTML com valor, status, QR e link da Ramp.
+- `GET /p/:token/status` — JSON de status.
+
+O token e um bearer secret: fica cifrado no banco e indexado apenas por
+SHA-256. Nao ha login de cliente final.
+
+## Webhooks
+
+Eventos:
+
+- `realizado` — link chegou a `pago`, `pago_sem_gas` ou `movido`.
+- `nao_realizado` — link chegou a `nao_realizado`.
+
+Headers:
+
+```http
+x-webhook-signature: t=<unix>,v1=<hex>
+x-webhook-event: realizado
+x-webhook-delivery: <uuid>
 ```
 
----
+Assinatura: `HMAC-SHA256(webhook_secret, "<t>.<corpo>")`.
 
-## Operacao
+O corpo e o JSON exato persistido na outbox. Retentativas: 60s, 5min, 30min,
+2h, 6h, 24h (maximo configuravel). O admin pode reenviar um evento.
 
-### Deploy e migracao
+## Status do link
 
-Ordem segura para uma base existente (as migrations sao forward-only; rollback =
-restaurar o backup):
-
-1. **Backup**: `pg_dump -Fc "$DATABASE_URL" > antes-do-endurecimento.dump` e
-   teste a restauracao em uma copia.
-2. **Pare o worker** e, durante a janela, a API (o `reindex:prefixes` substitui
-   os prefixos de cada cliente; rodar com escrita concorrente pode perder um
-   prefixo recem-criado).
-3. `npm ci && npm run build && npm run migrate`
-4. `npm run reindex:prefixes -- --dry-run` e, se estiver ok,
-   `npm run reindex:prefixes`. Isso recupera prefixos perdidos pela colisao
-   antiga e e seguro para repetir.
-5. `npm run seed` (ou `npm run seed -- --update-rates` para sincronizar a taxa).
-6. `npm run smoke -- --url http://127.0.0.1:4578` (sem `--url`, valida so o banco).
-7. Suba a API, valide `/api/health` e `/api/alerts`, depois suba o worker e
-   acompanhe os logs de monitor/sweep.
-
-A migration `0010_email_index_canonical` **aborta de proposito** se houver mais
-de um cadastro com o mesmo indice de e-mail ativo. Resolva os duplicados antes
-de reaplicar; nao edite a migration ja aplicada.
-
-### Verificacao do monitor (end-to-end, sem gastar)
-
-```bash
-npm run verify:monitor
+```
+aguardando -> pago | parcial | pago_sem_gas | expirado | nao_realizado
+expirado   -> pago | parcial | pago_sem_gas | nao_realizado
+parcial    -> pago | expirado | nao_realizado
+pago       -> movido | nao_realizado (reorg)
+nao_realizado (terminal)
 ```
 
-O script encontra uma transferencia de USDC **real** na Polygon, cadastra um link
-apontando para o endereco receptor dela, roda o monitor e mostra se o pagamento foi
-detectado, confirmado e creditado. Limpa o que criou.
+Motivos de `nao_realizado`: `nao_pago`, `valor_parcial`,
+`pagamento_apos_prazo`, `revogado`, `reorg`.
 
-### Monitor
+A pagina expira em `LINK_TTL_MINUTES`; a verificacao on-chain continua ate
+`liquidacao_ate` (1 dia corrido por padrao, contado em horas). Pagamento que chega depois do prazo
+nao vira `pago`: o link termina em `nao_realizado` com
+`pagamento_apos_prazo`, e o valor e varrido para a carteira allowlisted.
 
-Para cada perfil Ramp (chain, token), o worker:
+## Admin
 
-1. le o cursor em `chain_cursors`
-2. busca `Transfer` com `topic2` = enderecos derivados (topic de 32 bytes, com padding)
-3. se o RPC recusar a faixa de blocos, descobre o maior span aceito e varre o
-   intervalo inteiro em sub-faixas — **nenhum bloco e pulado**
-4. registra em `links_pagos` (idempotente por `tx_hash` + `log_index`)
-5. quando `confirmacoes >= CONFIRMATIONS_REQUIRED`, confirma e credita o cliente
+Interface: `/admin/` (Bearer `ADMIN_TOKEN`).
 
-### Sweep
+Rotas principais:
 
-Enderecos HD nascem com **saldo nativo zero**, e um `transfer` ERC-20 exige gas.
-Por isso o motor usa o padrao **gas sponsor**:
-
-1. a carteira patrocinadora (`GAS_SPONSOR_PRIVATE_KEY`) envia ~0,5 POL para o
-   endereco derivado quando ele tem menos que `GAS_SPONSOR_MIN_BALANCE_WEI`
-   (padrao 0,1 POL)
-2. o endereco derivado assina o `transfer` do token para a carteira fria
-3. o tx e transmitido e acompanhado; o link vira `movido`
-
-Sem patrocinador configurado, o link fica `pago_sem_gas` e a UI avisa. O
-endpoint `/api/alerts` consulta o saldo nativo real do patrocinador nas chains
-dos perfis ativos e alerta quando ele fica abaixo do minimo (ou quando o RPC
-nao responde).
-
-Custo aproximado por link na Polygon: ~0,01 USD de gas + ~0,05 USD de gas do
-patrocinador.
-
-### Estados do link
-
-`aguardando` -> `pago` | `parcial` | `pago_sem_gas` -> `movido`
-(`expirado`, `revogado` sao terminais manuais)
-
----
-
-## Decisoes e limitacoes
-
-### O xpub de conta, nao o master
-
-`m/44'/60'/0'/0/{i}` tem tres passos **hardened** (`44'`, `60'`, `0'`), que um xpub
-nao consegue derivar. O motor usa o xpub **de conta** (`m/44'/60'/0'`, depth 3) e
-deriva o caminho **relativo** `0/{i}`. O `HdWallet` valida o depth e recusa com
-mensagem explicativa. Ha teste garantindo que xpub e xprv produzem os mesmos
-enderecos.
-
-### Endereco do USDC
-
-O `projetoo.md` traz `0x3c499c542cEF5E3811e1192ce70d5cC03d5c3359` (com `d5c`);
-o endereco correto do USDC nativo na Polygon e
-`0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` (com `d8c`). O USDT0 e
-`0xc2132D05D31c914a87C6611C10748AEb04B58e8F`. Ambos com 6 decimais.
-
-### RPC
-
-`polygon-rpc.com` passou a exigir API key. O padrao aqui e
-`polygon-bor-rpc.publicnode.com`, que e **limitado** (faixa de blocos e volume de
-resultados). Para producao, use Alchemy/Infura/QuickNode em `RPC_URL_POLYGON`.
-
-### Ramp
-
-- Estilo `legacy` (padrao): `https://buy.ramp.network/?userAddress=..&asset=USDC&network=polygon&fiatValue=150.00&fiatCurrency=BRL`
-- Estilo `unified`: `https://app.rampnetwork.com/?defaultFlow=ONRAMP&inAsset=BRL&inAssetValue=15000&enabledCryptoAssets=POLYGON_USDC&userAddress=..`
-- A Ramp converte parametros legacy para o formato novo automaticamente.
-- `hostPaymentId` carrega um id de correlacao (a Ramp pode ignorar).
-
-### Limitacoes remanescentes
-
-- **Chains sem `finalized`**: reorg so e tratado em chains com bloco finalizado
-  (Polygon). Em chains sem essa tag, use `MONITOR_BLOCK_TAG=latest` sabendo do
-  risco de rollback.
-- **Dust nativo no modo PSBT**: `sweepNativeDust` ignora a assinatura manual; o
-  POL restante fica no endereco derivado e o link vai para `movido`.
-- **Rotacao do keystore do signer**: a PII usa envelope v2 com `kid`, mas o
-  `data/keystore.json` ainda precisa ser recifrado manualmente.
-- **Links legados sem destino persistido**: o sweep usa fallback por chain e
-  registra aviso; links novos sempre gravam `carteira_fria_id`/endereco.
-- **Fallback automatico de RPC**: cada chain usa um `RPC_URL_<CHAIN>` fixo; nao
-  ha troca automatica quando o provedor falha.
-- **Gas sponsor como contrato (ERC-4337/paymaster)**: o padrao continua sendo a
-  carteira patrocinadora que envia POL nativo.
-
----
-
-## Comandos
-
-| Comando | Descricao |
+| Metodo | Rota |
 |---|---|
-| `npm run dev` | servidor em modo watch (porta 4578) |
-| `npm run build` / `npm start` | build e execucao em producao |
-| `npm run worker` | monitor + sweeper |
-| `npm run migrate` | aplica migrations |
-| `npm run seed` | perfis Ramp + carteira fria (`--update-rates` sincroniza a taxa) |
-| `npm run wallet:init` | gera a HD Wallet |
-| `npm run rotate:keys` | re-cifra PII e rotaciona os blind indexes |
-| `npm run reindex:prefixes` | reconstroi os prefixos de busca (`--dry-run`) |
-| `npm run verify:monitor` | verificacao end-to-end do monitor |
-| `npm run smoke` | valida migracoes, schema, dados e API (`--url`) |
-| `npm test` | testes (vitest) |
-| `npm run typecheck` | verificacao de tipos |
+| POST/GET | `/admin/api/clientes` |
+| GET/PATCH | `/admin/api/clientes/:id` |
+| POST | `/admin/api/clientes/:id/rotate-key` |
+| POST | `/admin/api/clientes/:id/rotate-webhook-secret` |
+| GET/POST | `/admin/api/clientes/:id/wallets` |
+| GET/POST | `/admin/api/ramp-profiles` |
+| PATCH | `/admin/api/ramp-profiles/:id` |
+| GET | `/admin/api/links` e `/admin/api/links/:id` |
+| POST | `/admin/api/links/:id/revoke` |
+| GET | `/admin/api/webhooks` |
+| POST | `/admin/api/webhooks/:id/replay` |
+| POST | `/admin/api/sweeps/:id/submit` |
+| GET | `/admin/api/audit`, `/admin/api/alerts`, `/admin/api/status` |
 
-O plano completo do projeto esta em [`PLANO.md`](./PLANO.md).
+A criacao de cliente devolve **uma unica vez** `api_key`, `request_secret` e
+`webhook_secret`. O banco guarda apenas o hash da API key e os segredos
+cifrados.
+
+## Scripts
+
+| Script | Uso |
+|---|---|
+| `npm run dev` | API |
+| `npm run worker` | monitor, liquidacao, webhooks e sweeper |
+| `npm run migrate` | aplica migrations |
+| `npm run seed` | perfis Ramp |
+| `npm run wallet:init` | keystore HD |
+| `npm run smoke` | checa schema, indices e API |
+| `npm test` | testes unitarios |
+| `npm run test:integration` | Postgres real + migrations |
+| `npm run build` | build TypeScript |
+
+## Seguranca
+
+- A API key e comparada por hash; o request secret fica cifrado com AAD do id.
+- Assinaturas sao comparadas em tempo constante.
+- Nonces sao de uso unico; timestamps fora de 300s sao recusados.
+- Nenhuma chave privada ou seed e necessaria para subir a API.
+- O destino do sweep precisa estar allowlisted para o cliente e para a chain.
+- `HD_XPUB` e segredo: expoe todos os enderecos derivados e o historico.
