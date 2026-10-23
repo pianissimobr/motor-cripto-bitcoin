@@ -5,6 +5,8 @@ recebe uma pagina hospedada em `/p/<token>` e um webhook quando o pagamento
 chega a um estado final. O valor recebido e varrido para uma carteira
 allowlisted do proprio cliente.
 
+Documentacao completa da API: [docs/API.md](docs/API.md).
+
 ```
 cliente da API
    POST /v1/links  ->  link + page_url

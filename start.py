@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Primeira subida do Motor Cripto.
+"""Primeira subida do Motor Cripto (API-only).
 
 Ordem de propósito:
-  1. segredos, banco, carteira HD (a que recebe os pagamentos)
-  2. cria a carteira de POL usada para patrocinar gas
-  3. só no final mostra o endereço da carteira de POL, para o pedágio inicial
+  1. cria/atualiza o `.env` com segredos e defaults da API
+  2. sobe o banco e cria a carteira HD que recebe os pagamentos
+  3. cria a carteira de POL usada para patrocinar gas
+  4. só no final mostra o endereço da carteira de POL, para o pedágio inicial
 
-O destino dos sweeps é cadastrado por cliente no admin (`/admin/`), nunca
-no `.env`.
+O destino do sweep NÃO fica no `.env`: cada cliente cadastra a própria
+carteira allowlisted no admin (`/admin/`) e envia o `wallet_id` no corpo do
+`POST /v1/links`.
 
 O pedágio é um envio comum de POL na rede Polygon. Não é uma cobrança Ramp.
 """
@@ -33,6 +35,17 @@ PRIVATE_KEY_RE = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 XPUB_RE = re.compile(r"xpub[1-9A-HJ-NP-Za-km-z]+")
 POLL_SECONDS = 20
 WAIT_LIMIT_SECONDS = 15 * 60
+# Variaveis do portal/carteira fria global que nao existem mais no motor API.
+LEGACY_ENV_KEYS = {
+    "READONLY_TOKEN",
+    "DATA_INDEX_KEY",
+    "DATA_INDEX_KEY_V2",
+    "DATA_INDEX_ACTIVE_V2",
+    "DATA_INDEX_LOOKUP_BOTH",
+    "LINK_TTL_HOURS",
+    "COLD_WALLET_ADDRESS",
+    "COLD_WALLET_LABEL",
+}
 # 0,5 POL: o mesmo tanto que um patrocínio manda. Abaixo disso a primeira
 # varredura ainda não tem reserva.
 MIN_POL_WEI = 500_000_000_000_000_000
@@ -120,6 +133,70 @@ def ensure_env_file() -> None:
     say("Criei .env a partir do exemplo.")
 
 
+def prune_legacy_env() -> None:
+    """Remove do .env o que era do portal/carteira fria global."""
+    if not ENV_PATH.exists():
+        return
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    removed: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in LEGACY_ENV_KEYS:
+                removed.append(key)
+                # Remove também o comentário imediatamente acima da chave.
+                while out and out[-1].lstrip().startswith("#"):
+                    out.pop()
+                continue
+        out.append(line)
+    if not removed:
+        return
+    cleaned: list[str] = []
+    for line in out:
+        if line == "" and cleaned and cleaned[-1] == "":
+            continue
+        cleaned.append(line)
+    ENV_PATH.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
+    os.chmod(ENV_PATH, 0o600)
+    say("Removi do .env variaveis antigas: " + ", ".join(sorted(removed)) + ".")
+
+
+def ensure_api_env() -> None:
+    """Preenche os defaults que o motor API espera, sem sobrescrever valores."""
+    current = read_env()
+    port = current.get("PORT", "4578").strip() or "4578"
+    defaults = {
+        "PUBLIC_BASE_URL": f"http://localhost:{port}",
+        "LINK_TTL_MINUTES": "60",
+        "SETTLEMENT_DAYS": "1",
+        "WEBHOOK_TIMEOUT_MS": "10000",
+        "WEBHOOK_MAX_ATTEMPTS": "6",
+    }
+    missing = {
+        key: value for key, value in defaults.items() if not current.get(key, "").strip()
+    }
+    if not missing:
+        return
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    if lines and lines[-1] != "":
+        lines.append("")
+    lines.extend(f"{key}={value}" for key, value in missing.items())
+    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(ENV_PATH, 0o600)
+    say("Defaults da API gravados no .env: " + ", ".join(missing) + ".")
+
+
+def public_base_url() -> str:
+    current = read_env()
+    configured = current.get("PUBLIC_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    port = current.get("PORT", "4578").strip() or "4578"
+    return f"http://localhost:{port}"
+
+
 def openssl_rand(encoding: str) -> str:
     result = run(["openssl", "rand", encoding, "32"], capture=True)
     return result.stdout.strip()
@@ -130,11 +207,11 @@ def fill_secrets() -> None:
     example_token = "troque-este-token-por-um-valor-aleatorio-longo"
     if len(current.get("DATA_ENCRYPTION_KEY", "")) < 8:
         write_env_key("DATA_ENCRYPTION_KEY", openssl_rand("-base64"))
-        say("DATA_ENCRYPTION_KEY gerada (cifra segredos e token da pagina).")
+        say("DATA_ENCRYPTION_KEY gerada (cifra segredos de API e token da pagina).")
     token = current.get("ADMIN_TOKEN", "")
     if len(token) < 32 or token == example_token:
         write_env_key("ADMIN_TOKEN", secrets.token_hex(32))
-        say("ADMIN_TOKEN gerado (senha da API). Está no .env; não vai para a tela de novo.")
+        say("ADMIN_TOKEN gerado (acesso ao /admin/ e ao worker). Está no .env; não vai para a tela de novo.")
     if len(current.get("SIGNER_PASSPHRASE", "")) < 16:
         write_env_key("SIGNER_PASSPHRASE", secrets.token_hex(24))
         say("SIGNER_PASSPHRASE gerada e gravada no .env (abre o keystore no worker).")
@@ -221,9 +298,15 @@ def init_hd_wallet() -> None:
 
 
 def explain_admin_setup() -> None:
-    say("\nCarteiras de destino dos sweeps ficam por cliente, no admin.")
-    say("Depois de subir, abra /admin/, crie o cliente e cadastre a carteira")
-    say("allowlisted dele. Nenhuma carteira fria global vai para o .env.")
+    say("\nAgora a API. O destino do sweep NÃO fica no .env.")
+    say("Cada cliente tem a própria carteira allowlisted:")
+    say("")
+    say("  1. Abra /admin/ e informe o ADMIN_TOKEN.")
+    say("  2. Crie o cliente e guarde api_key, request_secret e webhook_secret.")
+    say("  3. Cadastre a carteira de destino desse cliente (chain + endereco).")
+    say("  4. No POST /v1/links, envie o wallet_id no corpo da requisicao.")
+    say("")
+    say("O cliente da API assina cada request com HMAC; veja o README.")
 
 
 def pol_balance(address: str) -> int | None:
@@ -270,8 +353,8 @@ def wait_for_pol(address: str) -> None:
         remaining = int(deadline - time.monotonic())
         if remaining <= 0:
             say("Os 15 minutos acabaram e o POL ainda não apareceu.")
-            say("A API e o worker sobem mesmo assim. O selo da tela Gerar cobrança")
-            say("avisa se a carteira de gas seguir sem saldo. O endereço continua o mesmo.")
+            say("A API e o worker sobem mesmo assim. O /admin/ mostra um alerta")
+            say("se a carteira de gas seguir sem saldo. O endereço continua o mesmo.")
             return
         if balance is None:
             say(f"Não consegui consultar o saldo. Nova tentativa em {POLL_SECONDS}s ({remaining // 60} min restantes).")
@@ -285,8 +368,11 @@ def start_services() -> None:
     say("Ctrl+C encerra os dois.")
     api = subprocess.Popen(["npm", "run", "dev"], cwd=ROOT)
     worker = subprocess.Popen(["npm", "run", "worker"], cwd=ROOT)
-    say("\nPronto. Abra http://localhost:4578")
-    say("O ADMIN_TOKEN está no arquivo .env, na raiz do projeto.")
+    base = public_base_url()
+    say(f"\nAdmin: {base}/admin/")
+    say(f"API:   {base}/v1/links")
+    say(f"Saude: {base}/health")
+    say("O ADMIN_TOKEN está no .env. A API usa api_key + assinatura HMAC.")
     try:
         while True:
             if api.poll() is not None:
@@ -310,7 +396,9 @@ def main() -> None:
         need(binary)
 
     ensure_env_file()
+    prune_legacy_env()
     fill_secrets()
+    ensure_api_env()
 
     run(["docker", "compose", "up", "-d", "db"])
     run(["npm", "install"])
