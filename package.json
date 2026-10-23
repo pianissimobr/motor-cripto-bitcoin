@@ -23,7 +23,8 @@
     "verify:monitor": "tsx scripts/verify-monitor.ts",
     "rotate:keys": "tsx scripts/rotate-keys.ts",
     "reindex:prefixes": "tsx scripts/reindex-prefixes.ts",
-    "test:integration": "vitest run -c vitest.integration.config.ts"
+    "test:integration": "vitest run -c vitest.integration.config.ts",
+    "smoke": "tsx scripts/smoke.ts"
   },
   "dependencies": {
     "@fastify/helmet": "13.0.2",

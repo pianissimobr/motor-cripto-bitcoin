@@ -61,7 +61,10 @@ export const cadastrosPrefixos = pgTable(
   (t) => [
     // Bloco 4: o token so e unico DENTRO do cliente. Antes o PK era apenas
     // o token e dois clientes com o mesmo prefixo colidiam entre si.
-    primaryKey({ columns: [t.clienteId, t.prefixBidx] }),
+    primaryKey({
+      name: 'cadastros_prefixos_cliente_prefix_pk',
+      columns: [t.clienteId, t.prefixBidx],
+    }),
     index('cadastros_prefixos_prefix_idx').on(t.prefixBidx),
     index('cadastros_prefixos_cliente_idx').on(t.clienteId),
     index('cadastros_prefixos_v2_idx').on(t.prefixBidxV2),
@@ -145,6 +148,7 @@ export const linksGerados = pgTable(
   },
   (t) => [
     uniqueIndex('links_gerados_endereco_uq').on(t.enderecoDeposito),
+    uniqueIndex('links_gerados_indice_hd_uq').on(t.indiceHd),
     index('links_gerados_cliente_idx').on(t.clienteId),
     index('links_gerados_status_idx').on(t.status),
     index('links_gerados_criado_em_idx').on(t.criadoEm),
@@ -295,6 +299,7 @@ export const hdIndices = pgTable(
   (t) => [
     primaryKey({ columns: [t.scope, t.indice] }),
     uniqueIndex('hd_indices_link_uq').on(t.linkId),
+    uniqueIndex('hd_indices_indice_uq').on(t.indice),
   ],
 );
 

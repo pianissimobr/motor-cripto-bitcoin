@@ -218,7 +218,7 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 | 5 | API/validações/erros, detail, índice HD | concluído |
 | 6 | operação/gas/defaults, taxa/seed, config | concluído |
 | 7 | segurança/auditoria/UI | concluído |
-| 8 | migrações, backfill, smoke e rollout | pendente |
+| 8 | migrações, backfill, smoke e rollout | concluído |
 
 ### Bloco 5 — borda HTTP, validações e erros de domínio
 
@@ -273,6 +273,27 @@ desenvolvimento: taxa alterada para 190000 e restaurada para 180000.
 
 **Testes: 247 → 252 unitários + 12 de integração.**
 
+### Bloco 8 — migrações, backfill, smoke e rollout
+
+- Os snapshots do Drizzle foram completados de `0000` a `0010`, com a cadeia
+  `prevId` fechada. Antes só existiam `0000` e `0002`–`0005`; as migrations
+  `0006`–`0010` estavam apenas no journal e o próximo `generate` tentaria
+  recriar colunas e índices já aplicados.
+- O `schema.ts` passou a declarar os índices únicos `hd_indices_indice_uq` e
+  `links_gerados_indice_hd_uq`, criados na `0007` mas ausentes do modelo.
+  `drizzle-kit generate` agora responde "No schema changes" sobre o snapshot
+  `0010`.
+- `npm run smoke` valida: migrations aplicadas, colunas e índices críticos,
+  e-mails ativos duplicados, links legados sem destino, perfis/carteiras,
+  RPC por chain, gas sponsor e, com `--url`, `/api/health` e `/api/auth/check`.
+- O runbook de rollout foi escrito no README: backup restaurável, parada do
+  worker/API, `migrate`, `reindex:prefixes --dry-run` e real, seed, smoke e
+  subida escalonada. A `0010` aborta em duplicidade de e-mail ativo.
+- A base foi criada do zero em banco temporário, recebeu as 11 migrations via
+  `drizzle-kit migrate` e passou no smoke sem falhas.
+
+**Testes: 252 → 254 unitários + 12 de integração.**
+
 ### Bugs reais encontrados durante a execução
 
 Não foram só as correções planejadas; testes e validações ao vivo revelaram
@@ -300,6 +321,8 @@ mais problemas, todos corrigidos:
 | Token read-only conseguia `reveal=true` e ver PII em claro | `auth.ts` / `routes.ts` | ALTO |
 | Script inline na home era bloqueado pela própria CSP | `web/index.html` | BAIXO |
 | UI validava token no `/api/health` público, aceitando token inválido | `web/app.js` | MÉDIO |
+| Snapshots do Drizzle paravam na `0005`; o próximo `generate` recriaria schema já migrado | `db/migrations/meta` | ALTO |
+| Modelo Drizzle não declarava os únicos `hd_indices_indice_uq`/`links_gerados_indice_hd_uq` | `schema.ts` | MÉDIO |
 
 O achado da **tolerância** só apareceu porque a propriedade "nunca aceita
 pagamento dobrado" foi escrita. Nenhum caso fixo teria pego. O mesmo vale
@@ -327,8 +350,9 @@ Nenhuma entrega foi aceita só por "os testes passam":
 - **Regressão** — `verify:monitor` continua detectando transferência USDC
   real da Polygon (3 execuções consecutivas sem falha)
 
-Verificação final: `npm run typecheck`, `npm test` (230), `npm run
-test:integration` (9), `npm run build` e `npm run migrate` verdes.
+Verificação final: `npm run typecheck`, `npm test` (254), `npm run
+test:integration` (12), `npm run build`, `npm run migrate` em base limpa e
+`npm run smoke` verdes.
 
 ### Pendências que continuam abertas
 
@@ -339,12 +363,9 @@ Nada abaixo foi escopo do endurecimento; ficam registradas:
 - **Reorg em cadeia sem `finalized`** — só Polygon está coberto.
 - **Rotação do keystore do signer** — o envelope v2 cobre a PII, mas o
   `data/keystore.json` ainda depende de recifrar à mão.
-- **Alerta de saldo baixo do patrocinador** — o alerta existe para
-  "ausente", mas a verificação de saldo exigiria chamar o provider; ficou
-  como `info` estático.
 - **Dust nativo no modo PSBT** — `sweepNativeDust` ignora a assinatura
   manual; o POL restante fica no endereço derivado e o link vai para
   `movido`. Fora do escopo desta rodada.
-- **Reindexação de bases existentes** — `npm run reindex:prefixes` precisa
-  ser executado nas bases que já sofreram a colisão de prefixos; a migração
-  corrige o schema, não os registros perdidos.
+- **Reindexação de bases existentes** — a migração corrige o schema, não os
+  prefixos já perdidos; o rollout exige `npm run reindex:prefixes` uma vez
+  (com a API parada) para reconstruir os registros.

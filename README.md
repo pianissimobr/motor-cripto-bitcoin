@@ -284,6 +284,29 @@ curl -X POST http://localhost:4578/api/links \
 
 ## Operacao
 
+### Deploy e migracao
+
+Ordem segura para uma base existente (as migrations sao forward-only; rollback =
+restaurar o backup):
+
+1. **Backup**: `pg_dump -Fc "$DATABASE_URL" > antes-do-endurecimento.dump` e
+   teste a restauracao em uma copia.
+2. **Pare o worker** e, durante a janela, a API (o `reindex:prefixes` substitui
+   os prefixos de cada cliente; rodar com escrita concorrente pode perder um
+   prefixo recem-criado).
+3. `npm ci && npm run build && npm run migrate`
+4. `npm run reindex:prefixes -- --dry-run` e, se estiver ok,
+   `npm run reindex:prefixes`. Isso recupera prefixos perdidos pela colisao
+   antiga e e seguro para repetir.
+5. `npm run seed` (ou `npm run seed -- --update-rates` para sincronizar a taxa).
+6. `npm run smoke -- --url http://127.0.0.1:4578` (sem `--url`, valida so o banco).
+7. Suba a API, valide `/api/health` e `/api/alerts`, depois suba o worker e
+   acompanhe os logs de monitor/sweep.
+
+A migration `0010_email_index_canonical` **aborta de proposito** se houver mais
+de um cadastro com o mesmo indice de e-mail ativo. Resolva os duplicados antes
+de reaplicar; nao edite a migration ja aplicada.
+
 ### Verificacao do monitor (end-to-end, sem gastar)
 
 ```bash
@@ -361,15 +384,21 @@ resultados). Para producao, use Alchemy/Infura/QuickNode em `RPC_URL_POLYGON`.
 - A Ramp converte parametros legacy para o formato novo automaticamente.
 - `hostPaymentId` carrega um id de correlacao (a Ramp pode ignorar).
 
-### Ainda nao implementado
+### Limitacoes remanescentes
 
-- **QR code** do link (as telas mostram a URL com botao de copiar)
-- **Reorg handling**: o cursor guarda o hash do bloco, mas nao ha rollback
-  automatico se um bloco for reescrito. Com `CONFIRMATIONS_REQUIRED=10` o risco e
-  baixo; para producao, implemente o rollback a partir do hash ancorado.
-- **Multi-chain no sweeper**: o sweep usa a carteira fria da mesma chain do link.
-- **Rotacao de chaves** de cifragem (as chaves sao separadas e versionaveis, mas
-  a re-cifragem em lote nao foi implementada).
+- **Chains sem `finalized`**: reorg so e tratado em chains com bloco finalizado
+  (Polygon). Em chains sem essa tag, use `MONITOR_BLOCK_TAG=latest` sabendo do
+  risco de rollback.
+- **Dust nativo no modo PSBT**: `sweepNativeDust` ignora a assinatura manual; o
+  POL restante fica no endereco derivado e o link vai para `movido`.
+- **Rotacao do keystore do signer**: a PII usa envelope v2 com `kid`, mas o
+  `data/keystore.json` ainda precisa ser recifrado manualmente.
+- **Links legados sem destino persistido**: o sweep usa fallback por chain e
+  registra aviso; links novos sempre gravam `carteira_fria_id`/endereco.
+- **Fallback automatico de RPC**: cada chain usa um `RPC_URL_<CHAIN>` fixo; nao
+  ha troca automatica quando o provedor falha.
+- **Gas sponsor como contrato (ERC-4337/paymaster)**: o padrao continua sendo a
+  carteira patrocinadora que envia POL nativo.
 
 ---
 
@@ -386,6 +415,7 @@ resultados). Para producao, use Alchemy/Infura/QuickNode em `RPC_URL_POLYGON`.
 | `npm run rotate:keys` | re-cifra PII e rotaciona os blind indexes |
 | `npm run reindex:prefixes` | reconstroi os prefixos de busca (`--dry-run`) |
 | `npm run verify:monitor` | verificacao end-to-end do monitor |
+| `npm run smoke` | valida migracoes, schema, dados e API (`--url`) |
 | `npm test` | testes (vitest) |
 | `npm run typecheck` | verificacao de tipos |
 
