@@ -103,6 +103,7 @@ export async function bootstrap(
     publicBaseUrl: config.publicBaseUrl,
     settlement: config.settlement,
     webhook: config.webhook,
+    requireHttpsWebhooks: config.server.isProduction,
     maxIndex: config.hd.maxIndex,
     monitor: {
       confirmationsRequired: config.chain.confirmationsRequired,

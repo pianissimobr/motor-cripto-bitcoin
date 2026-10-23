@@ -3,11 +3,16 @@ import { ValidationError } from '../src/core/domain/errors.js';
 import { createFakeRepositories } from './fakes.js';
 import { silentLogger } from '../src/core/logger.js';
 import { ApiClientService } from '../src/core/services/api-client-service.js';
+import { publicWebhookLookup } from './webhook-lookup.js';
 
 describe('ApiClientService', () => {
   it('cria chave e request secret, autentica e rotaciona', async () => {
     const repos = createFakeRepositories();
-    const service = new ApiClientService({ repos, logger: silentLogger });
+    const service = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: publicWebhookLookup,
+    });
     const created = await service.create({
       nome: 'Loja',
       webhookUrl: 'https://example.test/hook',
@@ -34,7 +39,11 @@ describe('ApiClientService', () => {
 
   it('inativa cliente e bloqueia autenticacao', async () => {
     const repos = createFakeRepositories();
-    const service = new ApiClientService({ repos, logger: silentLogger });
+    const service = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: publicWebhookLookup,
+    });
     const created = await service.create({
       nome: 'Loja',
       webhookUrl: 'https://example.test/hook',
@@ -45,7 +54,11 @@ describe('ApiClientService', () => {
 
   it('valida e normaliza carteiras allowlisted', async () => {
     const repos = createFakeRepositories();
-    const service = new ApiClientService({ repos, logger: silentLogger });
+    const service = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: publicWebhookLookup,
+    });
     const created = await service.create({
       nome: 'Loja',
       webhookUrl: 'https://example.test/hook',
@@ -72,6 +85,48 @@ describe('ApiClientService', () => {
         chain: 'polygon',
         address: '0x52908400098527886e0f7030069857d2e4169ee7',
       }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    await expect(
+      service.addWallet(created.client.id, {
+        label: 'Outra',
+        chain: 'rede-inventada',
+        address: '0x52908400098527886e0f7030069857d2e4169ee7',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('recusa webhook interno e http em producao', async () => {
+    const repos = createFakeRepositories();
+    const service = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: publicWebhookLookup,
+    });
+    await expect(
+      service.create({ nome: 'Loja', webhookUrl: 'https://127.0.0.1/hook' }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      service.create({ nome: 'Loja', webhookUrl: 'http://169.254.169.254/latest' }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const privateDns = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: async () => ['10.0.0.8'],
+    });
+    await expect(
+      privateDns.create({ nome: 'Loja', webhookUrl: 'https://loja.example/hook' }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const production = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      requireHttpsWebhooks: true,
+      resolveWebhookHost: publicWebhookLookup,
+    });
+    await expect(
+      production.create({ nome: 'Loja', webhookUrl: 'http://loja.example/hook' }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 });

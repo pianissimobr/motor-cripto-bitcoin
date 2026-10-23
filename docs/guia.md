@@ -18,11 +18,11 @@ Este repositório é essa pessoa automática.
 
 Ele se chama **Motor Cripto**. Não é uma loja, não é a Ramp e não é uma carteira de celular. É um programa que:
 
-1. Cadastra o cliente (nome e e-mail).
-2. Gera um link de pagamento da Ramp com um endereço exclusivo daquela cobrança.
+1. A loja cadastra um cliente da API e uma carteira de destino allowlisted.
+2. A loja pede um link de pagamento. O motor devolve uma página pública com a URL da Ramp e um endereço exclusivo daquela cobrança.
 3. Fica lendo a blockchain até ver a stablecoin cair naquele endereço.
-4. Anota o crédito do cliente no banco de dados.
-5. Move o valor, sozinho, para a carteira fria da loja.
+4. Avisa a loja por webhook com o estado do link.
+5. Move o valor, sozinho, para a carteira allowlisted daquela cobrança.
 
 **Carteira fria** é uma carteira cujo objetivo é guardar valor, não ficar o dia inteiro assinando pagamentos. O ideal é que a chave dela não esteja neste servidor.
 
@@ -36,7 +36,7 @@ Vale acompanhar um exemplo concreto antes de qualquer diagrama.
 
 A Maria quer pagar R$ 150,00. A loja usa USDC na rede Polygon. USDC é uma stablecoin: cada unidade pretende valer um dólar. Polygon é uma rede blockchain compatível com Ethereum, onde a taxa de transação costuma ser baixa. A moeda nativa dela, usada para pagar essa taxa, chama-se POL.
 
-O operador (a pessoa da loja) abre a tela de cadastro, informa o nome e o e-mail da Maria e depois abre a tela de cobrança. Escolhe o valor, o perfil "Polygon USDC" e a carteira fria de destino. O sistema devolve um link e um QR code.
+A loja chama `POST /v1/links` com o valor em centavos, o perfil "Polygon USDC" e o `wallet_id` de uma carteira já allowlisted. O motor devolve a página pública `/p/:token`. A Maria abre essa página, vê o QR e segue para a Ramp.
 
 Por baixo, neste instante, aconteceu o seguinte:
 
@@ -110,16 +110,16 @@ Pense no sistema como cinco peças que não devem trocar de papel.
 
 ### 4.1 As telas
 
-Ficam na pasta `web/`. São duas páginas simples, sem framework e sem biblioteca baixada da internet no navegador.
+Ficam na pasta `web/`. São páginas simples, sem framework.
 
-- **Cadastro** (`/cadastro.html`): nome e e-mail do cliente.
-- **Gerar cobrança** (`/cobranca.html`): busca o cliente, valor, perfil Ramp, carteira fria, e mostra o link, o QR e o andamento.
+- **Admin** (`/admin/`): a loja cola o `ADMIN_TOKEN`. Dali cadastra clientes da API, carteiras allowlisted, perfis Ramp e acompanha links, webhooks e alertas. O token fica só na aba do navegador (sessionStorage).
+- **Página pública** (`/p/:token`): quem vai pagar abre esse endereço. Ela mostra o valor, o QR da Ramp e o estado. Um script em `/pay.js` consulta `/p/:token/status` de poucos em poucos segundos e atualiza o texto sem recarregar a página. Não pede token.
 
-As duas pedem um token de acesso no topo. Esse token fica só na aba do navegador (sessionStorage), não num cookie enviado sozinho. Quem não tem o token vê a página, mas a página não consegue ler nem gravar nada.
+Não há tela de login de cliente final nem formulário de inscrição. Quem cobra é a loja, pela API `/v1`.
 
 ### 4.2 A API
 
-É o processo HTTP, iniciado por `src/server.ts`. Ela escuta pedidos, valida o token, grava cadastro e cobrança, e responde consultas.
+É o processo HTTP, iniciado por `src/server.ts`. Ela escuta pedidos, valida o token de admin ou a chave da API, grava link e responde consultas.
 
 Ela conhece o xpub, então sabe calcular o endereço de uma cobrança nova. Ela **não** abre o arquivo da chave privada, **não** guarda a chave do patrocinador de gas e **não** guarda o token de um assinador externo. Se alguém comprometer só esse processo, não leva embora a capacidade de gastar os endereços derivados. Gasta quem corre o worker.
 
@@ -137,9 +137,9 @@ Só pode haver um worker por banco. Ele pega um cadeado do Postgres (advisory lo
 
 ### 4.4 O banco
 
-Postgres. Guarda clientes, cobranças, pagamentos vistos, créditos, movimentos internos, perfis, carteiras frias, o ponto em que a leitura da rede parou, e um diário de auditoria.
+Postgres. Guarda clientes da API, carteiras allowlisted, cobranças, pagamentos vistos, movimentos internos, perfis Ramp, a fila de webhooks, o ponto em que a leitura da rede parou, e um diário de auditoria.
 
-Não guarda a seed. Não guarda o xprv. Nome e e-mail do cliente ficam cifrados. A busca por e-mail usa um índice cego, explicado no capítulo 8.
+Não guarda a seed. Não guarda o xprv. A chave de pedido e o segredo do webhook ficam cifrados.
 
 ### 4.5 A blockchain
 
@@ -249,23 +249,17 @@ O movimento interno é a varredura: de qual endereço, para qual carteira, valor
 
 ---
 
-## 9. As telas, do ponto de vista de quem opera
+## 9. As telas e a API, do ponto de vista de quem opera
 
-Você cola o token e clica em conectar. O sistema responde se o token é de administração ou só de leitura.
+Abra `http://localhost:4578/admin/`, cole o `ADMIN_TOKEN` e conecte. Essa tela é só da loja. Ela não tem usuário e senha de cliente final.
 
-No cadastro, nome e e-mail seguem para a API. A resposta não devolve o e-mail de novo em claro: quem digitou já sabe o que digitou. A lista mostra máscaras.
+No admin dá para criar o cliente da API. A resposta mostra a API key e o segredo de pedido uma única vez. Também cadastra a carteira de destino: um `0x` que passa a ser allowlisted naquela rede. Um link só varre para uma carteira que já esteja nessa lista.
 
-Na cobrança, a busca por e-mail começa a partir de 3 caracteres e também mostra máscara. Só o clique pede o e-mail completo, e isso fica auditado.
+A cobrança em si não nasce no admin. A loja chama `POST /v1/links` com a API key, a assinatura HMAC, o valor em centavos (`amount_cents`), o perfil Ramp e o `wallet_id`. O contrato descreve isso em `docs/API.md`.
 
-O valor é digitado como dinheiro de verdade (`150,00` ou `150.00`). A API converte para centavos sem usar conta de número decimal solto.
+A resposta traz a URL pública `/p/:token`. Quem paga abre essa página, vê o valor, o QR e o botão da Ramp. A página consulta `/p/:token/status` sozinha. Quando o estado deixa de ser pagável, o botão some. As datas dessa página estão em UTC.
 
-A carteira de destino é uma carteira **já cadastrada**. Dá para escolher na lista ou colar o `0x`, mas colar um endereço que não está no cadastro produz erro. Isso é de propósito. Um campo livre aceitaria qualquer destino, e um token vazado passaria a escolher para onde o dinheiro vai.
-
-O resultado mostra o link da Ramp, o endereço derivado, o valor e o QR. O QR é gerado no servidor, não por um script de terceiros no navegador. A página só embute a imagem.
-
-A mesma tela passa a consultar o status daquela cobrança de tempos em tempos, e mostra uma lista de alertas: pagamento parcial, falta de gas, patrocinador vazio, e outros avisos operacionais.
-
-A porta do cliente é outra. A página inicial tem **Login** e **Inscreva-se**. A conta é usuário (ou e-mail) e senha, conferidos no banco, sem o token da loja. Depois de entrar, a pessoa altera os próprios dados, informa um valor em reais e envia: o motor gera a cobrança e abre o checkout da Ramp. Embaixo, em vermelho, **Deletar conta** pede confirmação. Se ainda houver cobrança em andamento, a exclusão é recusada. A área da loja continua em `/cadastro.html`, fora desse fluxo.
+O admin também lista links, webhooks e alertas: pagamento parcial, falta de gas, patrocinador vazio. Um recurso que não existe responde 404, não um `data: null` com status 200.
 
 ---
 
@@ -363,7 +357,7 @@ Quem prefere um passo só, na raiz do repositório:
 python3 start.py
 ```
 
-O script gera os três segredos, sobe o banco, cria a carteira HD e a carteira de POL, pede o endereço da carteira fria e mostra o endereço para o POL. Aguarda até 15 minutos por esse saldo e, em seguida, sobe a API e o worker. Não há outro comando.
+O script gera os segredos da API, sobe o banco, cria a carteira HD e a carteira de POL. O destino do sweep não entra no `.env`: cada cliente cadastra a carteira allowlisted depois, no admin. No final o script mostra o endereço da carteira de POL, sugere o saque mais simples (POL na rede Polygon, não na Ethereum) e aguarda até 15 minutos por esse saldo. Em seguida sobe a API e o worker. Não há outro comando.
 
 Isto é o caminho de desenvolvimento, na máquina de quem está aprendendo o projeto. Produção repete as mesmas peças com segredo forte, RPC próprio, TLS na frente do site e banco que não escuta a internet aberta.
 
@@ -371,16 +365,15 @@ Pré-requisitos: Node.js 22 ou mais novo, Docker, e um RPC. O de exemplo aponta 
 
 1. Suba só o banco: `docker compose up -d db`. A porta fica em `127.0.0.1:5432`, isto é, só nesta máquina. A senha do compose é de desenvolvimento. Não é senha de produção.
 2. `npm install` e copie `.env.example` para `.env`.
-3. Gere três segredos e cole no `.env`:
-   - `DATA_ENCRYPTION_KEY` e `DATA_INDEX_KEY`, cada um com `openssl rand -base64 32`
+3. Gere os segredos e cole no `.env`:
+   - `DATA_ENCRYPTION_KEY` com `openssl rand -base64 32`
    - `ADMIN_TOKEN` com `openssl rand -hex 32`
 4. Crie a carteira: `npm run wallet:init -- --passphrase "uma senha longa" --show-seed`. Anote a seed offline agora. O comando imprime o xpub. Esse xpub vai em `HD_XPUB`. O arquivo cifrado fica em `data/keystore.json`, com permissão de leitura só para o dono do arquivo. A mesma senha vai em `SIGNER_PASSPHRASE`, senão o worker não abre o cofre.
 5. Se for usar varredura automática, crie uma carteira **separada** só para gas. A chave privada dela vai em `GAS_SPONSOR_PRIVATE_KEY` no ambiente do worker. O endereço público vai em `GAS_SPONSOR_ADDRESS` para a API mostrar o saldo. Se os dois existirem e não forem o mesmo par, o worker recusa subir.
-6. Ponha o endereço da carteira fria em `COLD_WALLET_ADDRESS`.
-7. `npm run migrate` cria as tabelas. `npm run seed` cria os perfis Polygon USDC e USDT e a carteira fria, se o endereço estiver no `.env`.
-8. Dois terminais: `npm run dev` para a API (porta 4578) e `npm run worker` para a observação e a varredura.
+6. `npm run migrate` cria as tabelas. `npm run seed` cria os perfis Polygon USDC e USDT. A migration `db/migrations/0013_api_only.sql` apaga as tabelas do modelo anterior (cadastro, conta, crédito e carteira fria global). Não rode isso em cima de um banco que ainda precise desses dados.
+7. Dois terminais: `npm run dev` para a API (porta 4578) e `npm run worker` para a observação e a varredura.
 
-Abra `http://localhost:4578`, cole o token, cadastre um cliente de teste e gere uma cobrança. Sem worker, a cobrança existe e o pagamento real não será visto. Sem patrocinador, um pagamento real pode ficar em `pago_sem_gas`.
+Abra `http://localhost:4578/admin/`, cole o token, cadastre um cliente da API e uma carteira allowlisted. A cobrança nasce em `POST /v1/links`; quem paga abre `/p/:token`. Sem worker, a cobrança existe e o pagamento real não será visto. Sem patrocinador, um pagamento real pode ficar em `pago_sem_gas`.
 
 Atualizar a taxa de referência dos perfis já criados: mude `SEED_USDC_POR_BRL` ou `SEED_USDT_POR_BRL` e rode `npm run seed -- --update-rates`, ou use a rota de atualização do perfil.
 
@@ -402,10 +395,10 @@ Agora sim. A ordem sugerida de leitura é a ordem em que o dinheiro anda, não a
 | Ver o pagamento na rede | `src/core/chain/monitor.ts` |
 | Mover para a carteira fria | `src/core/chain/sweeper.ts` e `src/core/chain/gas-sponsor.ts` |
 | Assinar ou recusar assinar | `src/core/signer/` |
-| Cifrar nome e e-mail | `src/core/crypto/cipher.ts` e `src/core/services/customer-service.ts` |
+| Cifrar segredos da API | `src/core/crypto/cipher.ts` e `src/core/services/api-client-service.ts` |
 | Tabelas | `src/adapters/db/schema.ts` e `db/migrations/` |
-| O que a tela pode pedir | `src/adapters/http/routes.ts` e `src/adapters/http/auth.ts` |
-| As telas | `web/cadastro.html`, `web/cobranca.html` |
+| O contrato HTTP | `docs/API.md`, `src/adapters/http/routes.ts` e `src/adapters/http/auth.ts` |
+| As telas | `web/admin/` e `web/pay.js` |
 
 O núcleo em `src/core` não importa o framework HTTP nem o driver do banco. Ele recebe interfaces (portas). Os adaptadores em `src/adapters` são quem fala Postgres e HTTP. Isso permite testar a regra de negócio com repositórios falsos, sem subir banco, e é por isso que `npm test` cobre tanta regra sem Polygon de verdade.
 

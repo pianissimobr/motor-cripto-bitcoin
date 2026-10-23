@@ -2,6 +2,7 @@ import { silentLogger } from '../src/core/logger.js';
 import { LinkService } from '../src/core/services/link-service.js';
 import { LinkStateMachine } from '../src/core/services/link-state-machine.js';
 import { ApiClientService } from '../src/core/services/api-client-service.js';
+import { publicWebhookLookup } from './webhook-lookup.js';
 import type { HdWallet } from '../src/core/hd/hd-wallet.js';
 import {
   createFakeRepositories,
@@ -25,7 +26,11 @@ export async function setupCore(options: { ttlMinutes?: number } = {}) {
     payments: FakePaymentRepository;
     webhooks: FakeWebhookOutboxRepository;
   };
-  const apiClients = new ApiClientService({ repos, logger: silentLogger });
+  const apiClients = new ApiClientService({
+    repos,
+    logger: silentLogger,
+    resolveWebhookHost: publicWebhookLookup,
+  });
   const created = await apiClients.create({
     nome: 'Loja Teste',
     webhookUrl: 'https://example.test/webhook',

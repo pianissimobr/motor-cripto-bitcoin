@@ -1,9 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { CHAINS } from '../chain/chains.js';
 import { normalizeAddress } from '../domain/address.js';
 import { NotFoundError, ValidationError } from '../domain/errors.js';
 import type { ApiClient, ApiClientWallet } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { MotorRepositories } from '../ports/index.js';
+import { assertWebhookUrl, defaultHostLookup, type HostLookup } from './webhook-url.js';
 
 const API_KEY_PREFIX = 'mk_live_';
 const WEBHOOK_SECRET_PREFIX = 'whsec_';
@@ -17,6 +19,10 @@ export type CreatedApiClient = {
 export type ApiClientServiceDeps = {
   repos: MotorRepositories;
   logger: Logger;
+  /** Em producao o webhook so aceita https. */
+  requireHttpsWebhooks?: boolean;
+  /** Resolucao de host na gravacao. Testes injetam um resultado publico. */
+  resolveWebhookHost?: HostLookup;
 };
 
 /**
@@ -36,7 +42,7 @@ export class ApiClientService {
   }): Promise<CreatedApiClient> {
     const nome = input.nome.trim();
     if (nome.length < 2) throw new ValidationError('nome do cliente muito curto');
-    validateWebhookUrl(input.webhookUrl);
+    await this.checkWebhook(input.webhookUrl);
 
     const id = randomUUID();
     const apiKey = `${API_KEY_PREFIX}${randomBytes(32).toString('base64url')}`;
@@ -86,7 +92,7 @@ export class ApiClientService {
     input: { nome?: string; webhookUrl?: string; status?: 'ativo' | 'inativo' },
     actor = 'admin',
   ): Promise<ApiClient> {
-    if (input.webhookUrl !== undefined) validateWebhookUrl(input.webhookUrl);
+    if (input.webhookUrl !== undefined) await this.checkWebhook(input.webhookUrl);
     const client = await this.deps.repos.apiClients.update(id, input);
     if (!client) throw new NotFoundError('cliente da API nao encontrado');
     await this.deps.repos.audit.record({
@@ -146,6 +152,8 @@ export class ApiClientService {
   ): Promise<ApiClientWallet> {
     await this.get(apiClienteId);
     const label = input.label.trim();
+    const chain = input.chain.trim().toLowerCase();
+    if (!(chain in CHAINS)) throw new ValidationError('chain desconhecida');
     if (label.length < 1 || label.length > 80) {
       throw new ValidationError('label da carteira deve ter entre 1 e 80 caracteres');
     }
@@ -161,7 +169,7 @@ export class ApiClientService {
     const wallet = await this.deps.repos.apiClientWallets.create({
       apiClienteId,
       label,
-      chain: input.chain,
+      chain,
       address: normalizeAddress(input.address),
     });
     await this.deps.repos.audit.record({
@@ -178,20 +186,15 @@ export class ApiClientService {
     await this.get(apiClienteId);
     return this.deps.repos.apiClientWallets.listByClient(apiClienteId);
   }
+
+  private checkWebhook(value: string): Promise<void> {
+    return assertWebhookUrl(value, {
+      requireHttps: this.deps.requireHttpsWebhooks ?? false,
+      lookupHost: this.deps.resolveWebhookHost ?? defaultHostLookup,
+    });
+  }
 }
 
 export function hashApiKey(apiKey: string): string {
   return createHash('sha256').update(apiKey, 'utf8').digest('hex');
-}
-
-function validateWebhookUrl(value: string): void {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new ValidationError('webhookUrl invalida');
-  }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new ValidationError('webhookUrl deve usar http(s)');
-  }
 }

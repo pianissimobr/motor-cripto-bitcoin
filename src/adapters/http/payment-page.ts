@@ -60,16 +60,21 @@ h1{font-size:18px;margin:0 0 4px}p{margin:0}.muted{color:var(--muted);font-size:
   <h1>Pagamento</h1>
   <p class="muted">${escapeHtml(link.asset)} na rede ${escapeHtml(link.chain)}</p>
   <div class="amount">${escapeHtml(valor)}</div>
-  <div class="status ${link.status}">${escapeHtml(STATUS_LABEL[link.status])}</div>
-  ${link.valorRecebidoBaseUnits > 0n ? `<p class="received">Recebido: ${escapeHtml(recebido)}</p>` : ''}
-  ${motivo ? `<p class="note">${escapeHtml(motivo)}</p>` : ''}
+  <div class="status ${link.status}" id="status">${escapeHtml(STATUS_LABEL[link.status])}</div>
+  <p class="received" id="received"${link.valorRecebidoBaseUnits > 0n ? '' : ' hidden'}>Recebido: ${escapeHtml(recebido)}</p>
+  <p class="note" id="motivo"${motivo ? '' : ' hidden'}>${motivo ? escapeHtml(motivo) : ''}</p>
   ${qrImg}
-  ${podePagar ? `<a class="btn" href="${escapeHtml(link.rampUrl)}" rel="noopener noreferrer">Pagar com Ramp</a>` : ''}
+  <a class="btn" id="pay" href="${escapeHtml(link.rampUrl)}" rel="noopener noreferrer"${podePagar ? '' : ' hidden'}>Pagar com Ramp</a>
   <div class="addr">Endereco de deposito:<br>${escapeHtml(link.enderecoDeposito)}</div>
-  <p class="note">Esta pagina expira em ${escapeHtml(link.expiraEm.toLocaleString('pt-BR'))}. O pagamento on-chain continua sendo verificado ate ${escapeHtml(link.liquidacaoAte.toLocaleString('pt-BR'))}.</p>
+  <p class="note" id="dates">Esta pagina expira em ${escapeHtml(formatUtc(link.expiraEm))}. O pagamento on-chain continua sendo verificado ate ${escapeHtml(formatUtc(link.liquidacaoAte))}.</p>
 </main>
+<script src="/pay.js" defer></script>
 </body>
 </html>`;
+}
+
+function formatUtc(date: Date): string {
+  return `${date.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
 }
 
 function formatCents(cents: number, currency: string): string {

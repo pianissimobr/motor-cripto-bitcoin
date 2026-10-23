@@ -37,6 +37,7 @@ export type MotorOptions = {
     timeoutMs: number;
     maxAttempts: number;
   };
+  requireHttpsWebhooks?: boolean;
   maxIndex?: number;
   monitor?: Partial<MonitorOptions>;
   sweeper?: Partial<SweeperOptions>;
@@ -62,7 +63,11 @@ export function createMotor(options: MotorOptions): Motor {
   const logger = options.logger;
   const tolerancePct = options.monitor?.tolerancePct ?? 1;
 
-  const apiClients = new ApiClientService({ repos: options.repos, logger });
+  const apiClients = new ApiClientService({
+    repos: options.repos,
+    logger,
+    requireHttpsWebhooks: options.requireHttpsWebhooks ?? false,
+  });
 
   const webhooks = new WebhookService({
     repos: options.repos,

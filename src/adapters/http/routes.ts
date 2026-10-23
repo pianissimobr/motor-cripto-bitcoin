@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { ValidationError } from '../../core/domain/errors.js';
+import { CHAINS } from '../../core/chain/chains.js';
+import { ConflictError, NotFoundError, ValidationError } from '../../core/domain/errors.js';
 import { collectAlerts, type GasSponsorBalance } from '../../core/alerts.js';
 import type { Motor } from '../../core/index.js';
 import type { Logger } from '../../core/logger.js';
@@ -19,6 +20,11 @@ import {
 } from './serializers.js';
 
 const uuid = z.string().uuid();
+const chainName = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .refine((value) => value in CHAINS, 'chain desconhecida');
 function isHttpUrl(value: string): boolean {
   try {
     return ['http:', 'https:'].includes(new URL(value).protocol);
@@ -58,7 +64,7 @@ const updateClientSchema = z
 const createWalletSchema = z
   .object({
     label: z.string().trim().min(1).max(80),
-    chain: z.string().trim().min(1).max(40),
+    chain: chainName,
     address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
   })
   .strict();
@@ -74,7 +80,7 @@ const taxaSchema = z
 const rampProfileSchema = z
   .object({
     label: z.string().trim().min(1).max(80),
-    chain: z.string().trim().min(1).max(40),
+    chain: chainName,
     asset: z.string().trim().min(1).max(20),
     token_contract: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
     decimals: z.number().int().min(0).max(18).default(6),
@@ -93,8 +99,22 @@ const rampProfileSchema = z
   })
   .strict();
 
-const rampProfilePatchSchema = rampProfileSchema
-  .partial()
+const rampProfilePatchSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80).optional(),
+    fiat_currency: z
+      .string()
+      .regex(/^[A-Za-z]{3}$/)
+      .transform((value) => value.toUpperCase())
+      .optional(),
+    base_url: httpUrl.optional(),
+    param_style: z.enum(['legacy', 'unified']).optional(),
+    host_app_name: z.string().trim().min(1).max(80).optional(),
+    host_logo_url: httpUrl.nullish(),
+    host_api_key: z.string().max(500).nullish(),
+    ramp_asset_key: z.string().trim().max(80).nullish(),
+    taxa_token_por_fiat_base_units: taxaSchema.optional(),
+  })
   .strict()
   .refine((body) => Object.keys(body).length > 0, 'informe ao menos um campo');
 
@@ -144,6 +164,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
         valor_fiat_centavos: link.valorFiatCentavos,
         moeda_fiat: link.moedaFiat,
         valor_recebido_base_units: link.valorRecebidoBaseUnits.toString(),
+        asset: link.asset,
+        decimals: link.decimals,
         expira_em: link.expiraEm.toISOString(),
         liquidacao_ate: link.liquidacaoAte.toISOString(),
       });
@@ -322,7 +344,7 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
         ? { taxaTokenPorFiatBaseUnits: body.taxa_token_por_fiat_base_units }
         : {}),
     });
-    if (!profile) return { data: null };
+    if (!profile) throw new NotFoundError('perfil Ramp nao encontrado');
     return { data: rampProfileDto(profile) };
   });
 
@@ -336,7 +358,7 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
   app.get<{ Params: { id: string } }>('/admin/api/links/:id', async (request) => {
     const detail = await motor.links.detail(request.params.id);
-    if (!detail) return { data: null };
+    if (!detail) throw new NotFoundError('link nao encontrado');
     return {
       data: {
         link: linkDto(detail.link, motor.links.pageUrl(detail.link.pageToken)),
@@ -360,7 +382,7 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
   app.post<{ Params: { id: string } }>('/admin/api/webhooks/:id/replay', async (request) => {
     const event = await motor.webhooks.replay(request.params.id);
-    if (!event) return { data: null };
+    if (!event) throw new NotFoundError('webhook nao encontrado');
     return { data: webhookDto(event) };
   });
 
@@ -374,6 +396,8 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
       return { data: result };
     } catch (err) {
       if (err instanceof TransferSubmissionError) {
+        if (err.statusCode === 404) throw new NotFoundError(err.message);
+        if (err.statusCode === 409) throw new ConflictError(err.message);
         throw new ValidationError(err.message);
       }
       throw err;

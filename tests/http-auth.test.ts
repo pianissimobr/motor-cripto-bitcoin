@@ -151,4 +151,23 @@ describe('HTTP auth', () => {
     expect(ok.statusCode).toBe(200);
     expect(ok.json()).toEqual({ scope: 'admin' });
   });
+
+  it('limita falhas do ADMIN_TOKEN', async () => {
+    const context = await setupCore();
+    const app = await buildTestApp(context);
+    for (let i = 0; i < 20; i += 1) {
+      const attempt = await app.inject({
+        method: 'GET',
+        url: '/admin/api/status',
+        headers: { authorization: 'Bearer errado' },
+      });
+      expect(attempt.statusCode).toBe(403);
+    }
+    const blocked = await app.inject({
+      method: 'GET',
+      url: '/admin/api/status',
+      headers: { authorization: 'Bearer admin-test' },
+    });
+    expect(blocked.statusCode).toBe(429);
+  });
 });

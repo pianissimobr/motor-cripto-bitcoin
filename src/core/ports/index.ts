@@ -175,6 +175,8 @@ export interface LinkRepository {
   updateSettlement(id: string, patch: SettlementPatch): Promise<void>;
   /** Enderecos de deposito por status, para o filtro de topics do monitor. */
   listDepositAddresses(statuses: LinkStatus[]): Promise<string[]>;
+  /** Pares (chain, contrato) ainda presentes em links nesses status. */
+  listTokenPairs(statuses: LinkStatus[]): Promise<Array<{ chain: string; tokenContract: string }>>;
 }
 
 /* ------------------------------------------------------------------ */

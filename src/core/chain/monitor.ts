@@ -95,12 +95,13 @@ export class BlockchainMonitor {
     try {
       const profiles = await this.deps.repos.rampProfiles.list();
       const groups = new Map<string, { chain: string; tokenContract: string }>();
-      for (const profile of profiles) {
-        const key = `${profile.chain}:${profile.tokenContract.toLowerCase()}`;
-        if (!groups.has(key)) {
-          groups.set(key, { chain: profile.chain, tokenContract: profile.tokenContract });
-        }
-      }
+      const remember = (chain: string, tokenContract: string) => {
+        const key = `${chain.toLowerCase()}:${tokenContract.toLowerCase()}`;
+        if (!groups.has(key)) groups.set(key, { chain, tokenContract });
+      };
+      for (const profile of profiles) remember(profile.chain, profile.tokenContract);
+      const fromLinks = await this.deps.repos.links.listTokenPairs(ACTIVE_LINK_STATUSES);
+      for (const pair of fromLinks) remember(pair.chain, pair.tokenContract);
 
       for (const group of groups.values()) {
         result.grupos++;

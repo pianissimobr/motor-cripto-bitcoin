@@ -37,7 +37,11 @@ describe('schema API-only e repositorios Drizzle', () => {
   });
 
   it('cifra segredos em repouso e devolve em claro pelo repositorio', async () => {
-    const service = new ApiClientService({ repos, logger: silentLogger });
+    const service = new ApiClientService({
+      repos,
+      logger: silentLogger,
+      resolveWebhookHost: async () => ['1.1.1.1'],
+    });
     const created = await service.create({
       nome: 'Cliente integracao',
       webhookUrl: 'https://example.test/hook',

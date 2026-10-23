@@ -28,7 +28,7 @@ import {
  * `movimentos_internos` guarda o tx_hash para reconciliacao.
  */
 
-const SWEEPABLE_STATUSES = ['pago', 'pago_sem_gas', 'nao_realizado'] as const;
+const SWEEPABLE_STATUSES = ['pago', 'parcial', 'pago_sem_gas', 'nao_realizado'] as const;
 
 export type SweeperOptions = {
   gasSponsorAmountWei: bigint;

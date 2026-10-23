@@ -71,12 +71,18 @@ export function createAuthHook(options: AuthOptions) {
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<void> {
+    if (blocked(request.ip)) {
+      await reply.code(429).send({ erro: 'muitas tentativas de autenticacao' });
+      return;
+    }
     const header = request.headers.authorization;
     if (!header || !header.toLowerCase().startsWith('bearer ')) {
+      recordFailure(request.ip);
       await reply.code(401).send({ erro: 'token de acesso ausente' });
       return;
     }
     if (!safeCompare(header.slice(7).trim(), options.adminToken)) {
+      recordFailure(request.ip);
       await reply.code(403).send({ erro: 'token de acesso invalido' });
       return;
     }

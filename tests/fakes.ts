@@ -321,6 +321,21 @@ export class FakeLinkRepository implements LinkRepository {
   async listDepositAddresses(statuses: LinkStatus[]): Promise<string[]> {
     return this.rows.filter((r) => statuses.includes(r.status)).map((r) => r.enderecoDeposito);
   }
+
+  async listTokenPairs(
+    statuses: LinkStatus[],
+  ): Promise<Array<{ chain: string; tokenContract: string }>> {
+    const seen = new Set<string>();
+    const pairs: Array<{ chain: string; tokenContract: string }> = [];
+    for (const row of this.rows) {
+      if (!statuses.includes(row.status)) continue;
+      const key = `${row.chain}:${row.tokenContract.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ chain: row.chain, tokenContract: row.tokenContract.toLowerCase() });
+    }
+    return pairs;
+  }
 }
 
 export class FakePaymentRepository implements PaymentRepository {

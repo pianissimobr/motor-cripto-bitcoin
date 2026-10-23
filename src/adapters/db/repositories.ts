@@ -695,6 +695,23 @@ class DrizzleLinkRepository implements LinkRepository {
       .where(inArray(linksGerados.status, statuses));
     return rows.map((r) => r.address);
   }
+
+  async listTokenPairs(
+    statuses: LinkStatus[],
+  ): Promise<Array<{ chain: string; tokenContract: string }>> {
+    if (statuses.length === 0) return [];
+    const rows = await this.db
+      .selectDistinct({
+        chain: linksGerados.chain,
+        tokenContract: linksGerados.tokenContract,
+      })
+      .from(linksGerados)
+      .where(inArray(linksGerados.status, statuses));
+    return rows.map((row) => ({
+      chain: row.chain,
+      tokenContract: row.tokenContract.toLowerCase(),
+    }));
+  }
 }
 
 /* ------------------------------------------------------------------ */
