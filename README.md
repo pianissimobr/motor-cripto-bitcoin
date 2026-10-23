@@ -226,11 +226,15 @@ para um servico externo assinar) ou `psbt` (assinatura manual em hardware wallet
 ### API
 
 - `Authorization: Bearer` com comparacao em tempo constante
+- `ADMIN_TOKEN` escreve; `READONLY_TOKEN` so faz GET/HEAD e **nao** pode
+  `reveal=true`
+- `GET /api/auth/check` valida o token e informa o escopo (usado pela UI)
 - rate limit por IP (120/min)
 - CSP com `script-src 'self'` (sem CDN, sem script inline)
 - endereco de deposito **nunca** vem do cliente: e sempre derivado no servidor
 - ids de link sao aleatorios (128 bits), nunca sequenciais
-- log de auditoria com hash encadeado
+- logs de erro 500 guardam so o caminho da rota, nunca a query string
+- log de auditoria com hash encadeado cobrindo id, criadoEm, ip e negocio
 
 ### Risco residual conhecido
 
@@ -246,7 +250,8 @@ o cambio USD/BRL mudar.
 ## API HTTP
 
 Base: `http://localhost:4578`. Todas as rotas `/api/*` exigem `Authorization: Bearer $ADMIN_TOKEN`
-(exceto `/api/health`).
+(exceto `/api/health`). Um `READONLY_TOKEN` opcional pode ser usado em GET/HEAD,
+mas nao consegue revelar PII (`reveal=true`).
 
 | Metodo | Rota | Descricao |
 |---|---|---|

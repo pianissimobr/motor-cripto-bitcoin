@@ -217,7 +217,7 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 | 4 | PII/prefixos, unique efetivo de e-mail, duplicidade, rebuild | concluído |
 | 5 | API/validações/erros, detail, índice HD | concluído |
 | 6 | operação/gas/defaults, taxa/seed, config | concluído |
-| 7 | segurança/auditoria/UI | pendente |
+| 7 | segurança/auditoria/UI | concluído |
 | 8 | migrações, backfill, smoke e rollout | pendente |
 
 ### Bloco 5 — borda HTTP, validações e erros de domínio
@@ -257,6 +257,22 @@ Migrações novas: `0008_sweep_kind_raw`, `0009_psbt_unsigned` e
 **Testes: 236 → 247 unitários + 11 de integração.** Seed testado no banco de
 desenvolvimento: taxa alterada para 190000 e restaurada para 180000.
 
+### Bloco 7 — segurança, auditoria e UI
+
+- O log de erro 500 guarda apenas o caminho da rota, nunca a query string
+  (que pode carregar e-mail ou segredo).
+- O hash da auditoria passou a cobrir `id`, `criadoEm` e `ip`; o timestamp
+  novo é forçado a ser estritamente maior que o anterior para não bifurcar
+  a cadeia em empates.
+- `READONLY_TOKEN` não pode usar `reveal=true`: o hook registra o escopo e a
+  borda responde 403, em vez de vazar PII para um token de leitura.
+- `GET /api/auth/check` valida o token em endpoint autenticado e devolve o
+  escopo; a UI deixou de usar `/api/health` (público) como prova de token.
+- O script inline da home foi movido para `/index.js`, compatível com a CSP
+  `script-src 'self'`.
+
+**Testes: 247 → 252 unitários + 12 de integração.**
+
 ### Bugs reais encontrados durante a execução
 
 Não foram só as correções planejadas; testes e validações ao vivo revelaram
@@ -279,6 +295,11 @@ mais problemas, todos corrigidos:
 | Piso de gas (1,0 POL) maior que o envio (0,5 POL) fazia todo sweep patrocinar de novo | `config.ts` | MÉDIO |
 | Seed mantinha a taxa antiga e não havia caminho para atualizá-la | `seed.ts` / perfis Ramp | MÉDIO |
 | Alerta de gas sponsor era estático e não consultava o saldo real | `alerts.ts` | ALTO |
+| Erro 500 logava `request.url` inteira, podendo gravar e-mail na query | `app.ts` | MÉDIO |
+| Hash de auditoria não cobria `ip`, `criadoEm` nem `id` | `repositories.ts` | MÉDIO |
+| Token read-only conseguia `reveal=true` e ver PII em claro | `auth.ts` / `routes.ts` | ALTO |
+| Script inline na home era bloqueado pela própria CSP | `web/index.html` | BAIXO |
+| UI validava token no `/api/health` público, aceitando token inválido | `web/app.js` | MÉDIO |
 
 O achado da **tolerância** só apareceu porque a propriedade "nunca aceita
 pagamento dobrado" foi escrita. Nenhum caso fixo teria pego. O mesmo vale

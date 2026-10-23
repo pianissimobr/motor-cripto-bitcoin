@@ -1,5 +1,5 @@
 import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { checksumAddress, normalizeAddress } from '../../core/domain/address.js';
 import { HD_INDEX_SCOPE } from '../../core/hd/index-scope.js';
 import type { Database } from './client.js';
@@ -1366,29 +1366,45 @@ class DrizzleAuditRepository implements AuditRepository {
       // O lock e por transacao (soltado no commit/rollback).
       await tx.execute(sql`select pg_advisory_xact_lock(${AUDIT_LOCK_ID})`);
 
-      // Ordenacao deterministica: criado_em tem precisao de microsegundo e
-      // pode empatar; `id` (uuid random) desempata de forma estavel.
+      // Ordenacao deterministica: criado_em desempata por `id`. O novo
+      // evento precisa ter timestamp estritamente maior que o anterior,
+      // senao o proximo `last` poderia voltar um evento e bifurcar a cadeia.
       const [last] = await tx
-        .select({ hash: eventosAuditoria.hash })
+        .select({
+          hash: eventosAuditoria.hash,
+          criadoEm: eventosAuditoria.criadoEm,
+        })
         .from(eventosAuditoria)
         .orderBy(desc(eventosAuditoria.criadoEm), desc(eventosAuditoria.id))
         .limit(1);
       const hashAnterior = last?.hash ?? null;
+      const now = new Date();
+      const criadoEm =
+        last?.criadoEm && now.getTime() <= last.criadoEm.getTime()
+          ? new Date(last.criadoEm.getTime() + 1)
+          : now;
+      const id = randomUUID();
       const detalhes = input.detalhes ? JSON.stringify(input.detalhes) : null;
+      // v2: inclui id, criadoEm e ip. Antes so os campos de negocio entravam,
+      // entao trocar o IP de um evento nao quebrava o hash.
       const hash = createHash('sha256')
         .update(
           [
             hashAnterior ?? '',
+            id,
+            criadoEm.toISOString(),
             input.ator,
             input.acao,
             input.entidade,
             input.entidadeId ?? '',
+            input.ip ?? '',
             detalhes ?? '',
           ].join('|'),
         )
         .digest('hex');
 
       await tx.insert(eventosAuditoria).values({
+        id,
         ator: input.ator,
         acao: input.acao,
         entidade: input.entidade,
@@ -1397,6 +1413,7 @@ class DrizzleAuditRepository implements AuditRepository {
         ip: input.ip ?? null,
         hashAnterior,
         hash,
+        criadoEm,
       });
     });
   }

@@ -384,6 +384,68 @@ describe('P0 com Postgres real', () => {
     expect(code).toBe('23505');
   });
 
+  it('hash de auditoria cobre id, criadoEm e ip encadeados', async () => {
+    await repos.audit.record({
+      ator: 'api',
+      acao: 'teste.um',
+      entidade: 'teste',
+      entidadeId: randomUUID(),
+      ip: '203.0.113.10',
+      detalhes: { n: 1 },
+    });
+    await repos.audit.record({
+      ator: 'api',
+      acao: 'teste.dois',
+      entidade: 'teste',
+      ip: '203.0.113.11',
+      detalhes: { n: 2 },
+    });
+
+    type AuditRow = {
+      id: string;
+      ator: string;
+      acao: string;
+      entidade: string;
+      entidade_id: string | null;
+      detalhes: string | null;
+      ip: string | null;
+      hash_anterior: string | null;
+      hash: string;
+      criado_em: Date | string;
+    };
+    const rows = await db.sql<AuditRow[]>`
+      select id, ator, acao, entidade, entidade_id, detalhes, ip,
+             hash_anterior, hash, criado_em
+      from eventos_auditoria
+      order by criado_em asc, id asc
+    `;
+    expect(rows).toHaveLength(2);
+
+    let anterior: string | null = null;
+    for (const row of rows) {
+      const criadoEm =
+        row.criado_em instanceof Date ? row.criado_em : new Date(row.criado_em);
+      const esperado = createHash('sha256')
+        .update(
+          [
+            row.hash_anterior ?? '',
+            row.id,
+            criadoEm.toISOString(),
+            row.ator,
+            row.acao,
+            row.entidade,
+            row.entidade_id ?? '',
+            row.ip ?? '',
+            row.detalhes ?? '',
+          ].join('|'),
+        )
+        .digest('hex');
+      expect(row.hash).toBe(esperado);
+      expect(row.hash_anterior).toBe(anterior);
+      anterior = row.hash;
+    }
+  });
+
   it('lock de sessao usa conexao dedicada e libera ao fechar', async () => {
     const url = testDatabaseUrl();
     const lockId = 900_000_000 + Math.floor(Math.random() * 1_000_000);

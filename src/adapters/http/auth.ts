@@ -1,6 +1,13 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** Escopo resolvido pelo hook; ausente em rotas publicas. */
+    authScope?: 'admin' | 'readonly';
+  }
+}
+
 /**
  * Autenticacao por Bearer token (comparacao em tempo constante).
  * O token vem do ambiente; nunca e devolvido em respostas ou logs.
@@ -31,10 +38,16 @@ export function createAuthHook(options: AuthOptions) {
     }
     const provided = header.slice(7).trim();
 
-    if (safeCompare(provided, options.adminToken)) return;
+    if (safeCompare(provided, options.adminToken)) {
+      request.authScope = 'admin';
+      return;
+    }
 
     const isRead = request.method === 'GET' || request.method === 'HEAD';
-    if (readonlyToken && isRead && safeCompare(provided, readonlyToken)) return;
+    if (readonlyToken && isRead && safeCompare(provided, readonlyToken)) {
+      request.authScope = 'readonly';
+      return;
+    }
 
     await reply.code(403).send({
       erro: isRead ? 'token de acesso invalido' : 'token sem permissao de escrita',

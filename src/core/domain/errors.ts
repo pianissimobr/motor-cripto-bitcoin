@@ -29,6 +29,12 @@ export class NotFoundError extends DomainError {
   }
 }
 
+export class ForbiddenError extends DomainError {
+  constructor(message: string, codigo = 'acesso_negado') {
+    super(message, 403, codigo);
+  }
+}
+
 export class ConflictError extends DomainError {
   constructor(message: string, codigo = 'conflito') {
     super(message, 409, codigo);

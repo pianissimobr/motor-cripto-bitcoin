@@ -85,6 +85,32 @@ describe('P1: auth por escopo', () => {
       await close(app);
     }
   });
+
+  it('auth/check exige token e devolve o escopo resolvido', async () => {
+    const { app } = await makeApp();
+    try {
+      expect(
+        (await app.inject({ method: 'GET', url: '/api/auth/check' })).statusCode,
+      ).toBe(401);
+
+      const comoAdmin = await app.inject({
+        method: 'GET',
+        url: '/api/auth/check',
+        headers: admin,
+      });
+      expect(comoAdmin.statusCode).toBe(200);
+      expect(comoAdmin.json()).toEqual({ ok: true, escopo: 'admin' });
+
+      const comoLeitura = await app.inject({
+        method: 'GET',
+        url: '/api/auth/check',
+        headers: readonly,
+      });
+      expect(comoLeitura.json()).toEqual({ ok: true, escopo: 'readonly' });
+    } finally {
+      await close(app);
+    }
+  });
 });
 
 describe('P1: PII mascarada + reveal auditado', () => {
@@ -118,6 +144,31 @@ describe('P1: PII mascarada + reveal auditado', () => {
       const evento = auditoria.find((e) => e.acao === 'pii.revelado');
       expect(evento).toBeTruthy();
       expect(evento?.entidadeId).toBe(created.id);
+    } finally {
+      await close(app);
+    }
+  });
+
+  it('token read-only nao pode usar reveal=true', async () => {
+    const { app, customers } = await makeApp();
+    await customers.create({ nome: 'Maria Silva', email: 'maria@example.com' });
+
+    try {
+      const negado = await app.inject({
+        method: 'GET',
+        url: '/api/cadastros?email=maria%40example.com&reveal=true',
+        headers: readonly,
+      });
+      expect(negado.statusCode).toBe(403);
+      expect(negado.json().erro).toMatch(/nao pode revelar PII/);
+
+      const mascarado = await app.inject({
+        method: 'GET',
+        url: '/api/cadastros?email=maria%40example.com',
+        headers: readonly,
+      });
+      expect(mascarado.statusCode).toBe(200);
+      expect(mascarado.json().clientes[0].email).toBeNull();
     } finally {
       await close(app);
     }
@@ -411,6 +462,40 @@ describe('P1: perfis Ramp - PATCH e alerta de gas', () => {
         .json()
         .alertas.find((a: { codigo: string }) => a.codigo === 'gas_sponsor_saldo_baixo');
       expect(alerta?.nivel).toBe('critico');
+    } finally {
+      await close(app);
+    }
+  });
+});
+
+describe('P1: logs sem PII', () => {
+  it('erro 500 nao loga a query string (email/segredo)', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      ...silentLogger,
+      error: (obj: unknown) => {
+        logs.push(obj);
+      },
+    };
+    const app = await buildHttpApp({
+      motor: { repos: createFakeRepositories() } as unknown as Motor,
+      logger,
+      config: loadConfig(baseEnv()),
+      serveStatic: false,
+    });
+    app.get('/api/_boom', async () => {
+      throw new Error('boom');
+    });
+    try {
+      const resp = await app.inject({
+        method: 'GET',
+        url: '/api/_boom?email=segredo%40example.com',
+        headers: admin,
+      });
+      expect(resp.statusCode).toBe(500);
+      const serializado = JSON.stringify(logs);
+      expect(serializado).not.toContain('segredo');
+      expect(serializado).toContain('/api/_boom');
     } finally {
       await close(app);
     }

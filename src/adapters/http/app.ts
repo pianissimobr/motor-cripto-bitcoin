@@ -142,9 +142,12 @@ export async function buildHttpApp(options: BuildHttpAppOptions): Promise<Fastif
       return reply.code(status).send({ erro: mensagem });
     }
 
-    // Nunca vazar stack/mensagem interna para o cliente.
+    // Nunca vazar stack/mensagem interna para o cliente. A query string pode
+    // carregar e-mail/segredo (ex.: /api/cadastros?email=...), entao o log
+    // guarda apenas o caminho.
+    const rota = request.routeOptions?.url ?? request.url.split('?')[0] ?? '';
     logger.error(
-      { err: error, metodo: request.method, rota: request.url },
+      { err: error, metodo: request.method, rota },
       'erro nao tratado na API',
     );
     return reply.code(500).send({ erro: 'erro interno do servidor' });

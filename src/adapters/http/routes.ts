@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { ConflictError, NotFoundError, ValidationError, isUniqueViolation } from '../../core/domain/errors.js';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+  isUniqueViolation,
+} from '../../core/domain/errors.js';
 import { centsToFiat, fiatToCents } from '../../core/domain/money.js';
 import { collectAlerts, type GasSponsorBalance } from '../../core/alerts.js';
 import { qrCodeSvg, svgToDataUri, QrCodeError } from '../../core/qrcode.js';
@@ -123,7 +129,11 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
 
   const revealPedido = (request: FastifyRequest): boolean => {
     const raw = (request.query as { reveal?: unknown } | undefined)?.reveal;
-    return raw === 'true' || raw === '1' || raw === true;
+    if (raw !== 'true' && raw !== '1' && raw !== true) return false;
+    if (request.authScope === 'readonly') {
+      throw new ForbiddenError('token de leitura nao pode revelar PII');
+    }
+    return true;
   };
 
   /** PII so sai em claro com pedido explicito; o pedido fica auditado. */
@@ -147,6 +157,11 @@ export async function registerRoutes(app: FastifyInstance, options: RouteOptions
   /* ---------------------------------------------------------------- */
 
   app.get('/api/health', async () => ({ ok: true, ts: new Date().toISOString() }));
+
+  app.get('/api/auth/check', async (request) => ({
+    ok: true,
+    escopo: request.authScope ?? 'desconhecido',
+  }));
 
   app.get('/api/motor/status', async () => {
     const [clientes, perfis, carteiras, auditoria] = await Promise.all([

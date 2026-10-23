@@ -114,8 +114,9 @@ export function setupAuth() {
       return false;
     }
     try {
-      await api('/api/health');
-      state.textContent = 'token valido';
+      const data = await api('/api/auth/check');
+      state.textContent =
+        data.escopo === 'readonly' ? 'token valido (leitura)' : 'token valido';
       state.className = 'auth-state ok';
       return true;
     } catch (err) {
