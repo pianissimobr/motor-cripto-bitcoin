@@ -31,7 +31,7 @@ O sistema substitui a falta de webhooks do Ramp (recurso exclusivo de contas bus
 3. O backend monta a URL do Ramp **sem `hostApiKey`** (conta pessoal, padrão público):
 
 ```
-https://buy.ramp.network/?userAddress=ENDEREÇO_DERIVADO&asset=USDC&network=polygon&fiatValue=VALOR&fiatCurrency=BRL
+https://app.ramp.network/?userAddress=ENDEREÇO_DERIVADO&asset=USDC&network=polygon&fiatValue=VALOR&fiatCurrency=BRL
 ```
 
 4. O link é enviado ao cliente (por e-mail, WhatsApp, ou página de checkout).

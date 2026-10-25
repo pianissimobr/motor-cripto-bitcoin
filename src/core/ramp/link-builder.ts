@@ -10,7 +10,7 @@ import type { ParamStyle, RampProfile } from '../domain/types.js';
  * apenas entrega o endereco de deposito derivado e o valor a cobrar.
  *
  * Dois estilos suportados:
- *  - `legacy`  -> https://buy.ramp.network/?userAddress=..&asset=USDC&network=polygon&fiatValue=100&fiatCurrency=BRL
+ *  - `legacy`  -> https://app.ramp.network/?userAddress=..&asset=USDC&network=polygon&fiatValue=100&fiatCurrency=BRL
  *  - `unified` -> https://app.rampnetwork.com/?defaultFlow=ONRAMP&inAsset=BRL&inAssetValue=10000&enabledCryptoAssets=POLYGON_USDC&userAddress=..
  *
  * A Ramp converte automaticamente parametros legacy para o formato novo,

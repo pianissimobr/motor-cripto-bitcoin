@@ -131,7 +131,7 @@ export const EnvSchema = z
     .string()
     .url('deve ser uma URL absoluta')
     .refine(isHttpUrl, 'deve usar http(s)')
-    .default('https://buy.ramp.network/'),
+    .default('https://app.ramp.network/'),
   RAMP_PARAM_STYLE: z.enum(['legacy', 'unified']).default('legacy'),
   RAMP_HOST_APP_NAME: z.string().trim().min(1).max(80).default('Motor Cripto'),
   RAMP_HOST_LOGO_URL: z.preprocess(
