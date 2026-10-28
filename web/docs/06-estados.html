@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estados · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html" aria-current="page">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 2 · O método</p>
+
+<h1>Estados</h1>
+<p class="lede">O status é uma promessa. Alguns prometem que o dinheiro ainda está a caminho. Outros prometem que a decisão contábil já foi tomada, mesmo que o token ainda se mova.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Ler um <code>status</code> e saber se a loja deve esperar, entregar o pedido, ou tratar a cobrança como encerrada.</div>
+<h2>O problema</h2>
+<p>Sete nomes cabem numa tabela e ainda assim enganam. <code>parcial</code> não quer dizer “o dinheiro está parado no endereço”. <code>nao_realizado</code> não quer dizer “ignore qualquer USDC que chegue depois”. <code>pago</code> não quer dizer “já está na carteira da loja”.</p>
+<h2>O método</h2>
+<p>O link nasce <code>aguardando</code>. A partir daí só algumas passagens existem. Uma passagem fora da lista é rejeitada. Reorg, a rede trocando a ponta da história, é o caminho de volta: um pagamento que deixou de existir pode devolver o link a <code>aguardando</code>.</p>
+<table>
+<tr><th>De</th><th>Pode ir para</th></tr>
+<tr><td><code>aguardando</code></td><td><code>pago</code>, <code>parcial</code>, <code>pago_sem_gas</code>, <code>expirado</code>, <code>nao_realizado</code></td></tr>
+<tr><td><code>pago</code></td><td><code>aguardando</code>, <code>parcial</code>, <code>pago_sem_gas</code>, <code>movido</code>, <code>nao_realizado</code></td></tr>
+<tr><td><code>parcial</code></td><td><code>aguardando</code>, <code>pago</code>, <code>pago_sem_gas</code>, <code>expirado</code>, <code>nao_realizado</code></td></tr>
+<tr><td><code>pago_sem_gas</code></td><td><code>aguardando</code>, <code>pago</code>, <code>parcial</code>, <code>movido</code>, <code>nao_realizado</code></td></tr>
+<tr><td><code>movido</code></td><td><code>aguardando</code>, <code>pago</code>, <code>parcial</code> (só por reorg)</td></tr>
+<tr><td><code>expirado</code></td><td><code>aguardando</code>, <code>pago</code>, <code>parcial</code>, <code>pago_sem_gas</code>, <code>nao_realizado</code></td></tr>
+<tr><td><code>nao_realizado</code></td><td>nenhum</td></tr>
+</table>
+<h3>O que cada um promete</h3>
+<ul>
+<li><code>aguardando</code>. Página ativa. Ainda não há pagamento confirmado.</li>
+<li><code>expirado</code>. A página venceu. A janela on-chain segue aberta.</li>
+<li><code>pago</code>. O valor confirmado está dentro da tolerância. O token pode ainda estar no endereço derivado.</li>
+<li><code>parcial</code>. Chegou menos do que o esperado, fora da tolerância, e a janela ainda não fechou. O token pode já ter sido varrido. O estado não vira <code>movido</code>. Quem decide o desfecho é a liquidação.</li>
+<li><code>pago_sem_gas</code>. O token está no endereço e não há como movê-lo. Em geral a carteira de POL está vazia ou não foi configurada.</li>
+<li><code>movido</code>. A varredura para a carteira allowlisted foi confirmada.</li>
+<li><code>nao_realizado</code>. Decisão terminal: não pagou, pagou parcial até o fim da janela, pagou depois do prazo, a loja revogou, ou um reorg desfez o pagamento. Dinheiro que chega depois ainda é detectado, somado em <code>valor_recebido_base_units</code> e varrido. O status não muda. <code>reembolsado: true</code> indica que essa varredura de um link já encerrado foi registrada.</li>
+</ul>
+<h2>O contrato</h2>
+<p>O campo <code>status</code> vem em todo link e em todo webhook. <code>motivo_nao_realizado</code> só se preenche quando o estado é <code>nao_realizado</code>:</p>
+<table>
+<tr><th>Motivo</th><th>Quando</th></tr>
+<tr><td><code>nao_pago</code></td><td>Nada confirmado até <code>liquidacao_ate</code>.</td></tr>
+<tr><td><code>valor_parcial</code></td><td>Chegou valor, abaixo do esperado, e a janela fechou.</td></tr>
+<tr><td><code>pagamento_apos_prazo</code></td><td>O pagamento apareceu depois de <code>liquidacao_ate</code>.</td></tr>
+<tr><td><code>revogado</code></td><td>A loja ou o admin revogou enquanto ainda era permitido.</td></tr>
+<tr><td><code>reorg</code></td><td>A rede desfez o pagamento que tinha sido aceito.</td></tr>
+</table>
+<h2>O que recusamos</h2>
+<ul>
+<li>Passar de <code>parcial</code> para <code>movido</code>. A varredura move o token e deixa o estado quieto.</li>
+<li>Sair de <code>nao_realizado</code>. Não há transição. Dinheiro tardio entra em <code>valor_recebido_base_units</code> e pode ser varrido, sem status novo e sem webhook de mudança de estado. A loja percebe relendo o link.</li>
+<li>Revogar um link que já recebeu pagamento. A resposta é conflito, não um estado novo inventado.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Num link <code>parcial</code> cujo token já saiu, <code>GET /v1/links/:id</code> continua com <code>"status": "parcial"</code>. <code>movido</code> só aparece quando a passagem da tabela existe, em geral a partir de <code>pago</code> ou <code>pago_sem_gas</code>.</div>
+
+<nav class="pager"><a href="05-tempo.html">← Tempo</a><a href="07-confianca.html">Confiança →</a></nav>
+</main>
+</div>
+</body>
+</html>

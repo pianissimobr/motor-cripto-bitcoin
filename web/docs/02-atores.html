@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Os três atores · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html" aria-current="page">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 1 · O objetivo</p>
+
+<h1>Os três atores</h1>
+<p class="lede">Operador, sistema da loja e pagador não compartilham segredo. Cada um vê um recorte, e alguns segredos não atravessam fronteira nenhuma.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber qual credencial usar em cada chamada e o que nunca pedir de volta para a API.</div>
+<h2>O problema</h2>
+<p>Se a mesma senha servisse para operar o motor, criar cobrança e abrir a página de pagamento, um vazamento na página pública abriria a loja inteira. O motor separa os três papéis de propósito.</p>
+<h2>O método</h2>
+<h3>Operador</h3>
+<p>A pessoa da loja abre <code>/admin/</code>, cola o <code>ADMIN_TOKEN</code> e o navegador guarda esse token só na aba (<code>sessionStorage</code>). Com ele cadastra clientes da API, carteiras, perfis Ramp, e acompanha links, webhooks, alertas e auditoria. O token não assina o corpo. É um bearer. Em produção ele viaja só por HTTPS.</p>
+<h3>Sistema da loja</h3>
+<p>O backend da loja chama <code>/v1/*</code>. Ele recebe, uma vez, três segredos: <code>api_key</code> (começa com <code>mk_live_</code>), <code>request_secret</code> (começa com <code>req_</code>) e <code>webhook_secret</code> (começa com <code>whsec_</code>). A chave identifica. O segredo de pedido assina cada requisição. O segredo de webhook serve para a loja conferir o aviso que o motor manda de volta.</p>
+<h3>Pagador</h3>
+<p>Quem paga recebe só a <code>page_url</code>, no formato <code>/p/&lt;token&gt;</code>. Não há login. O token da página é o próprio segredo daquela cobrança: quem tem a URL vê o valor, o QR e o endereço. Não vê a chave da loja nem a URL crua da Ramp no JSON.</p>
+<h2>O contrato</h2>
+<table>
+<tr><th>Ator</th><th>Onde</th><th>Credencial</th><th>O que recebe</th></tr>
+<tr><td>Operador</td><td><code>/admin/</code> e <code>/admin/api/*</code></td><td><code>ADMIN_TOKEN</code></td><td>Cadastro, listas, alertas. Segredos de cliente só na criação e na rotação.</td></tr>
+<tr><td>Sistema da loja</td><td><code>/v1/*</code></td><td>API key + HMAC</td><td>Links da própria loja, perfis e carteiras allowlisted.</td></tr>
+<tr><td>Pagador</td><td><code>/p/:token</code></td><td>o token na URL</td><td>HTML da cobrança e o JSON de status, sem <code>ramp_url</code>.</td></tr>
+</table>
+<div class="note cuidado"><strong>Cuidado</strong>A seed, o xprv e a chave da carteira de gas não passam por nenhuma dessas rotas. O processo da API calcula endereços com o xpub e não assina gasto. Quem gasta é o worker, num processo separado.</div>
+<h2>O que recusamos</h2>
+<ul>
+<li>Devolver <code>api_key</code>, <code>request_secret</code> ou <code>webhook_secret</code> numa listagem. Eles aparecem uma vez.</li>
+<li>Devolver <code>host_api_key</code> do perfil Ramp. Ela pode ser gravada, cifrada, e não volta na resposta.</li>
+<li>Devolver <code>ramp_url</code> em <code>/v1</code> ou em <code>/p/:token/status</code>.</li>
+<li>Deixar o pagador chamar <code>/v1</code> ou <code>/admin/api</code> com o token da página.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Chame <code>GET /admin/api/clientes</code> com o token de admin. A lista traz <code>api_key_prefix</code>, nunca a chave inteira. Chame <code>GET /p/&lt;token&gt;/status</code> sem header de autorização. O JSON tem status e valor, e não tem <code>ramp_url</code> nem <code>page_url</code>.</div>
+
+<nav class="pager"><a href="01-objetivo.html">← O objetivo</a><a href="03-uma-cobranca.html">Uma cobrança →</a></nav>
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preparar a loja · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html" aria-current="page">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 3 · O contrato</p>
+
+<h1>Preparar a loja</h1>
+<p class="lede">Antes da primeira cobrança existem três cadastros: o cliente da API, a carteira de destino e o perfil Ramp. Dois deles são trabalho do operador. O terceiro a loja só lê.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Deixar um cliente apto a criar link: segredos anotados, carteira allowlisted na rede certa, perfil cujo contrato não vai mudar.</div>
+<h2>O problema</h2>
+<p>Se a carteira de destino fosse um campo livre na cobrança, uma chave vazada escolheria para onde o dinheiro vai. Se o contrato do perfil pudesse ser trocado depois, links já abertos deixariam de ser observados. A preparação trava essas duas decisões.</p>
+<h2>O método</h2>
+<ol>
+<li>O operador cria o cliente com nome e <code>webhook_url</code>. A resposta de 201 traz <code>api_key</code>, <code>request_secret</code> e <code>webhook_secret</code> fora do objeto <code>data</code>. É a única vez. A listagem posterior mostra só <code>api_key_prefix</code>.</li>
+<li>O operador cadastra a carteira: rótulo, chain e endereço <code>0x</code> de 40 hex. A chain precisa existir no motor.</li>
+<li>O sistema da loja, já com a assinatura, lê <code>GET /v1/ramp-profiles</code> e <code>GET /v1/wallets</code>. Guarda os dois ids. Na cobrança eles viajam juntos, e a chain da carteira tem de ser a do perfil.</li>
+</ol>
+<p>Chains aceitas: <code>polygon</code>, <code>amoy</code>, <code>arbitrum</code>, <code>base</code>, <code>ethereum</code>. Nome desconhecido responde 400 antes de existir carteira ou perfil.</p>
+<p>A URL de webhook, em produção, só aceita <code>https</code>. Em qualquer ambiente o motor recusa localhost, endereço de loopback, rede link-local, o endereço de metadata <code>169.254.169.254</code> e um nome que resolva para IP privado. A checagem é na gravação, não a cada tentativa de entrega.</p>
+<h2>O contrato</h2>
+<h3>Criar cliente</h3>
+<pre>POST /admin/api/clientes
+Authorization: Bearer $ADMIN_TOKEN
+Content-Type: application/json
+
+{"nome":"Loja Exemplo","webhook_url":"https://loja.example/webhooks/motor"}</pre>
+<p>Resposta 201: <code>data</code> com <code>id</code>, <code>nome</code>, <code>api_key_prefix</code>, <code>webhook_url</code>, <code>status: "ativo"</code>, <code>criado_em</code>, e ao lado <code>api_key</code>, <code>request_secret</code>, <code>webhook_secret</code>.</p>
+<p><code>PATCH /admin/api/clientes/:id</code> aceita <code>nome</code>, <code>webhook_url</code> e <code>status</code> (<code>ativo</code> ou <code>inativo</code>). Cliente inativo não autentica. Pelo menos um campo.</p>
+<p><code>POST .../rotate-key</code> troca a API key e o request secret na hora. <code>POST .../rotate-webhook-secret</code> troca só o segredo dos webhooks. De novo, o segredo novo aparece uma vez.</p>
+<h3>Cadastrar carteira</h3>
+<pre>POST /admin/api/clientes/:id/wallets
+
+{"label":"Carteira principal","chain":"polygon","address":"0x1111111111111111111111111111111111111111"}</pre>
+<p>O endereço volta normalizado. Carteira repetida para o mesmo cliente é 400.</p>
+<h3>Perfil Ramp</h3>
+<p>A criação, pelo admin, fixa <code>label</code>, <code>chain</code>, <code>asset</code>, <code>token_contract</code>, <code>decimals</code>, <code>fiat_currency</code>, <code>base_url</code>, <code>param_style</code> (<code>legacy</code> ou <code>unified</code>), <code>host_app_name</code>, e os opcionais <code>host_logo_url</code>, <code>host_api_key</code>, <code>ramp_asset_key</code>, <code>taxa_token_por_fiat_base_units</code>.</p>
+<p>O <code>PATCH</code> só aceita o que não muda o ativo observado: <code>label</code>, <code>fiat_currency</code>, <code>base_url</code>, <code>param_style</code>, <code>host_app_name</code>, <code>host_logo_url</code>, <code>host_api_key</code>, <code>ramp_asset_key</code>, <code>taxa_token_por_fiat_base_units</code>. Enviar <code>token_contract</code> ou <code>chain</code> responde 400. Para outro contrato, crie outro perfil. Links já abertos continuam sendo lidos no contrato em que nasceram.</p>
+<p><code>host_api_key</code> não volta em nenhuma leitura.</p>
+<h2>O que recusamos</h2>
+<ul>
+<li>Webhook <code>http://</code> quando o processo está em produção.</li>
+<li>Webhook apontando para a própria máquina, para a rede interna ou para o endereço de metadata.</li>
+<li>Chain fora da lista.</li>
+<li>Endereço que não seja <code>0x</code> mais 40 hexadecimais.</li>
+<li>Mudar contrato, ativo, rede ou decimais de um perfil já criado.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong><code>GET /v1/wallets</code> assinado devolve a carteira com o <code>id</code> que vai em <code>wallet_id</code>. <code>GET /v1/ramp-profiles</code> devolve o perfil sem <code>host_api_key</code>. Guarde os dois ids antes de criar o link.</div>
+
+<nav class="pager"><a href="07-confianca.html">← Confiança</a><a href="09-criar-cobranca.html">Criar a cobrança →</a></nav>
+</main>
+</div>
+</body>
+</html>

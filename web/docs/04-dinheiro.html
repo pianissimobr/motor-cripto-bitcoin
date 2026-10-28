@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dinheiro · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html" aria-current="page">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 2 · O método</p>
+
+<h1>Dinheiro</h1>
+<p class="lede">Reais são centavos inteiros. USDC é uma string de unidades mínimas. A taxa fica congelada no link. A tolerância diz o que ainda conta como valor cheio.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Calcular o esperado de uma cobrança e ler <code>valor_recebido_base_units</code> sem usar número decimal solto.</div>
+<h2>O problema</h2>
+<p>R$ 150,00 escrito como <code>150.00</code> num JSON convida erro de arredondamento. USDC tem 6 casas. <code>0.18</code> vezes <code>150</code> não é uma conta que se faça com ponto flutuante quando o resultado vai para a rede.</p>
+<h2>O método</h2>
+<p>A loja envia <code>amount_cents: 15000</code>. O perfil guarda a taxa <code>180000</code>, que significa 180000 unidades mínimas de USDC por R$ 1,00. Como o USDC tem 6 decimais, 180000 unidades são 0,18 USDC.</p>
+<pre>15000 centavos = 150 reais
+150 × 180000 = 27000000 unidades mínimas
+27000000 / 10^6 = 27 USDC</pre>
+<p>O link grava <code>expected_base_units: "27000000"</code> na criação. Se alguém atualizar a taxa do perfil amanhã, esta cobrança continua comparando com 27 USDC. A comparação usa a taxa do nascimento, não a taxa viva.</p>
+<p>A tolerância padrão é 1% (<code>PAYMENT_TOLERANCE_PCT</code>). Dentro dela, o recebido pode ir a <code>pago</code>. Fora dela, para menos, fica <code>parcial</code>. Para mais, o extra também é registrado e varrido: o motor não devolve o que sobrou para a Ramp.</p>
+<p>O valor que realmente chegou aparece em <code>valor_recebido_base_units</code>, sempre string. Some com inteiro grande, não com <code>Number</code> de JavaScript se o valor puder passar de 2^53.</p>
+<h2>O contrato</h2>
+<table>
+<tr><th>Campo</th><th>Unidade</th><th>Exemplo de R$ 150,00</th></tr>
+<tr><td><code>amount_cents</code> / <code>valor_fiat_centavos</code></td><td>centavos inteiros</td><td><code>15000</code></td></tr>
+<tr><td><code>moeda_fiat</code></td><td>código de 3 letras</td><td><code>BRL</code></td></tr>
+<tr><td><code>taxa_token_por_fiat_base_units</code></td><td>unidades mínimas por 1,00 de fiat</td><td><code>"180000"</code></td></tr>
+<tr><td><code>decimals</code></td><td>casas do token</td><td><code>6</code></td></tr>
+<tr><td><code>expected_base_units</code></td><td>string inteira</td><td><code>"27000000"</code></td></tr>
+<tr><td><code>valor_recebido_base_units</code></td><td>string inteira</td><td><code>"27000000"</code> quando chega cheio</td></tr>
+</table>
+<p><code>amount_cents</code> aceita de 1 a <code>100000000</code> (um milhão de reais). A taxa, quando enviada, é string de dígitos ou inteiro não negativo.</p>
+<h2>O que recusamos</h2>
+<ul>
+<li>Corpo com <code>"amount_cents": 150.00</code> ou string. O campo é inteiro.</li>
+<li>Usar a cotação do dia lida na hora do webhook. A referência é a taxa gravada.</li>
+<li>Recusar dinheiro que chegou a mais ou a menos. A menos, fora da tolerância, muda o estado. O token se move mesmo assim.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Crie o link de <code>15000</code> centavos no perfil de taxa <code>180000</code> e 6 decimais. A resposta traz <code>expected_base_units</code> igual a <code>"27000000"</code>. Se vier outro número, a taxa do perfil não é a do exemplo.</div>
+
+<nav class="pager"><a href="03-uma-cobranca.html">← Uma cobrança</a><a href="05-tempo.html">Tempo →</a></nav>
+</main>
+</div>
+</body>
+</html>

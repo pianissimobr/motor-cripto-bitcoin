@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquidação · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html" aria-current="page">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 4 · Operar e falhar</p>
+
+<h1>Liquidação</h1>
+<p class="lede">No fim da janela o motor para de esperar e classifica. Valor cheio vira <code>pago</code>. O resto vira <code>nao_realizado</code>, com um motivo que diz o que a loja faz em seguida.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Tratar cada motivo de <code>nao_realizado</code> sem confundir “não entregue o pedido” com “não existe token”.</div>
+<h2>O problema</h2>
+<p>Enquanto a janela está aberta, <code>parcial</code> é uma espera. Se essa espera não tivesse fim, a loja nunca saberia se entrega o pedido ou se cobra o restante por outro meio. A liquidação é esse fim.</p>
+<h2>O método</h2>
+<p>Dois passos, no worker:</p>
+<ol>
+<li>Página vencida e ainda <code>aguardando</code> vira <code>expirado</code>. Não há webhook nessa passagem.</li>
+<li>Chegada <code>liquidacao_ate</code>, links <code>expirado</code> ou <code>parcial</code> são classificados. Soma confirmada dentro da tolerância: <code>pago</code>. Sem pagamento: <code>nao_realizado</code> com <code>nao_pago</code>. Com pagamento abaixo do esperado: <code>nao_realizado</code> com <code>valor_parcial</code>.</li>
+</ol>
+<p>Pagamento que o monitor vê só depois de <code>liquidacao_ate</code> não reabre a janela. O motivo é <code>pagamento_apos_prazo</code>. Revogação, enquanto a transição existe, usa <code>revogado</code>. Reorg que desfaz o que já tinha sido aceito usa <code>reorg</code>.</p>
+<p>O token de um <code>parcial</code> pode já estar na carteira allowlisted antes desse instante. A liquidação muda o estado contábil. Não pede o token de volta.</p>
+<h2>O contrato</h2>
+<p>Não há <code>POST /v1/links/:id/settle</code>. A loja espera o webhook <code>link.nao_realizado</code> ou <code>link.realizado</code> e lê o motivo. Consulta também serve: <code>GET /v1/links/:id</code>.</p>
+<table>
+<tr><th>Motivo</th><th>O que a loja faz</th></tr>
+<tr><td><code>nao_pago</code></td><td>Não entrega o pedido. Pode oferecer outra cobrança.</td></tr>
+<tr><td><code>valor_parcial</code></td><td>Não trate como R$ 150,00 pagos. O token recebido já pode estar na carteira. Cobre a diferença por outro meio ou aceite o parcial no seu sistema, com o valor de <code>valor_recebido_base_units</code>.</td></tr>
+<tr><td><code>pagamento_apos_prazo</code></td><td>O dinheiro existe e será varrido. A decisão comercial é sua: entregar atrasado ou devolver por um caminho que não é este motor.</td></tr>
+<tr><td><code>revogado</code></td><td>A cobrança foi cancelada por você. Se mesmo assim chegou token, ele é varrido e o status não volta.</td></tr>
+<tr><td><code>reorg</code></td><td>A prova anterior caiu. Não entregue com base no webhook antigo. Espere o estado seguinte.</td></tr>
+</table>
+<h2>O que recusamos</h2>
+<ul>
+<li>Devolver o USDC automaticamente para quem pagou. O motor não tem esse caminho.</li>
+<li>Reabrir <code>nao_realizado</code> se o restante chegar no dia seguinte.</li>
+<li>Usar o valor “bonito” da cobrança no lugar de <code>valor_recebido_base_units</code>.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Num link de teste que recebeu menos que a tolerância, espere <code>liquidacao_ate</code> ou adiante o relógio só num ambiente seu. O status passa a <code>nao_realizado</code> e o motivo é <code>valor_parcial</code>. O webhook correspondente tem <code>event: "link.nao_realizado"</code>.</div>
+
+<nav class="pager"><a href="13-varrer.html">← Varrer o valor</a><a href="15-operacao.html">Operação →</a></nav>
+</main>
+</div>
+</body>
+</html>

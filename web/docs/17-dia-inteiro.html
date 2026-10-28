@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Um dia inteiro · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html" aria-current="page">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 5 · Fazer e consultar</p>
+
+<h1>Um dia inteiro</h1>
+<p class="lede">A sequência que a pessoa implementa olhando. Os corpos são o exemplo-mestre: R$ 150,00, USDC na Polygon, 27 USDC esperados. Troque os segredos pelos seus. Não use estes uuids em produção; eles são didáticos.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Sair com um link <code>aguardando</code>, uma página aberta e um verificador de webhook pronto para quando o worker vir o pagamento.</div>
+<h2>O problema</h2>
+<p>Os capítulos anteriores separam as ideias. Na integração elas acontecem numa tarde só, e o erro mais comum é assinar um JSON diferente do que o HTTP envia, ou guardar a API key e esquecer o <code>request_secret</code>.</p>
+<h2>O método</h2>
+<p>Base local: <code>http://localhost:4578</code>. O worker precisa estar rodando para o passo do pagamento. A carteira de POL precisa ter saldo para o passo da varredura. Estes dois não são chamadas da loja.</p>
+<h3>1. Cliente</h3>
+<pre>curl -sS -X POST http://localhost:4578/admin/api/clientes \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"nome":"Loja Exemplo","webhook_url":"https://loja.example/webhooks/motor"}'</pre>
+<p>Guarde <code>api_key</code>, <code>request_secret</code> e <code>webhook_secret</code> agora. Anote o <code>data.id</code>.</p>
+<h3>2. Carteira</h3>
+<pre>curl -sS -X POST http://localhost:4578/admin/api/clientes/CLIENTE_ID/wallets \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"Carteira principal","chain":"polygon","address":"0x1111111111111111111111111111111111111111"}'</pre>
+<p>Anote <code>data.id</code> como <code>wallet_id</code>.</p>
+<h3>3. Perfil</h3>
+<p>Assine <code>GET /v1/ramp-profiles</code> e escolha o perfil Polygon USDC. A taxa do seed de exemplo é <code>"180000"</code>. Anote o <code>id</code>.</p>
+<h3>4. Link</h3>
+<p>Corpo, uma string só:</p>
+<pre>{"external_id":"pedido-150","amount_cents":15000,"ramp_profile_id":"PERFIL_ID","wallet_id":"WALLET_ID"}</pre>
+<p>Assine <code>POST</code> + <code>/v1/links</code> + timestamp + nonce + SHA-256 desse texto. Envie com <code>Idempotency-Key: pedido-150</code>. Espere 201, <code>reused: false</code>, <code>expected_base_units</code> <code>"27000000"</code> e uma <code>page_url</code>.</p>
+<h3>5. Página</h3>
+<p>Abra a <code>page_url</code>. O valor é R$ 150,00. O status público, sem autenticação, repete <code>aguardando</code>.</p>
+<h3>6. Quando o USDC chegar</h3>
+<p>O webhook de <code>pago</code> traz <code>valor_recebido_base_units</code> <code>"27000000"</code> se o valor veio cheio. O header <code>x-webhook-signature</code> tem a forma <code>t=&lt;unix&gt;,v1=&lt;hex&gt;</code>. O hex é HMAC-SHA256 do <code>webhook_secret</code> sobre <code>timestamp.corpo</code>, usando o corpo cru. Responda 204 rápido. Grave o <code>event_id</code>. Não entregue o pedido só com este aviso se a sua regra de negócio exige o token já na carteira: espere o evento cujo <code>data.status</code> é <code>movido</code>.</p>
+<h2>O contrato</h2>
+<p>O verificador mínimo, em Node, para um corpo já lido como string:</p>
+<pre>import { createHmac, timingSafeEqual } from 'node:crypto';
+
+function ok(secret, signatureHeader, rawBody) {
+  const partes = Object.fromEntries(signatureHeader.split(',').map((p) => p.split('=')));
+  const esperado = createHmac('sha256', secret).update(`${partes.t}.${rawBody}`).digest('hex');
+  const recebido = partes.v1 ?? '';
+  if (esperado.length !== recebido.length) return false;
+  return timingSafeEqual(Buffer.from(esperado), Buffer.from(recebido));
+}</pre>
+<p>Isto confere a assinatura do header <code>x-webhook-signature</code>. A janela do timestamp <code>t</code> fica a cargo da loja. O processamento do pedido fica depois do 204, numa fila sua.</p>
+<h2>O que recusamos</h2>
+<ul>
+<li>Pular a carteira e mandar um endereço solto no <code>POST /v1/links</code>. Esse campo não existe.</li>
+<li>Reenviar a criação com outro <code>amount_cents</code> e a mesma <code>Idempotency-Key</code>. É 409.</li>
+<li>Considerar o dia terminado no <code>pago</code> se você prometeu à operação que o USDC já está na carteira allowlisted.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>A resposta do link tem <code>page_url</code> e não tem <code>ramp_url</code>. A página mostra o botão. <code>GET /v1/links/ID</code> devolve o mesmo <code>id</code>. Quando o worker estiver no ar e o pagamento confirmar, o primeiro webhook e o <code>GET</code> concordam no <code>status</code>.</div>
+
+<nav class="pager"><a href="16-erros-e-limites.html">← Erros e limites</a><a href="18-referencia.html">Referência de rotas →</a></nav>
+</main>
+</div>
+</body>
+</html>

@@ -4,6 +4,8 @@ Este texto é para ser lido **antes** de abrir o código. Ele explica o que o si
 
 Não é um manual de linha por linha. É o mapa. Quando um nome de arquivo aparecer, ele está aqui para você reconhecer o lugar depois, não para você ir lá agora.
 
+Quem vai integrar a loja ou operar o admin, sem abrir estes arquivos, lê o livro em `web/docs/index.html`. Com a API no ar, o mesmo livro está em `/docs/`.
+
 A linguagem evita jargão solto. Quando um termo técnico é necessário, ele é explicado na hora e de novo no glossário do capítulo 3.
 
 ---
@@ -255,7 +257,7 @@ Abra `http://localhost:4578/admin/`, cole o `ADMIN_TOKEN` e conecte. Essa tela �
 
 No admin dá para criar o cliente da API. A resposta mostra a API key e o segredo de pedido uma única vez. Também cadastra a carteira de destino: um `0x` que passa a ser allowlisted naquela rede. Um link só varre para uma carteira que já esteja nessa lista.
 
-A cobrança em si não nasce no admin. A loja chama `POST /v1/links` com a API key, a assinatura HMAC, o valor em centavos (`amount_cents`), o perfil Ramp e o `wallet_id`. O contrato descreve isso em `docs/API.md`.
+A cobrança em si não nasce no admin. A loja chama `POST /v1/links` com a API key, a assinatura HMAC, o valor em centavos (`amount_cents`), o perfil Ramp e o `wallet_id`. O contrato está no livro, em `web/docs/09-criar-cobranca.html`.
 
 A resposta traz a URL pública `/p/:token`. Quem paga abre essa página, vê o valor, o QR e o botão da Ramp. A página consulta `/p/:token/status` sozinha. Quando o estado deixa de ser pagável, o botão some. As datas dessa página estão em UTC.
 
@@ -386,6 +388,7 @@ Agora sim. A ordem sugerida de leitura é a ordem em que o dinheiro anda, não a
 | Quando você quiser entender... | Comece por |
 | --- | --- |
 | A história inteira num arquivo só | este guia |
+| Integrar a API sem abrir o código | `web/docs/index.html` |
 | Como a API e o worker sobem diferentes | `src/bootstrap.ts`, `src/server.ts`, `src/worker/index.ts` |
 | O que é configurável e o que a produção recusa | `src/core/config.ts` e `.env.example` |
 | A regra de "não escolher o endereço do cliente" | `src/core/services/link-service.ts` e `src/core/hd/hd-wallet.ts` |
@@ -397,7 +400,7 @@ Agora sim. A ordem sugerida de leitura é a ordem em que o dinheiro anda, não a
 | Assinar ou recusar assinar | `src/core/signer/` |
 | Cifrar segredos da API | `src/core/crypto/cipher.ts` e `src/core/services/api-client-service.ts` |
 | Tabelas | `src/adapters/db/schema.ts` e `db/migrations/` |
-| O contrato HTTP | `docs/API.md`, `src/adapters/http/routes.ts` e `src/adapters/http/auth.ts` |
+| O contrato HTTP | `web/docs/18-referencia.html`, `src/adapters/http/routes.ts` e `src/adapters/http/auth.ts` |
 | As telas | `web/admin/` e `web/pay.js` |
 
 O núcleo em `src/core` não importa o framework HTTP nem o driver do banco. Ele recebe interfaces (portas). Os adaptadores em `src/adapters` são quem fala Postgres e HTTP. Isso permite testar a regra de negócio com repositórios falsos, sem subir banco, e é por isso que `npm test` cobre tanta regra sem Polygon de verdade.

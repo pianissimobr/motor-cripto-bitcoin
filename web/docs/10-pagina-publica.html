@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A página de quem paga · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html" aria-current="page">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 3 · O contrato</p>
+
+<h1>A página de quem paga</h1>
+<p class="lede">A <code>page_url</code> é a única superfície sem credencial de loja. Ela mostra o valor, o caminho até a Ramp e o estado, e se atualiza sozinha.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber o que a pessoa vê, o que o JSON público contém, e quando o botão de pagar deixa de aparecer.</div>
+<h2>O problema</h2>
+<p>Quem paga não tem API key e não deve receber uma. Se a página fosse estática, a pessoa continuaria vendo “aguardando” depois que o USDC já tivesse chegado. A página precisa perguntar de novo, sem que a loja faça essa pergunta por ela.</p>
+<h2>O método</h2>
+<p><code>GET /p/:token</code> devolve HTML. Não pede header. Mostra o valor em reais, o ativo e a rede, o status em português, o QR da URL da Ramp, o endereço de depósito e, enquanto a cobrança é pagável, o botão “Pagar com Ramp”.</p>
+<p>O arquivo <code>/pay.js</code>, servido pelo próprio motor, lê o token na URL e chama <code>GET /p/:token/status</code> a cada 4 segundos. Atualiza o texto do status, o motivo e o valor recebido. Quando o status deixa de ser pagável, o botão some.</p>
+<p>Pagável, aqui, é tudo o que não está em <code>pago</code>, <code>pago_sem_gas</code>, <code>movido</code>, <code>nao_realizado</code> ou <code>expirado</code>. <code>parcial</code> ainda mostra o botão: a janela não fechou e pode chegar o restante.</p>
+<p>As datas da página são UTC explícito, no formato <code>2026-10-23 16:00:00 UTC</code>.</p>
+<h2>O contrato</h2>
+<pre>GET /p/token-opaco
+GET /p/token-opaco/status</pre>
+<p>O status responde 200, com <code>Cache-Control: no-store</code>:</p>
+<pre>{
+  "status": "aguardando",
+  "motivo_nao_realizado": null,
+  "valor_fiat_centavos": 15000,
+  "moeda_fiat": "BRL",
+  "valor_recebido_base_units": "0",
+  "asset": "USDC",
+  "decimals": 6,
+  "expira_em": "2026-10-23T16:00:00.000Z",
+  "liquidacao_ate": "2026-10-24T15:00:00.000Z"
+}</pre>
+<p>Não há <code>ramp_url</code>, <code>page_url</code>, endereço da carteira allowlisted nem segredo da loja. O token inexistente responde 404, HTML na página e <code>{"erro":"pagina nao encontrada"}</code> no status.</p>
+<p><code>GET /health</code> é o outro endereço público: <code>{"ok": true, "ts": "2026-10-23T15:00:00.000Z"}</code>.</p>
+<div class="note cuidado"><strong>Cuidado</strong>A <code>page_url</code> é um segredo de portador. Quem a tem abre a cobrança. Não a escreva em log de acesso público nem em sistema de erro que guarda a URL inteira.</div>
+<h2>O que recusamos</h2>
+<ul>
+<li>Exigir login de quem paga.</li>
+<li>Entregar a URL da Ramp no JSON, onde um integrador poderia guardá-la fora da página.</li>
+<li>Deixar o botão no ar depois que a página expirou ou o pagamento já foi decidido como recebido, movido ou não realizado.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Abra a página, espere alguns segundos e olhe a rede do navegador. Existe um <code>GET</code> repetido para <code>/p/&lt;token&gt;/status</code>. O corpo não contém <code>ramp</code>. Quando o status passar a <code>pago</code>, o botão deixa de aparecer sem recarregar.</div>
+
+<nav class="pager"><a href="09-criar-cobranca.html">← Criar a cobrança</a><a href="11-provar-o-pagamento.html">Provar o pagamento →</a></nav>
+</main>
+</div>
+</body>
+</html>

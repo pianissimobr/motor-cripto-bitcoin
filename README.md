@@ -5,7 +5,7 @@ recebe uma pagina hospedada em `/p/<token>` e um webhook quando o pagamento
 chega a um estado final. O valor recebido e varrido para uma carteira
 allowlisted do proprio cliente.
 
-Documentacao completa da API: [docs/API.md](docs/API.md).
+Documentacao de quem integra e de quem opera: o livro em [web/docs/index.html](web/docs/index.html), servido em `/docs/` quando a API esta no ar. O indice de rotas e [web/docs/18-referencia.html](web/docs/18-referencia.html). O mapa do codigo continua em [docs/guia.md](docs/guia.md).
 
 ```
 cliente da API

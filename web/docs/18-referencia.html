@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Referência de rotas · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html" aria-current="page">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 5 · Fazer e consultar</p>
+
+<h1>Referência de rotas</h1>
+<p class="lede">Uma linha por rota: o objetivo e o capítulo que ensina o método. Os corpos completos estão lá, não aqui.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Achar a rota certa sem reler o livro, e saber para onde voltar quando o campo não bastar.</div>
+<h2>O problema</h2>
+<p>No meio da integração a pergunta é “qual verbo, qual caminho”. A resposta curta sem o capítulo ao lado volta a ser o catálogo que este livro substitui.</p>
+<h2>Públicas</h2>
+<table>
+<tr><th>Rota</th><th>Objetivo</th><th>Capítulo</th></tr>
+<tr><td><code>GET /health</code></td><td>Saber se a API está no ar.</td><td><a href="10-pagina-publica.html">A página</a></td></tr>
+<tr><td><code>GET /p/:token</code></td><td>Mostrar a cobrança a quem paga.</td><td><a href="10-pagina-publica.html">A página</a></td></tr>
+<tr><td><code>GET /p/:token/status</code></td><td>Atualizar status, motivo e valor recebido.</td><td><a href="10-pagina-publica.html">A página</a></td></tr>
+</table>
+<h2>Cliente <code>/v1</code></h2>
+<p>Todas exigem API key e HMAC. Ver <a href="07-confianca.html">Confiança</a>.</p>
+<table>
+<tr><th>Rota</th><th>Objetivo</th><th>Capítulo</th></tr>
+<tr><td><code>POST /v1/links</code></td><td>Criar a cobrança ou reusar a mesma chave.</td><td><a href="09-criar-cobranca.html">Criar a cobrança</a></td></tr>
+<tr><td><code>GET /v1/links</code></td><td>Listar as cobranças deste cliente.</td><td><a href="09-criar-cobranca.html">Criar a cobrança</a></td></tr>
+<tr><td><code>GET /v1/links/:id</code></td><td>Ler uma cobrança, inclusive depois do webhook.</td><td><a href="09-criar-cobranca.html">Criar a cobrança</a></td></tr>
+<tr><td><code>POST /v1/links/:id/revoke</code></td><td>Encerrar uma cobrança ainda revogável.</td><td><a href="09-criar-cobranca.html">Criar a cobrança</a></td></tr>
+<tr><td><code>GET /v1/ramp-profiles</code></td><td>Escolher o perfil e a taxa vigentes.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /v1/wallets</code></td><td>Escolher a carteira allowlisted.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+</table>
+<h2>Admin <code>/admin/api</code></h2>
+<p>Bearer <code>ADMIN_TOKEN</code>. Tela em <code>/admin/</code>. Ver <a href="15-operacao.html">Operação</a>.</p>
+<table>
+<tr><th>Rota</th><th>Objetivo</th><th>Capítulo</th></tr>
+<tr><td><code>POST /admin/api/clientes</code></td><td>Criar o cliente e revelar os três segredos uma vez.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /admin/api/clientes</code></td><td>Listar clientes sem segredos.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /admin/api/clientes/:id</code></td><td>Ver o cliente e as carteiras.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>PATCH /admin/api/clientes/:id</code></td><td>Mudar nome, webhook ou status.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>POST /admin/api/clientes/:id/rotate-key</code></td><td>Trocar API key e request secret.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>POST /admin/api/clientes/:id/rotate-webhook-secret</code></td><td>Trocar o segredo dos webhooks.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /admin/api/clientes/:id/wallets</code></td><td>Listar carteiras do cliente.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>POST /admin/api/clientes/:id/wallets</code></td><td>Allowlist de uma carteira.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /admin/api/ramp-profiles</code></td><td>Listar perfis.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>POST /admin/api/ramp-profiles</code></td><td>Criar perfil, inclusive contrato e decimais.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>PATCH /admin/api/ramp-profiles/:id</code></td><td>Mudar rótulo, moeda, URL, estilo, host e taxa.</td><td><a href="08-preparar-a-loja.html">Preparar a loja</a></td></tr>
+<tr><td><code>GET /admin/api/links</code></td><td>Listar cobranças de todos os clientes.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+<tr><td><code>GET /admin/api/links/:id</code></td><td>Detalhe com pagamentos, sweeps e webhooks.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+<tr><td><code>POST /admin/api/links/:id/revoke</code></td><td>Revogar pelo operador.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+<tr><td><code>GET /admin/api/webhooks</code></td><td>Ver a fila de entrega.</td><td><a href="12-webhooks.html">Webhooks</a></td></tr>
+<tr><td><code>POST /admin/api/webhooks/:id/replay</code></td><td>Reenfileirar um evento.</td><td><a href="12-webhooks.html">Webhooks</a></td></tr>
+<tr><td><code>POST /admin/api/sweeps/:id/submit</code></td><td>Enviar a transação assinada fora do servidor.</td><td><a href="13-varrer.html">Varrer</a></td></tr>
+<tr><td><code>GET /admin/api/audit</code></td><td>Ler o diário de ações.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+<tr><td><code>GET /admin/api/alerts</code></td><td>Ver o que pede intervenção.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+<tr><td><code>GET /admin/api/status</code></td><td>Contar clientes, links e webhooks.</td><td><a href="15-operacao.html">Operação</a></td></tr>
+</table>
+<h2>O que recusamos</h2>
+<p>Esta página não é o lugar do corpo JSON. Se a rota não está na tabela, ela não existe nesta versão. Campo a mais no corpo conhecido responde 400, porque os esquemas são estritos.</p>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Percorra a tabela e abra o capítulo do lado. Se você precisou de um exemplo de corpo e ele não estava no capítulo, o buraco é do livro, não uma rota escondida.</div>
+
+<nav class="pager"><a href="17-dia-inteiro.html">← Um dia inteiro</a></nav>
+</main>
+</div>
+</body>
+</html>

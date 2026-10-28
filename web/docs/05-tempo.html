@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tempo · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html" aria-current="page">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 2 · O método</p>
+
+<h1>Tempo</h1>
+<p class="lede">A página e a blockchain não compartilham o mesmo relógio. A página fecha em uma hora. A leitura do pagamento continua até o fim da janela de liquidação.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Distinguir <code>expira_em</code> de <code>liquidacao_ate</code> e ler as datas em UTC.</div>
+<h2>O problema</h2>
+<p>Se a página e o pagamento vencessem juntos, um USDC que chegasse no minuto 61 seria ignorado. Quem pagou já gastou o dinheiro. O motor separa “a página ainda mostra o botão” de “ainda aceitamos o que a rede registrar”.</p>
+<h2>O método</h2>
+<p>Na criação, com os padrões <code>LINK_TTL_MINUTES=60</code> e <code>SETTLEMENT_DAYS=1</code>, um link nascido às <code>2026-10-23T15:00:00.000Z</code> recebe:</p>
+<pre>expira_em       2026-10-23T16:00:00.000Z
+liquidacao_ate  2026-10-24T15:00:00.000Z</pre>
+<p>Até <code>expira_em</code>, a página está ativa e o estado pode seguir <code>aguardando</code>. Passada a hora, se ainda não houve pagamento confirmado, o estado vai a <code>expirado</code>. O botão da Ramp some. O worker continua lendo a rede até <code>liquidacao_ate</code>.</p>
+<p>Todas as datas da API são ISO 8601 em UTC, com o sufixo <code>Z</code>. A página pública escreve o mesmo instante como <code>2026-10-23 16:00:00 UTC</code>. Não há fuso do servidor nessa frase.</p>
+<p>O relógio da assinatura é outro: <code>X-Timestamp</code> é Unix em segundos e precisa cair numa janela de 300 segundos para os dois lados. Isso não tem relação com a validade da cobrança.</p>
+<h2>O contrato</h2>
+<table>
+<tr><th>Campo</th><th>O que fecha</th><th>Padrão</th></tr>
+<tr><td><code>expira_em</code></td><td>A página e o botão de pagar</td><td>60 minutos</td></tr>
+<tr><td><code>liquidacao_ate</code></td><td>A classificação final do link</td><td>1 dia corrido</td></tr>
+<tr><td><code>X-Timestamp</code></td><td>A aceitação daquele pedido HTTP</td><td>±300 segundos</td></tr>
+</table>
+<h2>O que recusamos</h2>
+<ul>
+<li>Apagar a cobrança quando a página vence. <code>expirado</code> ainda pode receber pagamento dentro da janela.</li>
+<li>Tratar pagamento depois de <code>liquidacao_ate</code> como se a janela ainda estivesse aberta. Ele é registrado, varrido, e o motivo fica <code>pagamento_apos_prazo</code>.</li>
+<li>Comparar a data com o fuso local da máquina. Use o instante UTC.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>No JSON do link, <code>liquidacao_ate</code> é posterior a <code>expira_em</code>. Na página, as duas frases citam o horário em UTC. Se a página mostrar o fuso da cidade do servidor, a versão no ar não é esta.</div>
+
+<nav class="pager"><a href="04-dinheiro.html">← Dinheiro</a><a href="06-estados.html">Estados →</a></nav>
+</main>
+</div>
+</body>
+</html>

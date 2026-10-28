@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operação · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html" aria-current="page">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 4 · Operar e falhar</p>
+
+<h1>Operação</h1>
+<p class="lede">O admin é o lugar onde a loja vê o que o worker está fazendo quando a API da cobrança já respondeu. Recurso que não existe responde 404. Alerta não é webhook.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Achar um link, um webhook falho e um alerta, e saber qual chamada desbloqueia cada um.</div>
+<h2>O problema</h2>
+<p>A loja integradora olha o próprio pedido. Quem opera o motor olha todos os clientes, a fila de webhooks e o saldo de POL. Sem essa segunda vista, <code>pago_sem_gas</code> vira um mistério do lado de quem só lê <code>/v1</code>.</p>
+<h2>O método</h2>
+<p>Abra <code>http://localhost:4578/admin/</code> e cole o <code>ADMIN_TOKEN</code>. A raiz <code>/</code> redireciona para essa tela. O token fica na aba, não num cookie enviado sozinho.</p>
+<p>As rotas abaixo usam <code>Authorization: Bearer</code> e respondem <code>{"data": ...}</code>, salvo a criação e as rotações, que acrescentam o segredo ao lado de <code>data</code>.</p>
+<ul>
+<li><code>GET /admin/api/status</code> resume quantos clientes, perfis, links e webhooks recentes existem, e conta por status.</li>
+<li><code>GET /admin/api/links</code> e <code>GET /admin/api/links/:id</code> listam e detalham. O detalhe inclui pagamentos, transferências internas e webhooks daquele link. Id inexistente é 404, não um 200 com <code>data: null</code>.</li>
+<li><code>POST /admin/api/links/:id/revoke</code> segue a mesma regra de revogação da API da loja.</li>
+<li><code>GET /admin/api/webhooks</code> mostra a fila: <code>pendente</code>, <code>entregue</code> ou <code>falhou</code>, tentativas, próximo horário e último erro.</li>
+<li><code>POST /admin/api/webhooks/:id/replay</code> recoloca um evento em <code>pendente</code>. Id inexistente é 404.</li>
+<li><code>GET /admin/api/audit?limit=50</code> é o diário: quem fez o quê, em qual entidade, com qual IP.</li>
+<li><code>GET /admin/api/alerts</code> é a lista viva de coisas que pedem gente: pagamento parcial, falta de gas, patrocinador baixo, destino recusado, saldo sem log, link <code>nao_realizado</code> que ainda tem valor por varrer.</li>
+</ul>
+<p>Perfil inexistente no <code>PATCH</code> também é 404. O submit manual de sweep preserva 400, 404 ou 409, como o capítulo da varredura descreve.</p>
+<h2>O contrato</h2>
+<p>Um alerta tem <code>nivel</code>, <code>codigo</code>, <code>titulo</code>, <code>descricao</code> e, quando cabe, <code>linkId</code>. Não substitui o webhook. A loja que integra não deve depender do admin para entregar pedido. O operador depende do admin para destravar gas, destino e webhook <code>falhou</code>.</p>
+<p>Listagens aceitam <code>limit</code> de 1 a 200, padrão 50.</p>
+<h2>O que recusamos</h2>
+<ul>
+<li>200 com corpo vazio no lugar de 404. Se o id não está no banco, a resposta é 404.</li>
+<li>Usar o alerta como entrega garantida à loja. Alerta é para o operador.</li>
+<li>Devolver segredos de cliente nesta tela de consulta.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong><code>GET /admin/api/links/00000000-0000-4000-8000-000000000000</code> com o token certo responde 404. <code>GET /admin/api/alerts</code> com a carteira de POL vazia e um link <code>pago_sem_gas</code> traz o alerta de patrocinador, não um estado novo no link.</div>
+
+<nav class="pager"><a href="14-liquidacao.html">← Liquidação</a><a href="16-erros-e-limites.html">Erros e limites →</a></nav>
+</main>
+</div>
+</body>
+</html>

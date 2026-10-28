@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webhooks · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html" aria-current="page">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 3 · O contrato</p>
+
+<h1>Webhooks</h1>
+<p class="lede">O webhook é o aviso de que o estado mudou para um ponto que a loja precisa tratar. O mesmo link pode avisar mais de uma vez. A identidade do aviso é o <code>event_id</code>, não o id do link.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Receber o POST, conferir a assinatura, deduplicar e decidir o pedido com o <code>status</code> de dentro do corpo.</div>
+<h2>O problema</h2>
+<p>Se a loja tratar “chegou um webhook deste link” como “entregue o pedido”, ela entrega cedo demais no <code>pago</code>, quando o token ainda não está na carteira, ou entrega de novo no <code>movido</code>. Se ela exigir exatamente um webhook, perde o segundo aviso. Os dois erros nascem de usar o link como chave do evento.</p>
+<h2>O método</h2>
+<p>A máquina de estados enfileira webhook só nestas chegadas: <code>pago</code>, <code>pago_sem_gas</code>, <code>movido</code> e <code>nao_realizado</code>. <code>parcial</code>, <code>aguardando</code> e <code>expirado</code> não avisam. O evento é gravado antes da primeira tentativa. Cada tentativa assina o corpo exato.</p>
+<p>Um link que vai a <code>pago</code> e depois a <code>movido</code> produz dois eventos, os dois com <code>event: "link.realizado"</code>, cada um com seu <code>event_id</code>. O que mudou está em <code>data.status</code>. A loja guarda os <code>event_id</code> que já processou e lê o status para saber o que fazer.</p>
+<p><code>nao_realizado</code> usa <code>event: "link.nao_realizado"</code> e traz <code>motivo_nao_realizado</code>. Dinheiro que chega depois, sem nova transição, não gera outro webhook. A loja vê o valor novo ao consultar o link.</p>
+<h2>O contrato</h2>
+<p>O motor faz <code>POST</code> na <code>webhook_url</code> do cliente. Headers:</p>
+<pre>Content-Type: application/json
+User-Agent: motor-cripto-webhook/1
+x-webhook-signature: t=1792700000,v1=&lt;hex&gt;
+x-webhook-event: realizado
+x-webhook-delivery: 77777777-7777-4777-8777-777777777777</pre>
+<p><code>x-webhook-event</code> é <code>realizado</code> ou <code>nao_realizado</code>. O nome longo, <code>link.realizado</code> ou <code>link.nao_realizado</code>, está no campo <code>event</code> do corpo. <code>x-webhook-delivery</code> identifica esta entrega na fila. A chave para não processar duas vezes é <code>event_id</code>, dentro do JSON.</p>
+<p>O hex é HMAC-SHA256 do <code>webhook_secret</code> sobre a string <code>timestamp.corpo</code>, com o corpo cru. O timestamp é o número depois de <code>t=</code> na assinatura. Não há header separado de tempo. Compare o HMAC em tempo constante e recuse timestamp velho demais para o seu sistema.</p>
+<pre>{
+  "event": "link.realizado",
+  "event_id": "66666666-6666-4666-8666-666666666666",
+  "created_at": "2026-10-23T15:10:00.000Z",
+  "data": {
+    "link_id": "44444444-4444-4444-8444-444444444444",
+    "external_id": "pedido-150",
+    "status": "pago",
+    "motivo_nao_realizado": null,
+    "valor_fiat_centavos": 15000,
+    "moeda_fiat": "BRL",
+    "valor_recebido_base_units": "27000000",
+    "chain": "polygon",
+    "asset": "USDC",
+    "wallet_address": "0x1111111111111111111111111111111111111111",
+    "expira_em": "2026-10-23T16:00:00.000Z",
+    "liquidacao_ate": "2026-10-24T15:00:00.000Z"
+  }
+}</pre>
+<p>Resposta <code>2xx</code> marca o evento como entregue. Qualquer outra coisa, timeout ou erro de rede, reagenda. O intervalo é 60 segundos, 5 minutos, 30 minutos, 2 horas, 6 horas e 24 horas. Depois de <code>WEBHOOK_MAX_ATTEMPTS</code> (padrão 6) o evento fica <code>falhou</code>. O admin pode reenviar com <code>POST /admin/api/webhooks/:id/replay</code>. O evento volta a <code>pendente</code>.</p>
+<p>Responda rápido. O trabalho pesado da loja fica numa fila interna. O motor considera entregue apenas o <code>2xx</code>.</p>
+<h2>O que recusamos</h2>
+<ul>
+<li>Um webhook por link como regra. A regra é um webhook por transição relevante.</li>
+<li>Confiar no POST só porque veio do IP esperado. A prova é a assinatura com o <code>webhook_secret</code>.</li>
+<li>Tratar <code>pago_sem_gas</code> como pedido entregue. É aviso de que o valor chegou e a varredura ainda não pode sair.</li>
+</ul>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Grave os dois primeiros <code>event_id</code> de um pagamento cheio. Eles são diferentes. Os dois <code>data.link_id</code> são iguais. O primeiro <code>data.status</code> é <code>pago</code> ou <code>pago_sem_gas</code>. O seguinte, quando a varredura confirma, é <code>movido</code>.</div>
+
+<nav class="pager"><a href="11-provar-o-pagamento.html">← Provar o pagamento</a><a href="13-varrer.html">Varrer o valor →</a></nav>
+</main>
+</div>
+</body>
+</html>

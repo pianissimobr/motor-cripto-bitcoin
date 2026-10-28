@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Confiança · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
+<p class="where">Documentação de quem integra e de quem opera.</p>
+<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
+<h2>Parte 1</h2><ol>
+<li><a href="01-objetivo.html">O objetivo</a></li>
+<li><a href="02-atores.html">Os três atores</a></li>
+</ol>
+<h2>Parte 2</h2><ol>
+<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
+<li><a href="04-dinheiro.html">Dinheiro</a></li>
+<li><a href="05-tempo.html">Tempo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+</ol>
+<h2>Parte 3</h2><ol>
+<li><a href="07-confianca.html" aria-current="page">Confiança</a></li>
+<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Webhooks</a></li>
+<li><a href="13-varrer.html">Varrer o valor</a></li>
+</ol>
+<h2>Parte 4</h2><ol>
+<li><a href="14-liquidacao.html">Liquidação</a></li>
+<li><a href="15-operacao.html">Operação</a></li>
+<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
+</ol>
+<h2>Parte 5</h2><ol>
+<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
+<li><a href="18-referencia.html">Referência de rotas</a></li>
+</ol>
+</nav>
+<main>
+<p class="kicker">Parte 3 · O contrato</p>
+
+<h1>Confiança</h1>
+<p class="lede">O admin apresenta um token. A loja assina cada pedido. As duas provas não se misturam, e a segunda exige que o JSON seja exatamente o que foi enviado.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Montar um pedido <code>/v1</code> que a API aceite, e reconhecer por que um corpo “igual” ainda falha.</div>
+<h2>O problema</h2>
+<p>Uma API key sozinha, se vazar num log, permite criar cobranças para sempre. A assinatura obriga quem chama a provar que também tem o <code>request_secret</code>, naquele segundo, para aquele corpo. Um nonce impede que o mesmo pedido assinado seja repetido por um terceiro.</p>
+<h2>O método</h2>
+<h3>Admin</h3>
+<p>Toda rota <code>/admin/api/*</code> leva:</p>
+<pre>Authorization: Bearer &lt;ADMIN_TOKEN&gt;</pre>
+<p>Não há assinatura de corpo. Token ausente responde 401. Token errado responde 403. Vinte falhas no mesmo IP, dentro de um minuto, passam a responder 429 mesmo que a vigésima primeira tentativa traga o token certo. A janela é de um minuto.</p>
+<h3>Cliente da API</h3>
+<p>Toda rota <code>/v1/*</code> leva a chave e três headers:</p>
+<pre>Authorization: Bearer mk_live_...
+X-Timestamp: 1792700000
+X-Nonce: pedido-150-01
+X-Signature: v1=&lt;hex&gt;</pre>
+<p>A string assinada, com quebras de linha reais entre as cinco linhas, é:</p>
+<pre>METHOD
+PATH
+TIMESTAMP
+NONCE
+SHA256(RAW_BODY)</pre>
+<p><code>METHOD</code> vai em maiúsculas. <code>PATH</code> não inclui a query: <code>GET /v1/links?limit=10</code> assina <code>/v1/links</code>. O hash é SHA-256 do corpo cru, em hex minúsculo. <code>GET</code> e <code>POST</code> sem corpo assinam o hash da string vazia. O HMAC é SHA-256 com o <code>request_secret</code>, e o header recebe o prefixo <code>v1=</code>.</p>
+<p>O timestamp é Unix em segundos, aceito numa janela de 300 segundos. O nonce tem de 8 a 128 caracteres e só pode ser usado uma vez por cliente. Reuso responde 409.</p>
+<div class="note cuidado"><strong>Cuidado</strong>Assine os bytes que vão no fio. Se você monta um objeto, assina, e depois o cliente HTTP reordena as chaves ou muda espaços, a assinatura deixa de bater. O caminho seguro é serializar uma vez, assinar essa string e enviar essa mesma string.</div>
+<h3>Idempotência</h3>
+<p>A chave é o header <code>Idempotency-Key</code>. Se ele não vier, o motor usa <code>external_id</code>. A mesma chave com o mesmo payload devolve o link original e <code>reused: true</code>. A mesma chave com outro payload responde 409. O payload comparado inclui <code>external_id</code>, <code>amount_cents</code>, <code>ramp_profile_id</code>, <code>wallet_id</code> e <code>final_url</code>. <code>external_id</code> também é único por cliente.</p>
+<h2>O contrato</h2>
+<pre>POST /v1/links
+Idempotency-Key: pedido-150
+
+{"external_id":"pedido-150","amount_cents":15000,"ramp_profile_id":"...","wallet_id":"..."}</pre>
+<p>O hex do SHA-256 dessa string exata entra na quinta linha. Não use um JSON “bonito” se a assinatura foi feita no JSON compacto, nem o contrário.</p>
+<h2>O que recusamos</h2>
+<table>
+<tr><th>HTTP</th><th>Quando</th></tr>
+<tr><td>401</td><td>Chave ausente ou desconhecida, header HMAC faltando, assinatura errada, timestamp fora da janela.</td></tr>
+<tr><td>403</td><td>Bearer de admin diferente do <code>ADMIN_TOKEN</code>.</td></tr>
+<tr><td>409</td><td>Nonce já usado, ou idempotência com outro corpo (<code>idempotencia_conflitante</code>).</td></tr>
+<tr><td>429</td><td>Vinte falhas de credencial naquele IP no último minuto, ou o teto global de 120 pedidos.</td></tr>
+</table>
+<h2>Como conferir</h2>
+<div class="note conferir"><strong>Como conferir</strong>Repita o mesmo <code>POST /v1/links</code> com o mesmo nonce. A segunda resposta é 409, “nonce ja utilizado”. Troque o nonce, mantenha a <code>Idempotency-Key</code> e o corpo. A resposta é 200 com <code>reused: true</code> e o mesmo <code>id</code>.</div>
+
+<nav class="pager"><a href="06-estados.html">← Estados</a><a href="08-preparar-a-loja.html">Preparar a loja →</a></nav>
+</main>
+</div>
+</body>
+</html>
