@@ -9,75 +9,35 @@
 <body>
 <div class="layout">
 <nav class="nav">
-<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
-<p class="where">Documentação de quem integra e de quem opera.</p>
-<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
-<h2>Parte 1</h2><ol>
-<li><a href="01-objetivo.html">O objetivo</a></li>
-<li><a href="02-atores.html">Os três atores</a></li>
-</ol>
-<h2>Parte 2</h2><ol>
-<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
-<li><a href="04-dinheiro.html">Dinheiro</a></li>
-<li><a href="05-tempo.html">Tempo</a></li>
-<li><a href="06-estados.html">Estados</a></li>
-</ol>
-<h2>Parte 3</h2><ol>
-<li><a href="07-confianca.html">Confiança</a></li>
-<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<a class="brand" href="index.html">Motor Cripto <span>Bitcoin</span></a>
+<p class="where">Serviço <code>btc-payments</code>, porta 4580. Leia de cima para baixo.</p>
+<h2>Caminho</h2>
+<ol>
+<li><a href="index.html">Capa</a></li>
+<li><a href="01-objetivo.html">Para onde vai o dinheiro</a></li>
+<li><a href="02-atores.html">O que você configura</a></li>
+<li><a href="08-preparar-a-loja.html">Cadastrar a loja</a></li>
+<li><a href="07-confianca.html">Assinar o pedido</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
+<li><a href="04-dinheiro.html">Sats</a></li>
+<li><a href="10-pagina-publica.html">Mostrar o QR</a></li>
+<li><a href="05-tempo.html">Prazo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
-<li><a href="12-webhooks.html">Webhooks</a></li>
-<li><a href="13-varrer.html">Varrer o valor</a></li>
-</ol>
-<h2>Parte 4</h2><ol>
-<li><a href="14-liquidacao.html">Liquidação</a></li>
-<li><a href="15-operacao.html">Operação</a></li>
-<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
-</ol>
-<h2>Parte 5</h2><ol>
-<li><a href="17-dia-inteiro.html" aria-current="page">Um dia inteiro</a></li>
-<li><a href="18-referencia.html">Referência de rotas</a></li>
+<li><a href="12-webhooks.html">Avisar a loja</a></li>
+<li><a href="13-varrer.html">Varrer para a carteira fria</a></li>
+<li><a href="14-liquidacao.html">Fora do prazo</a></li>
+<li><a href="15-operacao.html">Operar</a></li>
+<li><a href="16-erros-e-limites.html">Erros</a></li>
+<li><a href="20-contrato.html">Contrato</a></li>
+<li><a href="18-referencia.html">Rotas</a></li>
 </ol>
 </nav>
 <main>
-<p class="kicker">Parte 5 · Fazer e consultar</p>
+<h1>Este capítulo mudou de lugar</h1>
+<p class="lede">A sequência de uma cobrança está em <a href="09-criar-cobranca.html">Criar a cobrança</a>, <a href="11-provar-o-pagamento.html">Provar o pagamento</a> e <a href="12-webhooks.html">Avisar a loja</a>.</p>
 
-<h1>Um dia inteiro</h1>
-<p class="lede">A mesma cobrança de 10.000 sats, do admin até o webhook, na ordem em que as chamadas acontecem.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Ter uma sequência para copiar num ambiente de teste e reconhecer cada resposta.</div>
-
-<h2>1. O operador cria a loja</h2>
-<pre><code>curl -X POST http://localhost:4580/admin/api/clients \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Minha loja","webhook_url":"https://loja.example/webhooks/btc"}'</code></pre>
-<p>Guarde <code>apiKey</code>, <code>requestSecret</code> e <code>webhookSecret</code>. Eles não aparecem de novo.</p>
-
-<h2>2. A loja cria a cobrança</h2>
-<p>Corpo exato, sem reformatar depois de assinar:</p>
-<pre><code>{"external_id":"pedido-123","amount_sats":"10000","description":"Pedido 123"}</code></pre>
-<p><code>POST /v1/payment-intents</code> com os quatro headers de <a href="07-confianca.html">Confiança</a>. A resposta <code>201</code> traz <code>status: "pendente"</code>, <code>lightning.invoice</code>, <code>onchain.address</code> e <code>qr_svg</code>.</p>
-
-<h2>3. Quem paga</h2>
-<p>A loja mostra o SVG. No teste, pague a invoice no LNbits de desenvolvimento, ou envie 10.000 sats ao endereço na rede de <code>BTC_NETWORK</code>.</p>
-
-<h2>4. O worker conclui</h2>
-<p>Lightning: em até uns 15 segundos o status vira <code>pago</code>, <code>paid_rail</code> fica <code>lightning</code>, e a loja recebe <code>payment_intent.paid</code>. On-chain: o status espera as confirmações. Com o padrão, uma basta abaixo de 1.000.000 sats. Aí o webhook sai, e o sweep seguinte monta a transação para a carteira fria.</p>
-
-<h2>5. A loja confere</h2>
-<pre><code>GET /v1/payment-intents?external_id=pedido-123</code></pre>
-<p>Assine com corpo vazio e path sem query. <code>paid_amount_sats</code> deve ser pelo menos <code>"10000"</code> para quitar o pedido. <code>overpaid_sats</code> acima de zero significa que entrou mais do que o pedido.</p>
-
-<h2>6. O que pode quebrar no meio</h2>
-<ul>
-<li>Nada muda e <code>/ready</code> está 503: LNbits, Esplora ou o banco. O pedido foi criado, mas ninguém está olhando a rede.</li>
-<li>Status <code>expirado</code> às 12:10 se ninguém pagou até <code>expires_at</code>. On-chain ainda pode virar <code>pago_tardio</code> até <code>grace_until</code>.</li>
-<li>Webhook na fila: <code>GET /admin/api/webhooks</code> mostra <code>last_error</code>. A loja respondendo <code>2xx</code> esvazia a tentativa. <code>replay</code> zera o contador daquele evento.</li>
-</ul>
-
-<nav class="pager"><a href="16-erros-e-limites.html">← Erros e limites</a><a href="18-referencia.html">Referência de rotas →</a></nav>
+<nav class="pager"><a href="index.html">← Capa</a></nav>
 </main>
 </div>
 </body>

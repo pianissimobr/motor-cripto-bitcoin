@@ -1,5 +1,9 @@
 # API de cobrancas
 
+O contrato completo, com todos os corpos, está em
+[`docs/API.md`](../../../docs/API.md) na raiz do repositório. Esta página é o
+resumo ao lado do código.
+
 Base: `PUBLIC_BASE_URL` (ex.: `https://payments.example.com`).
 
 ## Autenticacao

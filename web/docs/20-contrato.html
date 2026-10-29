@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contrato da API · Motor Cripto</title>
+<link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+<div class="layout">
+<nav class="nav">
+<a class="brand" href="index.html">Motor Cripto <span>Bitcoin</span></a>
+<p class="where">Serviço <code>btc-payments</code>, porta 4580. Leia de cima para baixo.</p>
+<h2>Caminho</h2>
+<ol>
+<li><a href="index.html">Capa</a></li>
+<li><a href="01-objetivo.html">Para onde vai o dinheiro</a></li>
+<li><a href="02-atores.html">O que você configura</a></li>
+<li><a href="08-preparar-a-loja.html">Cadastrar a loja</a></li>
+<li><a href="07-confianca.html">Assinar o pedido</a></li>
+<li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
+<li><a href="04-dinheiro.html">Sats</a></li>
+<li><a href="10-pagina-publica.html">Mostrar o QR</a></li>
+<li><a href="05-tempo.html">Prazo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
+<li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
+<li><a href="12-webhooks.html">Avisar a loja</a></li>
+<li><a href="13-varrer.html">Varrer para a carteira fria</a></li>
+<li><a href="14-liquidacao.html">Fora do prazo</a></li>
+<li><a href="15-operacao.html">Operar</a></li>
+<li><a href="16-erros-e-limites.html">Erros</a></li>
+<li><a href="20-contrato.html" aria-current="page">Contrato</a></li>
+<li><a href="18-referencia.html">Rotas</a></li>
+</ol>
+</nav>
+<main>
+<h1>Contrato da API</h1>
+<p class="lede">Cada rota da porta 4580, com o JSON de ida e de volta. A base local é <code>http://localhost:4580</code>. Em produção, <code>PUBLIC_BASE_URL</code>. Datas em UTC. Sats em string, sem ponto.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Integrar a loja e operar o admin sem abrir outro capítulo para achar o corpo.</div>
+
+<h2>Quatro portas</h2>
+<table>
+<thead><tr><th>Quem</th><th>Prefixo</th><th>Credencial</th></tr></thead>
+<tbody>
+<tr><td>Loja</td><td><code>/v1/</code></td><td>API key + HMAC</td></tr>
+<tr><td>Operador</td><td><code>/admin/api/</code></td><td><code>Authorization: Bearer {ADMIN_TOKEN}</code></td></tr>
+<tr><td>LNbits</td><td><code>POST /webhooks/lnbits</code></td><td><code>?token=</code> igual a <code>LNBITS_WEBHOOK_TOKEN</code></td></tr>
+<tr><td>Probe</td><td><code>/health</code>, <code>/ready</code></td><td>nenhuma</td></tr>
+</tbody>
+</table>
+<p>Corpo máximo: 64 KiB (413). 120 pedidos por minuto por cliente, pela chave do cabeçalho <code>Authorization</code>. No webhook do LNbits, 120 por minuto por IP. <code>/health</code> não entra na conta.</p>
+
+<h2>Erro</h2>
+<pre><code>{
+  "error": {
+    "code": "validation_error",
+    "message": "corpo invalido",
+    "details": []
+  }
+}</code></pre>
+<p><code>details</code> só vem quando o servidor tem o que mostrar, em geral os campos que o schema recusou.</p>
+<table>
+<thead><tr><th>HTTP</th><th>code</th><th>Quando</th></tr></thead>
+<tbody>
+<tr><td>400</td><td><code>validation_error</code></td><td>Corpo, query ou path inválido. <code>amount_sats</code> com fração, sinal ou zero. Prazo fora de 30–86400. Campo extra num corpo estrito</td></tr>
+<tr><td>401</td><td><code>unauthorized</code></td><td>API key, relógio (janela de 300 s), nonce ou assinatura. Token admin ou token do LNbits errado. Cliente <code>inativo</code></td></tr>
+<tr><td>404</td><td><code>not_found</code></td><td>Intent de outro cliente, id inexistente, webhook ou sweep inexistente</td></tr>
+<tr><td>409</td><td><code>conflict</code></td><td>Mesmo <code>external_id</code> com outro valor. Id em <code>criando</code> ou <code>falha_criacao</code>. Cancelar fora de <code>pendente</code>. Retry de sweep com tx vivo</td></tr>
+<tr><td>413</td><td><code>bad_request</code></td><td>Corpo acima de 64 KiB</td></tr>
+<tr><td>429</td><td>limite</td><td>Janela daquele cliente ou daquele IP</td></tr>
+<tr><td>502</td><td><code>upstream_error</code></td><td>LNbits não criou a invoice. A intent ficou <code>falha_criacao</code></td></tr>
+<tr><td>503</td><td><code>service_unavailable</code></td><td><code>GET /ready</code> com algum check falho</td></tr>
+</tbody>
+</table>
+
+<h2>HMAC da loja</h2>
+<pre><code>Authorization: Bearer mk_btc_live_...
+X-Timestamp: 1792700000
+X-Nonce: pedido-123-tentativa-1
+X-Signature: v1=0123abcd...
+Content-Type: application/json</code></pre>
+<p>A string canônica, com quebras de linha reais. <code>PATH</code> não inclui a query. A última linha é o SHA-256 hex do corpo cru. GET e cancelamento assinam corpo vazio, e o hash desse vazio entra na última linha.</p>
+<pre><code>METHOD
+PATH
+TIMESTAMP
+NONCE
+SHA256(corpo cru)</code></pre>
+<p><code>X-Nonce</code> tem de 8 a 128 caracteres e vale uma vez por cliente, por 10 minutos. Retry de rede precisa de nonce novo. A idempotência da cobrança é o <code>external_id</code>, não o nonce. <code>X-Signature</code> aceita o hex puro ou o prefixo <code>v1=</code>.</p>
+<p>A API key é guardada como SHA-256. O <code>request_secret</code>, chave deste HMAC, aparece uma vez na criação do cliente.</p>
+
+<h2>POST /v1/payment-intents</h2>
+<pre><code>{
+  "external_id": "pedido-123",
+  "amount_sats": "10000",
+  "description": "Pedido 123",
+  "expires_in_seconds": 600,
+  "metadata": { "order_id": "123" }
+}</code></pre>
+<table>
+<thead><tr><th>Campo</th><th>Regra</th></tr></thead>
+<tbody>
+<tr><td><code>external_id</code></td><td>Obrigatório. 1 a 128 caracteres. Único por cliente</td></tr>
+<tr><td><code>amount_sats</code></td><td>Obrigatório. String de dígitos ou inteiro positivo, até 21 milhões de BTC</td></tr>
+<tr><td><code>description</code></td><td>Opcional. Até 200 caracteres. Vira o <code>label</code> da URI. Se faltar, o label é o <code>external_id</code></td></tr>
+<tr><td><code>expires_in_seconds</code></td><td>Opcional. 30 a 86400. Ausente usa 600</td></tr>
+<tr><td><code>metadata</code></td><td>Opcional. Objeto guardado na intent. Não volta no GET nem no webhook</td></tr>
+</tbody>
+</table>
+<p>Cobrança nova: <strong>201</strong>. O mesmo <code>external_id</code> e o mesmo valor, numa cobrança que já tem invoice: <strong>200</strong>, o mesmo objeto, sem endereço novo. Ainda em <code>criando</code>: <strong>409</strong>, sem invoice na resposta; tente de novo. Valor diferente ou <code>falha_criacao</code>: <strong>409</strong>.</p>
+<pre><code>{
+  "id": "6f1c2c2e-3b4a-4d5e-8f70-1a2b3c4d5e6f",
+  "external_id": "pedido-123",
+  "status": "pendente",
+  "amount_sats": "10000",
+  "description": "Pedido 123",
+  "expires_at": "2026-10-29T12:10:00.000Z",
+  "grace_until": "2026-10-30T12:10:00.000Z",
+  "paid_at": null,
+  "paid_rail": null,
+  "paid_amount_sats": null,
+  "overpaid_sats": null,
+  "lightning": {
+    "invoice": "lnbc100n1...",
+    "payment_hash": "abc123...",
+    "expires_at": "2026-10-29T12:10:00.000Z"
+  },
+  "onchain": {
+    "address": "bc1q...",
+    "amount_btc": "0.00010000",
+    "bip21": "bitcoin:bc1q...?amount=0.00010000&amp;label=Pedido%20123&amp;lightning=lnbc100n1..."
+  },
+  "payment_uri": "bitcoin:bc1q...?amount=0.00010000&amp;label=Pedido%20123&amp;lightning=lnbc100n1...",
+  "qr_svg": "&lt;svg ...&gt;...&lt;/svg&gt;",
+  "created_at": "2026-10-29T12:00:00.000Z",
+  "updated_at": "2026-10-29T12:00:00.000Z"
+}</code></pre>
+<p><code>amount_btc</code> tem 8 casas. <code>payment_uri</code> é o mesmo texto de <code>onchain.bip21</code>. <code>qr_svg</code> é o QR dessa URI. Mostre esse QR. <code>expires_at</code> encerra a janela em que a confirmação ainda é <code>pago</code>. <code>grace_until</code> é 24 horas depois, com o padrão de fábrica.</p>
+
+<h2>Ler e cancelar</h2>
+<p><code>GET /v1/payment-intents/:id</code> devolve o mesmo objeto. UUID de outra loja é 404.</p>
+<p><code>GET /v1/payment-intents?external_id=pedido-123</code> exige a query. Sem ela, 400. O objeto é o mesmo, com status e valores pagos atualizados.</p>
+<p><code>paid_rail</code> é <code>lightning</code>, <code>onchain</code>, <code>both</code> ou <code>null</code>. <code>pago</code> cobriu até <code>expires_at</code>. <code>pago_tardio</code> cobriu depois. Os dois são pagamento recebido. <code>parcial</code> não quita. <code>reorg</code> desfaz um pago.</p>
+<p><code>POST /v1/payment-intents/:id/cancel</code> não tem corpo. A assinatura usa corpo vazio. Só <code>pendente</code> cancela. A resposta 200 traz <code>status: "cancelado"</code> e sai <code>payment_intent.canceled</code>. Pagamento que chega depois não reabre a cobrança.</p>
+
+<h2>Webhook que a loja recebe</h2>
+<pre><code>Content-Type: application/json
+User-Agent: btc-payments-webhook/1
+X-Webhook-Signature: t=1792700000,v1=0123abcd...
+X-Webhook-Event: payment_intent.paid
+X-Webhook-Delivery: uuid da linha do outbox</code></pre>
+<p>HMAC-SHA256 de <code>{timestamp}.{corpo cru}</code> com o <code>webhook_secret</code>. A entrega não segue redirect. Timeout padrão: 10 segundos. 2xx marca entregue. O resto volta em 60 segundos, 5 minutos, 30 minutos, 2 horas, 6 horas e 24 horas, até 6 tentativas.</p>
+<pre><code>{
+  "event": "payment_intent.paid",
+  "event_id": "uuid",
+  "created_at": "2026-10-29T12:04:00.000Z",
+  "data": {
+    "id": "6f1c2c2e-3b4a-4d5e-8f70-1a2b3c4d5e6f",
+    "external_id": "pedido-123",
+    "status": "pago",
+    "amount_sats": "10000",
+    "paid_amount_sats": "10000",
+    "paid_rail": "lightning",
+    "paid_at": "2026-10-29T12:04:00.000Z",
+    "overpaid_sats": "0"
+  }
+}</code></pre>
+<table>
+<thead><tr><th>event</th><th>Quando</th></tr></thead>
+<tbody>
+<tr><td><code>payment_intent.paid</code></td><td>Cobriu até <code>expires_at</code>, ou um reorg voltou a coberto dentro do prazo</td></tr>
+<tr><td><code>payment_intent.paid_late</code></td><td>Cobriu depois de <code>expires_at</code></td></tr>
+<tr><td><code>payment_intent.partial</code></td><td>Venceu com sats confirmados abaixo do pedido</td></tr>
+<tr><td><code>payment_intent.expired</code></td><td>Venceu sem sats confirmados</td></tr>
+<tr><td><code>payment_intent.canceled</code></td><td>A loja cancelou uma intent <code>pendente</code></td></tr>
+<tr><td><code>payment_intent.reorged</code></td><td>O depósito sumiu de verdade e a custódia ficou abaixo do pedido</td></tr>
+</tbody>
+</table>
+<p>Leia <code>paid_amount_sats</code>. Não assuma o pedido só porque o evento é <code>paid</code>. O corpo não traz invoice, endereço nem <code>metadata</code>. Guarde <code>event_id</code>: se a resposta demorar além do timeout, o mesmo evento pode chegar de novo.</p>
+
+<h2>POST /webhooks/lnbits?token=…</h2>
+<p>Sem HMAC de loja. Token errado é 401. O corpo é um objeto JSON ou uma string JSON. Precisa de <code>payment_hash</code> ou <code>checking_id</code>. O motor ignora o resto e lê o pagamento no LNbits.</p>
+<pre><code>{ "status": "pago", "valor": "10000", "id_transacao": "pedido-123" }</code></pre>
+<p>Outros <code>status</code>: <code>ignorado</code> (não pago, valor ausente ou que não bate, ou cobrança cancelada), <code>ja_processado</code> (já estava pago), <code>desconhecido</code> (hash de fora deste motor). Valor que não bate exatamente com a invoice, em sats ou em msat, não muda a cobrança.</p>
+
+<h2>Admin</h2>
+<p><code>POST /admin/api/clients</code> recebe <code>name</code> (1 a 80) e <code>webhook_url</code> (https em produção). A resposta 201 mostra, uma vez, <code>apiKey</code>, <code>requestSecret</code> e <code>webhookSecret</code>.</p>
+<p><code>GET /admin/api/clients</code> lista sem segredo: <code>id</code>, <code>name</code>, <code>apiKeyPrefix</code>, <code>webhookUrl</code>, <code>status</code>, <code>createdAt</code>.</p>
+<p><code>GET /admin/api/status</code> junta contagens de intents, webhooks e sweeps, saúde do LNbits e do Esplora, rede, fingerprint do xpub, modo do signer e <code>clientBalances</code>: a soma de <code>paid_amount_sats</code> das intents <code>pago</code> e <code>pago_tardio</code>, por cliente e por trilho.</p>
+<pre><code>{
+  "clientId": "uuid",
+  "name": "Loja Centro",
+  "paidRail": "onchain",
+  "paidAmountSats": "10000"
+}</code></pre>
+<p><code>GET /admin/api/webhooks?limit=50</code> lista o outbox. <code>limit</code> vai de 1 a 200. <code>POST /admin/api/webhooks/:id/replay</code> zera tentativas e devolve a linha para a fila. 404 se o id não existe.</p>
+<p><code>GET /admin/api/sweeps?limit=50</code> lista as varreduras. <code>POST /admin/api/sweeps/:id/retry</code> só restaura as saídas quando o tx não existe no Esplora. Tx confirmado ou ainda na mempool responde 409. Sweep já <code>sweepado</code> também.</p>
+
+<h2>Saúde</h2>
+<p><code>GET /health</code> devolve <code>ok</code>, nome, versão e <code>ts</code>. Não consulta banco.</p>
+<p><code>GET /ready</code> devolve 200 só se passam <code>db</code>, <code>xpub</code>, <code>cold_wallet</code> (ou sweep desligado), <code>lnbits</code> e <code>esplora</code>. Qualquer falha é 503, com o check no corpo.</p>
+
+<nav class="pager"><a href="16-erros-e-limites.html">← Erros</a><a href="18-referencia.html">Rotas →</a></nav>
+</main>
+</div>
+</body>
+</html>

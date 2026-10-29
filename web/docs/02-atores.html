@@ -3,70 +3,66 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Os três atores · Motor Cripto</title>
+<title>O que você configura · Motor Cripto</title>
 <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
 <div class="layout">
 <nav class="nav">
-<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
-<p class="where">Documentação de quem integra e de quem opera.</p>
-<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
-<h2>Parte 1</h2><ol>
-<li><a href="01-objetivo.html">O objetivo</a></li>
-<li><a href="02-atores.html" aria-current="page">Os três atores</a></li>
-</ol>
-<h2>Parte 2</h2><ol>
-<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
-<li><a href="04-dinheiro.html">Dinheiro</a></li>
-<li><a href="05-tempo.html">Tempo</a></li>
-<li><a href="06-estados.html">Estados</a></li>
-</ol>
-<h2>Parte 3</h2><ol>
-<li><a href="07-confianca.html">Confiança</a></li>
-<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<a class="brand" href="index.html">Motor Cripto <span>Bitcoin</span></a>
+<p class="where">Serviço <code>btc-payments</code>, porta 4580. Leia de cima para baixo.</p>
+<h2>Caminho</h2>
+<ol>
+<li><a href="index.html">Capa</a></li>
+<li><a href="01-objetivo.html">Para onde vai o dinheiro</a></li>
+<li><a href="02-atores.html" aria-current="page">O que você configura</a></li>
+<li><a href="08-preparar-a-loja.html">Cadastrar a loja</a></li>
+<li><a href="07-confianca.html">Assinar o pedido</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
+<li><a href="04-dinheiro.html">Sats</a></li>
+<li><a href="10-pagina-publica.html">Mostrar o QR</a></li>
+<li><a href="05-tempo.html">Prazo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
-<li><a href="12-webhooks.html">Webhooks</a></li>
-<li><a href="13-varrer.html">Varrer o valor</a></li>
-</ol>
-<h2>Parte 4</h2><ol>
-<li><a href="14-liquidacao.html">Liquidação</a></li>
-<li><a href="15-operacao.html">Operação</a></li>
-<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
-</ol>
-<h2>Parte 5</h2><ol>
-<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
-<li><a href="18-referencia.html">Referência de rotas</a></li>
+<li><a href="12-webhooks.html">Avisar a loja</a></li>
+<li><a href="13-varrer.html">Varrer para a carteira fria</a></li>
+<li><a href="14-liquidacao.html">Fora do prazo</a></li>
+<li><a href="15-operacao.html">Operar</a></li>
+<li><a href="16-erros-e-limites.html">Erros</a></li>
+<li><a href="20-contrato.html">Contrato</a></li>
+<li><a href="18-referencia.html">Rotas</a></li>
 </ol>
 </nav>
 <main>
-<p class="kicker">Parte 1 · Os três atores</p>
 
-<h1>Os três atores</h1>
-<p class="lede">Três papéis bastam. Quem opera o motor, o sistema da loja e quem paga. LNbits e Esplora são ferramentas do operador, não um quarto cliente.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Saber quem guarda qual segredo e quem pode chamar cada rota.</div>
-
-<h2>Quem opera</h2>
-<p>Usa o <code>ADMIN_TOKEN</code> no header <code>Authorization: Bearer</code>. Cria clientes da API, lista cobranças indiretamente pelo status, relê a outbox de webhooks e pede retry de um sweep. Também guarda o xpub, a senha do keystore, a carteira fria e as chaves do LNbits. Esse token não vai para a loja.</p>
-
-<h2>O sistema da loja</h2>
-<p>É um programa. Recebe, uma vez, três segredos: a API key (<code>mk_btc_live_…</code>), o segredo que assina cada pedido e o segredo que verifica o webhook. Cada chamada a <code>/v1/*</code> leva a chave e a assinatura HMAC. A loja escolhe o <code>external_id</code> do pedido e o valor em sats. Ela não escolhe o endereço Bitcoin.</p>
-
-<h2>Quem paga</h2>
-<p>Não tem conta no motor. Vê o QR que a loja renderizou, paga a invoice Lightning ou envia o valor on-chain para o endereço daquela cobrança. Não chama a API.</p>
-
-<h2>O que fica de fora desses três</h2>
+<h1>O que você configura</h1>
+<p class="lede">Tudo isto vai em <code>services/btc-payments/.env</code>. O serviço não escolhe esses valores. O arquivo na raiz do repositório é de outro processo e esta API não o lê.</p>
+<table>
+<thead><tr><th>Variável</th><th>O que é</th></tr></thead>
+<tbody>
+<tr><td><code>ADMIN_TOKEN</code></td><td>Senha sua para <code>/admin/api/</code>. No ambiente local de exemplo, <code>dev-admin-token-change-me</code>.</td></tr>
+<tr><td><code>DATA_ENCRYPTION_KEY</code></td><td>Cifra os segredos das lojas no banco. Trocar a chave deixa o que já foi gravado ilegível.</td></tr>
+<tr><td><code>DATABASE_URL</code></td><td>O Postgres deste serviço.</td></tr>
+<tr><td><code>BTC_NETWORK</code></td><td><code>regtest</code> no exemplo. Em rede real, <code>bitcoin</code>.</td></tr>
+<tr><td><code>BTC_XPUB</code></td><td>Chave pública da conta <code>m/84'/0'/0'</code>. A API deriva os endereços com ela. O xprv não entra neste arquivo.</td></tr>
+<tr><td><code>LNBITS_URL</code> e <code>LNBITS_API_KEY</code></td><td>A wallet que emite as invoices. A key é a Invoice Key dessa wallet.</td></tr>
+<tr><td><code>LNBITS_WEBHOOK_TOKEN</code></td><td>Segredo que o LNbits devolve quando alguém paga.</td></tr>
+<tr><td><code>ESPLORA_URL</code></td><td>De onde o worker lê UTXO, confirmação e taxa.</td></tr>
+<tr><td><code>COLD_WALLET_ADDRESS</code></td><td>Endereço da mesma rede, para onde o on-chain é varrido. A chave privada fica com você.</td></tr>
+<tr><td><code>SIGNER_PASSPHRASE</code></td><td>Abre o keystore do worker, onde está o xprv que assina o sweep.</td></tr>
+</tbody>
+</table>
+<p>Depois que isso existe, o serviço cria sozinho a API key de cada loja, o endereço de cada cobrança, a invoice e o QR. <code>npm run wallet:init</code> mostra o mnemonic uma vez, se o signer for local. Esse mnemonic é o que você guarda.</p>
+<p>O xpub do <code>.env</code> de exemplo vem de um mnemonic público, só para regtest. Em mainnet você coloca o seu xpub e um <code>COLD_WALLET_ADDRESS</code> seu.</p>
+<h2>Três papéis</h2>
 <ul>
-<li>O LNbits emite a invoice e é a fonte do pagamento Lightning. O motor consulta essa API de novo; não acredita só no POST do webhook.</li>
-<li>O Esplora é a fonte dos UTXOs, das confirmações e da taxa. Em produção ele deve ser self-hosted. Um Esplora público veria todos os endereços derivados.</li>
-<li>O worker é o mesmo operador, em outro processo. Ele concilia, expira, observa a rede, entrega webhooks e varre.</li>
+<li>Você opera com o <code>ADMIN_TOKEN</code>. Cria lojas, olha o status, reenvia webhook e pede retry de sweep.</li>
+<li>A loja chama <code>/v1/*</code> com a API key e o HMAC. Ela escolhe o <code>external_id</code> e o valor. Não escolhe o endereço.</li>
+<li>Quem paga vê o QR na tela da loja e não chama a API.</li>
 </ul>
+<div class="note cuidado"><strong>Cuidado</strong>Várias lojas podem existir. O sweep de todas vai para a mesma carteira fria, e o Lightning de todas cai na mesma wallet do LNbits.</div>
 
-<div class="note cuidado"><strong>Cuidado</strong>Vários clientes da API podem existir ao mesmo tempo. Cada um tem a própria chave e o próprio webhook. O sweep on-chain de todos eles vai para a mesma carteira fria, e o Lightning de todos cai na mesma wallet do LNbits. O motor não mantém um saldo separado por loja.</div>
-
-<nav class="pager"><a href="01-objetivo.html">← O objetivo</a><a href="03-uma-cobranca.html">Uma cobrança →</a></nav>
+<nav class="pager"><a href="01-objetivo.html">← Para onde vai o dinheiro</a><a href="08-preparar-a-loja.html">Cadastrar a loja →</a></nav>
 </main>
 </div>
 </body>

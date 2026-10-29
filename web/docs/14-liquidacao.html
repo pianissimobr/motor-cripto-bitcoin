@@ -3,49 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Liquidação · Motor Cripto</title>
+<title>Fora do prazo · Motor Cripto</title>
 <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
 <div class="layout">
 <nav class="nav">
-<a class="brand" href="index.html">Motor Cripto <span>livro da API</span></a>
-<p class="where">Documentação de quem integra e de quem opera.</p>
-<h2>Começo</h2><ol><li><a href="index.html">Capa</a></li></ol>
-<h2>Parte 1</h2><ol>
-<li><a href="01-objetivo.html">O objetivo</a></li>
-<li><a href="02-atores.html">Os três atores</a></li>
-</ol>
-<h2>Parte 2</h2><ol>
-<li><a href="03-uma-cobranca.html">Uma cobrança</a></li>
-<li><a href="04-dinheiro.html">Dinheiro</a></li>
-<li><a href="05-tempo.html">Tempo</a></li>
-<li><a href="06-estados.html">Estados</a></li>
-</ol>
-<h2>Parte 3</h2><ol>
-<li><a href="07-confianca.html">Confiança</a></li>
-<li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
+<a class="brand" href="index.html">Motor Cripto <span>Bitcoin</span></a>
+<p class="where">Serviço <code>btc-payments</code>, porta 4580. Leia de cima para baixo.</p>
+<h2>Caminho</h2>
+<ol>
+<li><a href="index.html">Capa</a></li>
+<li><a href="01-objetivo.html">Para onde vai o dinheiro</a></li>
+<li><a href="02-atores.html">O que você configura</a></li>
+<li><a href="08-preparar-a-loja.html">Cadastrar a loja</a></li>
+<li><a href="07-confianca.html">Assinar o pedido</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
+<li><a href="04-dinheiro.html">Sats</a></li>
+<li><a href="10-pagina-publica.html">Mostrar o QR</a></li>
+<li><a href="05-tempo.html">Prazo</a></li>
+<li><a href="06-estados.html">Estados</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
-<li><a href="12-webhooks.html">Webhooks</a></li>
-<li><a href="13-varrer.html">Varrer o valor</a></li>
-</ol>
-<h2>Parte 4</h2><ol>
-<li><a href="14-liquidacao.html" aria-current="page">Liquidação</a></li>
-<li><a href="15-operacao.html">Operação</a></li>
-<li><a href="16-erros-e-limites.html">Erros e limites</a></li>
-</ol>
-<h2>Parte 5</h2><ol>
-<li><a href="17-dia-inteiro.html">Um dia inteiro</a></li>
-<li><a href="18-referencia.html">Referência de rotas</a></li>
+<li><a href="12-webhooks.html">Avisar a loja</a></li>
+<li><a href="13-varrer.html">Varrer para a carteira fria</a></li>
+<li><a href="14-liquidacao.html" aria-current="page">Fora do prazo</a></li>
+<li><a href="15-operacao.html">Operar</a></li>
+<li><a href="16-erros-e-limites.html">Erros</a></li>
+<li><a href="20-contrato.html">Contrato</a></li>
+<li><a href="18-referencia.html">Rotas</a></li>
 </ol>
 </nav>
 <main>
-<p class="kicker">Parte 4 · Operar e falhar</p>
 
-<h1>Liquidação</h1>
-<p class="lede">Liquidar, aqui, é decidir o que ainda conta como pagamento depois que a invoice venceu, e o que fazer com o sats que chegou fora de hora.</p>
+<h1>Fora do prazo</h1>
+<p class="lede">O que ainda conta como pagamento depois que a invoice vence, e o que acontece com o sats que chega tarde.</p>
 <div class="note objetivo"><strong>Objetivo</strong>Separar pedido quitado no prazo, pedido quitado tarde, valor incompleto e valor que ninguém mais observa.</div>
 
 <h2>Dentro do prazo</h2>
@@ -62,7 +53,7 @@
 <h2>Os dois trilhos no mesmo pedido</h2>
 <p>Se o Lightning fechou primeiro e o on-chain confirma o valor inteiro nas 24 horas seguintes, <code>paid_rail</code> passa a <code>both</code> e o operador recebe um alerta de pagamento duplicado, se <code>ALERT_WEBHOOK_URL</code> estiver configurado. O on-chain duplicado é varrido junto. O caminho inverso é o mesmo: Lightning que chega com a cobrança já <code>pago</code> ou <code>pago_tardio</code> por on-chain soma o valor, grava <code>paid_rail</code> <code>both</code> e alerta. A segunda entrega do mesmo <code>payment_hash</code> não soma de novo.</p>
 
-<nav class="pager"><a href="13-varrer.html">← Varrer o valor</a><a href="15-operacao.html">Operação →</a></nav>
+<nav class="pager"><a href="13-varrer.html">← Varrer para a carteira fria</a><a href="15-operacao.html">Operar →</a></nav>
 </main>
 </div>
 </body>

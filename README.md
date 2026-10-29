@@ -6,9 +6,9 @@ webhook quando o pagamento chega a um estado final. O valor on-chain é varrido
 para a carteira fria do operador.
 
 O livro de quem integra e de quem opera está em
-[web/docs/index.html](web/docs/index.html). O índice de rotas é
-[web/docs/18-referencia.html](web/docs/18-referencia.html). O mapa do código
-está em [docs/guia.md](docs/guia.md).
+[web/docs/index.html](web/docs/index.html). O mapa do repositório, com o
+caminho de um pagamento, está em [docs/guia.md](docs/guia.md). O contrato
+HTTP, com corpos e códigos, está em [docs/API.md](docs/API.md).
 
 ```
 cliente da API
