@@ -1,0 +1,1 @@
+ALTER TABLE "onchain_sweeps" ADD COLUMN "last_broadcast_at" timestamp with time zone;

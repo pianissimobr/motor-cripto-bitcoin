@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: btc
+      POSTGRES_PASSWORD: btc_dev_password
+      POSTGRES_DB: btc_payments
+    ports:
+      - "5434:5432"
+    volumes:
+      - btc-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U btc -d btc_payments"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  lnbits:
+    image: lnbits/lnbits:latest
+    environment:
+      LNBITS_BACKEND_WALLET_CLASS: FakeWallet
+      LNBITS_ADMIN_UI: "true"
+      LNBITS_DATA_FOLDER: /data
+      LNBITS_HOST: 0.0.0.0
+      LNBITS_PORT: "5000"
+      LNBITS_FORCE_HTTPS: "false"
+      LNBITS_BASE_URL: http://localhost:5001
+      LNBITS_AUTH_SECRET: dev-auth-secret-change-me
+      # Dev: permite webhook para host.docker.internal (IP privado).
+      # O LNbits persiste settings no SQLite; se o env nao bastar, rode o
+      # comando do README (system_settings) ou use o admin UI.
+      # Em producao, mantenha false e use uma URL publica/HTTPS.
+      LNBITS_CALLBACK_ALLOW_PRIVATE_IPS: "true"
+    ports:
+      - "5001:5000"
+    volumes:
+      - lnbits-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  bitcoind:
+    image: ruimarinho/bitcoin-core:25
+    command:
+      - -regtest
+      - -server
+      - -rpcuser=btc
+      - -rpcpassword=btc
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -txindex
+      - -fallbackfee=0.0002
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+      - -zmqpubrawtx=tcp://0.0.0.0:28333
+    ports:
+      - "18443:18443"
+      - "28332:28332"
+      - "28333:28333"
+    volumes:
+      - btc-bitcoind:/home/bitcoin/.bitcoin
+
+volumes:
+  btc-db:
+  lnbits-data:
+  btc-bitcoind:
