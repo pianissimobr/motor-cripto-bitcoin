@@ -65,6 +65,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     max: deps.config.server.rateLimitMax,
     timeWindow: deps.config.server.rateLimitWindowMs,
     allowList: (request) => request.url === '/health',
+    keyGenerator: (request) => {
+      const path = request.url.split('?')[0] ?? request.url;
+      if (path.startsWith('/webhooks/lnbits')) return `lnbits:${request.ip}`;
+      const authorization = request.headers.authorization;
+      if (typeof authorization === 'string' && authorization.length > 0) {
+        return `auth:${authorization}`;
+      }
+      return request.ip;
+    },
   });
 
   app.addHook('onRequest', async (request) => {

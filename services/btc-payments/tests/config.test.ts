@@ -50,6 +50,17 @@ describe('config', () => {
     expect(() => loadConfig(env)).toThrow(/SIGNER_REMOTE_URL/);
   });
 
+  it('em producao exige token do signer remoto', () => {
+    const env = {
+      ...BASE_ENV,
+      NODE_ENV: 'production',
+      ADMIN_TOKEN: 'a'.repeat(32),
+      SIGNER_MODE: 'remote',
+      SIGNER_REMOTE_URL: 'https://signer.example',
+    };
+    expect(() => loadConfig(env)).toThrow(/SIGNER_REMOTE_TOKEN/);
+  });
+
   it('rejeita prefixo hardened', () => {
     const env = { ...BASE_ENV, BTC_DERIVATION_PREFIX: "0'" };
     expect(() => loadConfig(env)).toThrow();

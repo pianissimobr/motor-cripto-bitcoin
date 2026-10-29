@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -45,38 +45,38 @@
 <p class="kicker">Parte 1 · O objetivo</p>
 
 <h1>O objetivo</h1>
-<p class="lede">A loja quer stablecoin numa carteira que ela escolheu. Quem paga usa reais. O motor existe para perceber o que a blockchain registrou e mover esse valor.</p>
+<p class="lede">A loja quer receber Bitcoin. Quem paga escolhe Lightning ou a rede principal. O motor cria a cobrança, percebe o pagamento e move o valor on-chain para a carteira fria.</p>
 <div class="note objetivo"><strong>Objetivo</strong>Explicar, sem abrir o código, o que o motor faz e o que ele se recusa a fazer.</div>
 <h2>O problema</h2>
-<p>Imagine uma cobrança de R$ 150,00. A pessoa paga na Ramp, em reais. A Ramp compra USDC e envia para um endereço. Sem um aviso da Ramp, a loja só fica sabendo se alguém olhar a rede. O motor é essa leitura automática.</p>
-<p>O destino final não é um endereço global do servidor. Cada cliente da API cadastra as próprias carteiras. Uma cobrança só pode varrer para uma carteira que já esteja nessa lista, na mesma rede do perfil.</p>
+<p>Imagine um pedido de 10.000 satoshis. A loja precisa de um QR que sirva para os dois trilhos, de um aviso quando o pagamento cair, e de um prazo para não deixar o pedido aberto para sempre. Sem isso, alguém teria de olhar a carteira e a invoice à mão.</p>
+<p>O destino on-chain não é uma carteira escolhida pela loja em cada pedido. Todas as cobranças varrem para a carteira fria configurada no operador, <code>COLD_WALLET_ADDRESS</code>. O Lightning cai na wallet do LNbits que o operador conectou. O motor separa os pedidos por cliente da API; o dinheiro físico dos dois trilhos fica sob a custódia dessa operação.</p>
 <h2>O método</h2>
 <ol>
 <li>O operador cria o cliente da API e anota, uma única vez, a chave, o segredo de pedido e o segredo de webhook.</li>
-<li>O operador cadastra a carteira de destino. O sistema da loja não inventa esse endereço na hora da cobrança.</li>
-<li>O sistema da loja pede um link. O motor reserva um índice, deriva um endereço exclusivo e devolve a página pública.</li>
-<li>Quem paga abre a página, vê o valor e segue para a Ramp. O motor não participa desse pagamento.</li>
-<li>O worker lê transferências do contrato certo para aquele endereço, espera confirmações e avisa a loja.</li>
-<li>Uma carteira separada, só de gas, paga a taxa da rede. O USDC vai para a carteira allowlisted. O POL que sobra volta para a carteira de gas.</li>
+<li>O sistema da loja pede uma cobrança com <code>external_id</code> e <code>amount_sats</code>.</li>
+<li>O motor reserva um índice, deriva um endereço Bitcoin exclusivo e pede uma invoice ao LNbits.</li>
+<li>A resposta traz a invoice, o endereço, a URI BIP21 e o SVG do QR. A loja mostra isso a quem paga. Não há página hospedada pelo motor.</li>
+<li>O worker confirma o Lightning no LNbits e lê os UTXOs no Esplora. Com as confirmações exigidas, avisa a loja.</li>
+<li>O valor on-chain confirmado é assinado no worker e enviado à carteira fria. O Lightning permanece no LNbits.</li>
 </ol>
 <h2>O contrato</h2>
-<p>O objetivo vira três superfícies HTTP, todas no mesmo processo, na porta local <code>4578</code> ou na <code>PUBLIC_BASE_URL</code>:</p>
+<p>O objetivo vira duas superfícies HTTP no mesmo processo, na porta local <code>4580</code> ou na <code>PUBLIC_BASE_URL</code>:</p>
 <ul>
 <li><code>/admin/api/*</code> para quem opera, com o <code>ADMIN_TOKEN</code>.</li>
 <li><code>/v1/*</code> para o sistema da loja, com API key e assinatura de cada pedido.</li>
-<li><code>/p/:token</code> e <code>/health</code> para quem não tem segredo de loja.</li>
 </ul>
-<p>O valor em reais viaja como inteiro de centavos. O valor do token viaja como string de unidades mínimas. A URL da Ramp não aparece no JSON da API. Ela só existe dentro da página pública.</p>
+<p><code>/health</code> e <code>/ready</code> não pedem segredo. O webhook de entrada do LNbits é <code>POST /webhooks/lnbits</code>. O valor viaja como string de satoshis. A invoice e o endereço saem no JSON da cobrança, porque a loja é quem exibe o QR.</p>
 <h2>O que recusamos</h2>
 <ul>
-<li>Processar cartão, Pix ou dados da Ramp.</li>
+<li>Receber reais, cartão, Pix ou stablecoin.</li>
 <li>Aceitar um endereço de depósito enviado pela loja.</li>
-<li>Varrer para uma carteira que não esteja allowlisted naquele cliente e naquela rede.</li>
-<li>Tratar um e-mail ou um print da Ramp como pagamento.</li>
-<li>Confirmar o pagamento antes das confirmações e do recibo da transação.</li>
+<li>Reutilizar um endereço Bitcoin entre cobranças.</li>
+<li>Tratar um e-mail, um print ou o corpo cru do webhook do LNbits como pagamento.</li>
+<li>Confirmar o on-chain antes das confirmações exigidas.</li>
+<li>Colocar a chave privada ou a seed na API. A API só tem o xpub.</li>
 </ul>
 <h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Abra <code>/health</code>. A resposta é <code>{"ok": true, "ts": "..."}</code> com data em UTC, sem token. Se isso responde, a API está no ar. O pagamento em si só existe depois do worker.</div>
+<div class="note conferir"><strong>Como conferir</strong>Abra <code>/health</code>. A resposta traz <code>ok: true</code>, o nome <code>btc-payments</code> e <code>ts</code> em UTC, sem token. Se isso responde, a API está no ar. O pagamento em si só existe depois do worker, do LNbits e do Esplora. <code>/ready</code> diz se esses três, o xpub e a carteira fria estão utilizáveis.</div>
 
 <nav class="pager"><a href="index.html">← Capa</a><a href="02-atores.html">Os três atores →</a></nav>
 </main>

@@ -1,5 +1,8 @@
 # Descrição Executiva – Sistema de Pagamentos com Ramp (Link Pessoal) + HD Wallet + Automação On-Chain
 
+> Histórico. Este texto é o desenho do motor Polygon/Ramp, não do serviço Bitcoin.
+> O serviço atual está em `services/btc-payments`. O livro dele é `web/docs/index.html`.
+
 ## 1. Objetivo
 
 Criar um pipeline que permita a **vendedores sem conta business no Ramp** receber pagamentos de terceiros em **stablecoins (USDC/USDT)** e, de forma **totalmente automatizada**, registrar esses pagamentos em um banco de dados e transferir os fundos para uma **carteira fria fixa**.

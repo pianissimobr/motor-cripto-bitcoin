@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html" aria-current="page">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -45,34 +45,24 @@
 <p class="kicker">Parte 3 · O contrato</p>
 
 <h1>Provar o pagamento</h1>
-<p class="lede">O motor não acredita na Ramp. Acredita num <code>Transfer</code> do contrato certo, para o endereço daquela cobrança, com recibo e confirmações.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Entender o que precisa ser verdade na rede antes de um webhook de <code>pago</code>, e o que um reorg desfaz.</div>
-<h2>O problema</h2>
-<p>Qualquer um pode emitir um token com o nome USDC. Qualquer um pode mandar esse token para o endereço da cobrança. Se o motor lesse “chegou alguma coisa”, a loja entregaria o pedido por um token sem valor. A prova é o contrato, o destino, o bloco e o recibo.</p>
-<h2>O método</h2>
-<ol>
-<li>O worker agrupa os pares rede + contrato que ainda importam: os perfis atuais e também os contratos gravados em links abertos (<code>aguardando</code>, <code>pago</code>, <code>parcial</code>, <code>pago_sem_gas</code>, <code>expirado</code>, <code>nao_realizado</code>). Um perfil editado no passado não apaga a observação de um link já criado.</li>
-<li>Para cada par, pede os logs de <code>Transfer</code> cujo destino é um endereço de depósito desses links. Log removido pela rede é ignorado. Log de outro contrato é ignorado.</li>
-<li>A leitura anda com um cursor: o próximo ciclo começa depois do último bloco lido. O padrão é ler até o bloco <code>finalized</code>. Na Polygon, isso atrasa um pouco e evita tratar como pago um bloco que a rede ainda pode reescrever.</li>
-<li>O pagamento fica detectado até ter as confirmações pedidas. O padrão de <code>CONFIRMATIONS_REQUIRED</code> é 10. O recibo precisa dizer que a transação entrou e deu certo.</li>
-<li>A soma confirmada é comparada com <code>expected_base_units</code> e a tolerância. Dentro, <code>pago</code>. Fora, para menos, <code>parcial</code>. Sem gas para seguir, <code>pago_sem_gas</code>.</li>
-<li>De tempos em tempos o worker guarda o hash de um bloco. Se a rede passar a responder outro hash para o mesmo número, houve reorg. O cursor volta, pagamentos da região perdida são desfeitos, e uma varredura daquela região deixa de contar como feita. Se o dinheiro reaparecer num bloco novo, é detectado de novo.</li>
-</ol>
-<p>Saldo no endereço sem log na janela relida não vira crédito. O motor grava um alerta de saldo sem log. Não inventa pagamento.</p>
-<h2>O contrato</h2>
-<p>Não há rota para “marcar como pago”. O contrato com a loja é o efeito: <code>valor_recebido_base_units</code> sobe, <code>status</code> muda, e só então existe webhook. A loja que queira auditar olha <code>endereco_deposito</code> num explorador da rede do perfil, no contrato gravado em <code>token_contract</code>.</p>
-<p>Confirmações típicas registradas por rede, quando o operador não cobre o padrão: Polygon e Arbitrum e Base 30, Ethereum 12, Amoy 5. O número que o worker usa de fato é <code>CONFIRMATIONS_REQUIRED</code>, padrão 10, comum a todas.</p>
-<h2>O que recusamos</h2>
-<ul>
-<li>Webhook da Ramp, e-mail ou print como prova.</li>
-<li>Token de outro contrato, mesmo com o mesmo símbolo.</li>
-<li>Pagamento num bloco que ainda não atingiu as confirmações configuradas.</li>
-<li>Crédito automático quando há saldo e não há log.</li>
-</ul>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Com o worker parado, pague na Ramp. O link permanece <code>aguardando</code>. Suba o worker e espere as confirmações. <code>valor_recebido_base_units</code> deixa de ser <code>"0"</code> antes de qualquer pessoa editar o link no admin.</div>
+<p class="lede">A prova não é um print nem o POST que o LNbits manda. É o motor relendo a fonte daquele trilho e só então mudando o status.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber o que torna uma cobrança <code>pago</code> em cada trilho, e o que a loja pode consultar sozinha.</div>
 
-<nav class="pager"><a href="10-pagina-publica.html">← A página de quem paga</a><a href="12-webhooks.html">Webhooks →</a></nav>
+<h2>Lightning</h2>
+<p>O LNbits chama <code>POST /webhooks/lnbits?token=…</code>. O token é o <code>LNBITS_WEBHOOK_TOKEN</code> do operador, comparado em tempo constante. O corpo pode ser um objeto ou um JSON em string. Dali o motor tira o <code>payment_hash</code>.</p>
+<p>Em seguida ele chama <code>GET /api/v1/payments/{payment_hash}</code> no LNbits. Só com essa resposta marcada como paga a intent sai de <code>pendente</code>. Se o webhook se perder, o job <code>lightning-reconcile</code> faz a mesma consulta a cada 15 segundos nas intents pendentes.</p>
+<p>O valor só liquida a cobrança se, depois de normalizar sats ou msat, for pelo menos o <code>amount_sats</code> da invoice. O número cru que bate com a invoice é sats; o que só bate depois de dividir por 1000 é msat. Sem valor, ou com valor que não bate, a cobrança continua pendente e o operador recebe um alerta. A loja deve ler <code>paid_amount_sats</code> no webhook.</p>
+
+<h2>On-chain</h2>
+<p>O job <code>onchain-watch</code> lê <code>GET /address/:addr/utxo</code> no Esplora. Cada saída vira uma linha com txid, vout e valor. A confirmação é <code>altura_da_ponta − altura_do_bloco + 1</code>. Quando a soma das saídas já confirmadas cobre o pedido, a intent muda.</p>
+<p>Uma saída que some não é reorg por si. O motor olha o tx do sweep e o tx de depósito. Gasto pelo nosso sweep vira <code>gasto</code> e a cobrança continua paga. Tx de depósito ausente, ou um UTXO confirmado que voltou à mempool, é reorg de verdade. A intent só vai para <code>reorg</code> se, tirando o que reorgou, Lightning contabilizado mais on-chain ainda em custódia ficarem abaixo do pedido. Poeiras num pagamento que já foi só Lightning não revertem a cobrança. Nas 24 horas depois de <code>paid_at</code> o watcher relê o depósito mesmo com a saída já em <code>gasto</code>.</p>
+
+<h2>O que a loja consulta</h2>
+<p><code>GET /v1/payment-intents/:id</code> é a leitura dela. O webhook avisa; a consulta confirma o estado atual, inclusive se o webhook atrasou. Não há outro comprovante.</p>
+
+<div class="note conferir"><strong>Como conferir</strong>Pague uma invoice de teste. O <code>GET</code> da cobrança passa a <code>pago</code>, com <code>paid_rail</code> igual a <code>lightning</code> e <code>paid_at</code> preenchido, mesmo que você bloqueie o webhook de saída da loja. A prova está no motor, não no recebimento do POST.</div>
+
+<nav class="pager"><a href="10-pagina-publica.html">← O QR de quem paga</a><a href="12-webhooks.html">Webhooks →</a></nav>
 </main>
 </div>
 </body>

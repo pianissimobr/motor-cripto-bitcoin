@@ -103,6 +103,7 @@ export class WebhookDeliveryService {
           'x-webhook-delivery': event.id,
         },
         body,
+        redirect: 'error',
         signal: AbortSignal.timeout(this.deps.config.webhook.timeoutMs),
       });
       statusCode = response.status;

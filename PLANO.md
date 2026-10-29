@@ -1,5 +1,8 @@
 # Plano — Motor de Pagamentos Ramp (pessoal) → Carteira Fria
 
+> Histórico. Este arquivo descreve o motor Polygon/Ramp em `src/` (porta 4578).
+> O serviço atual de Bitcoin está em `services/btc-payments`. O livro dele é `web/docs/index.html`.
+
 > Documento de conferência. Gerado antes da implementação.
 > Porta do servidor: **4578** (Postgres em 5432).
 

@@ -11,7 +11,9 @@ import {
   UpstreamError,
   ValidationError,
 } from '../domain/errors.js';
+import { resolvePaidSats } from '../domain/lightning-amount.js';
 import { satsToBtc } from '../domain/money.js';
+import type { AlertService } from './alert-service.js';
 import type {
   HdAddress,
   PaidRail,
@@ -62,6 +64,11 @@ export type PaymentIntentDto = {
   updated_at: string;
 };
 
+export type CreatedPaymentIntent = {
+  dto: PaymentIntentDto;
+  reused: boolean;
+};
+
 export type LightningWebhookResult = {
   status: 'pago' | 'ignorado' | 'ja_processado' | 'desconhecido';
   valor?: string;
@@ -74,15 +81,9 @@ export type PaymentIntentServiceDeps = {
   config: AppConfig;
   xpub: AccountXpub;
   logger: Logger;
+  alerts?: AlertService;
   now?: () => Date;
 };
-
-const TERMINAL_FOR_LIGHTNING: PaymentIntentStatus[] = [
-  'pago',
-  'pago_tardio',
-  'cancelado',
-  'falha_criacao',
-];
 
 export class PaymentIntentService {
   constructor(private readonly deps: PaymentIntentServiceDeps) {}
@@ -91,7 +92,7 @@ export class PaymentIntentService {
     return this.deps.now?.() ?? new Date();
   }
 
-  async create(input: CreatePaymentIntentInput): Promise<PaymentIntentDto> {
+  async create(input: CreatePaymentIntentInput): Promise<CreatedPaymentIntent> {
     const ttl = input.expiresInSeconds ?? this.deps.config.lightning.ttlSeconds;
     if (!Number.isInteger(ttl) || ttl < 30 || ttl > 86_400) {
       throw new ValidationError('expires_in_seconds deve estar entre 30 e 86400');
@@ -187,7 +188,7 @@ export class PaymentIntentService {
         { intentId: updated.id, externalId: updated.externalId, amountSats: updated.amountSats.toString() },
         'cobranca criada',
       );
-      return this.toDto(updated);
+      return { dto: await this.toDto(updated), reused: false };
     } catch (err) {
       await this.deps.repos
         .markCreationFailed(created.intent.id, created.address.id)
@@ -255,7 +256,114 @@ export class PaymentIntentService {
       paymentHash,
     );
     if (!intent) return { status: 'desconhecido' };
-    if (TERMINAL_FOR_LIGHTNING.includes(intent.status)) {
+    if (intent.status === 'falha_criacao') {
+      return { status: 'ja_processado', id_transacao: intent.externalId };
+    }
+
+    const payment = await this.deps.lnbits.getPayment(paymentHash);
+    if (!payment.paid) return { status: 'ignorado' };
+
+    const resolved = resolvePaidSats({
+      invoiceSats: intent.amountSats,
+      ...(payment.amount_msat !== undefined
+        ? { rawAmount: payment.amount_msat }
+        : {}),
+      ...(payment.amount_sats !== undefined
+        ? { dividedSats: payment.amount_sats }
+        : {}),
+    });
+    if (!resolved || resolved.sats < intent.amountSats) {
+      const noted = await this.deps.repos.noteLightningMismatch(paymentHash, {
+        rawAmount: payment.amount_msat ?? null,
+        dividedSats: payment.amount_sats ?? null,
+        invoiceSats: intent.amountSats.toString(),
+      });
+      if (noted) {
+        this.deps.logger.warn(
+          { intentId: intent.id, paymentHash },
+          'valor Lightning nao confere com a invoice',
+        );
+        await this.deps.repos.insertAuditEvent({
+          actor: 'lnbits',
+          action: 'intent.lightning_amount_mismatch',
+          entity: 'payment_intent',
+          entityId: intent.id,
+          metadata: {
+            externalId: intent.externalId,
+            paymentHash,
+            invoiceSats: intent.amountSats.toString(),
+          },
+        });
+        await this.deps.alerts?.send({
+          level: 'warn',
+          title: 'valor Lightning nao confere com a invoice',
+          metadata: {
+            intentId: intent.id,
+            externalId: intent.externalId,
+            invoiceSats: intent.amountSats.toString(),
+          },
+        });
+      }
+      return { status: 'ignorado', id_transacao: intent.externalId };
+    }
+
+    const paidAmount = resolved.sats;
+    const lightningRaw = {
+      unit: resolved.unit,
+      amount_msat: payment.amount_msat ?? null,
+      amount_sats: payment.amount_sats ?? null,
+    };
+
+    if (intent.status === 'cancelado') {
+      const noted = await this.deps.repos.noteLightningMismatch(paymentHash, {
+        kind: 'lightning_apos_cancelamento',
+        invoiceSats: intent.amountSats.toString(),
+      });
+      if (noted) {
+        await this.deps.repos.insertAuditEvent({
+          actor: 'lnbits',
+          action: 'intent.lightning_after_cancel',
+          entity: 'payment_intent',
+          entityId: intent.id,
+          metadata: { externalId: intent.externalId, paymentHash },
+        });
+        await this.deps.alerts?.send({
+          level: 'warn',
+          title: 'Lightning pago em cobranca cancelada',
+          metadata: { intentId: intent.id, externalId: intent.externalId },
+        });
+      }
+      return { status: 'ignorado', id_transacao: intent.externalId };
+    }
+
+    if (intent.status === 'pago' || intent.status === 'pago_tardio') {
+      if (intent.paidRail === 'onchain') {
+        const updated = await this.deps.repos.addLightningToOnchainPaidIntent({
+          intentId: intent.id,
+          lightningSats: paidAmount,
+          paymentHash,
+          paidAt: this.now(),
+          raw: lightningRaw,
+        });
+        if (updated) {
+          this.deps.logger.warn(
+            { intentId: intent.id, externalId: intent.externalId },
+            'pagamento duplicado: on-chain e Lightning',
+          );
+          await this.deps.repos.insertAuditEvent({
+            actor: 'lnbits',
+            action: 'intent.double_paid',
+            entity: 'payment_intent',
+            entityId: intent.id,
+            metadata: { externalId: intent.externalId, paymentHash },
+          });
+          await this.deps.alerts?.send({
+            level: 'critical',
+            title: 'pagamento duplicado (on-chain + Lightning)',
+            metadata: { intentId: intent.id, externalId: intent.externalId },
+          });
+        }
+      }
       return {
         status: 'ja_processado',
         ...(intent.paidAmountSats
@@ -265,23 +373,14 @@ export class PaymentIntentService {
       };
     }
 
-    const payment = await this.deps.lnbits.getPayment(paymentHash);
-    if (!payment.paid) return { status: 'ignorado' };
-
-    const paidAmount =
-      payment.amount_sats !== undefined && payment.amount_sats > 0
-        ? BigInt(payment.amount_sats)
-        : intent.amountSats;
     const status: 'pago' | 'pago_tardio' =
-      intent.status === 'expirado' || intent.status === 'parcial'
+      intent.status === 'expirado' ||
+      intent.status === 'parcial' ||
+      this.now().getTime() > intent.expiresAt.getTime()
         ? 'pago_tardio'
         : 'pago';
-    const paidRail: PaidRail =
-      intent.paidRail === 'onchain' || intent.paidRail === 'both'
-        ? 'both'
-        : 'lightning';
-    const overpaidSats =
-      paidAmount > intent.amountSats ? paidAmount - intent.amountSats : 0n;
+    const paidRail: PaidRail = 'lightning';
+    const overpaidSats = 0n;
 
     const updated = await this.deps.repos.markIntentPaid({
       intentId: intent.id,
@@ -290,6 +389,8 @@ export class PaymentIntentService {
       paidAmountSats: paidAmount,
       overpaidSats,
       paidAt: this.now(),
+      lightningPaymentHash: paymentHash,
+      lightningRaw,
     });
     if (!updated) {
       return {
@@ -384,15 +485,11 @@ export class PaymentIntentService {
         }
 
         const onchainSum = intent.onchainAddressId
-          ? await this.deps.repos.sumOnchainForIntent(intent.id)
+          ? await this.deps.repos.sumOnchainForIntent(intent.id, ['confirmado'])
           : 0n;
 
-        // Ha on-chain suficiente, mas ainda sem confirmacoes. Nao expira:
-        // o watcher fecha quando atingir o numero de confirmacoes.
-        if (onchainSum >= intent.amountSats) {
-          waitingOnchain++;
-          continue;
-        }
+        // Mempool nao segura o prazo. So o que ja confirmou conta aqui.
+        // O watcher segue olhando a cobranca expirada ate grace_until.
 
         if (onchainSum > 0n) {
           const updated = await this.deps.repos.markIntentPartial(intent.id);
@@ -434,13 +531,18 @@ export class PaymentIntentService {
     };
   }
 
-  private handleExisting(
+  private async handleExisting(
     intent: PaymentIntent,
     amountSats: bigint,
-  ): PaymentIntentDto | Promise<PaymentIntentDto> {
+  ): Promise<CreatedPaymentIntent> {
     if (intent.amountSats !== amountSats) {
       throw new ConflictError(
         'external_id ja existe com outro valor; use um external_id novo',
+      );
+    }
+    if (intent.status === 'criando') {
+      throw new ConflictError(
+        'cobranca ainda esta sendo criada; tente novamente',
       );
     }
     if (intent.status === 'falha_criacao') {
@@ -448,7 +550,7 @@ export class PaymentIntentService {
         'external_id ja foi usado em uma cobranca que falhou; use outro',
       );
     }
-    return this.toDto(intent);
+    return { dto: await this.toDto(intent), reused: true };
   }
 
   private async enqueueEvent(

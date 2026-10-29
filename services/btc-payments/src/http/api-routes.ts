@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { isEsploraNotFound, type EsploraClient } from '../adapters/chain/esplora.js';
 import type { AppConfig } from '../config.js';
 import { timingSafeEqualString } from '../crypto/hmac.js';
 import type { Repositories } from '../db/repositories.js';
@@ -22,6 +23,7 @@ export type ApiServices = {
   paymentIntents: PaymentIntentService;
   clients: ClientService;
   getStatus?: () => Promise<Record<string, unknown>>;
+  esplora?: Pick<EsploraClient, 'getTx'>;
 };
 
 const amountSatsSchema = z
@@ -81,7 +83,7 @@ export function registerApiRoutes(
       const body = parse(createIntentSchema, request.body, 'corpo');
       const client = request.apiClient;
       if (!client) throw new UnauthorizedError('cliente nao autenticado');
-      const dto = await services.paymentIntents.create({
+      const created = await services.paymentIntents.create({
         clientId: client.id,
         externalId: body.external_id,
         amountSats: body.amount_sats,
@@ -91,7 +93,7 @@ export function registerApiRoutes(
           ? { expiresInSeconds: body.expires_in_seconds }
           : {}),
       });
-      return reply.status(201).send(dto);
+      return reply.status(created.reused ? 200 : 201).send(created.dto);
     },
   );
 
@@ -260,6 +262,27 @@ export function registerApiRoutes(
       if (!sweep) throw new NotFoundError('sweep nao encontrado');
       if (sweep.status === 'sweepado') {
         throw new ConflictError('sweep ja confirmado; nao ha o que reenviar');
+      }
+      if (sweep.txid) {
+        if (!services.esplora) {
+          throw new ConflictError(
+            'tx do sweep nao pode ser conferido agora; retry recusado',
+          );
+        }
+        try {
+          const tx = await services.esplora.getTx(sweep.txid);
+          if (tx.status.confirmed) {
+            throw new ConflictError(
+              'tx do sweep ja esta confirmado; nao reenvie',
+            );
+          }
+          throw new ConflictError(
+            'tx do sweep ainda esta na mempool; espere o RBF em vez de montar outro gasto',
+          );
+        } catch (err) {
+          if (err instanceof ConflictError) throw err;
+          if (!isEsploraNotFound(err)) throw err;
+        }
       }
       await services.repos.restoreOnchainPayments(sweep.inputs);
       const updated = await services.repos.updateSweep({

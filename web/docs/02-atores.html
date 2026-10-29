@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -42,37 +42,29 @@
 </ol>
 </nav>
 <main>
-<p class="kicker">Parte 1 · O objetivo</p>
+<p class="kicker">Parte 1 · Os três atores</p>
 
 <h1>Os três atores</h1>
-<p class="lede">Operador, sistema da loja e pagador não compartilham segredo. Cada um vê um recorte, e alguns segredos não atravessam fronteira nenhuma.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Saber qual credencial usar em cada chamada e o que nunca pedir de volta para a API.</div>
-<h2>O problema</h2>
-<p>Se a mesma senha servisse para operar o motor, criar cobrança e abrir a página de pagamento, um vazamento na página pública abriria a loja inteira. O motor separa os três papéis de propósito.</p>
-<h2>O método</h2>
-<h3>Operador</h3>
-<p>A pessoa da loja abre <code>/admin/</code>, cola o <code>ADMIN_TOKEN</code> e o navegador guarda esse token só na aba (<code>sessionStorage</code>). Com ele cadastra clientes da API, carteiras, perfis Ramp, e acompanha links, webhooks, alertas e auditoria. O token não assina o corpo. É um bearer. Em produção ele viaja só por HTTPS.</p>
-<h3>Sistema da loja</h3>
-<p>O backend da loja chama <code>/v1/*</code>. Ele recebe, uma vez, três segredos: <code>api_key</code> (começa com <code>mk_live_</code>), <code>request_secret</code> (começa com <code>req_</code>) e <code>webhook_secret</code> (começa com <code>whsec_</code>). A chave identifica. O segredo de pedido assina cada requisição. O segredo de webhook serve para a loja conferir o aviso que o motor manda de volta.</p>
-<h3>Pagador</h3>
-<p>Quem paga recebe só a <code>page_url</code>, no formato <code>/p/&lt;token&gt;</code>. Não há login. O token da página é o próprio segredo daquela cobrança: quem tem a URL vê o valor, o QR e o endereço. Não vê a chave da loja nem a URL crua da Ramp no JSON.</p>
-<h2>O contrato</h2>
-<table>
-<tr><th>Ator</th><th>Onde</th><th>Credencial</th><th>O que recebe</th></tr>
-<tr><td>Operador</td><td><code>/admin/</code> e <code>/admin/api/*</code></td><td><code>ADMIN_TOKEN</code></td><td>Cadastro, listas, alertas. Segredos de cliente só na criação e na rotação.</td></tr>
-<tr><td>Sistema da loja</td><td><code>/v1/*</code></td><td>API key + HMAC</td><td>Links da própria loja, perfis e carteiras allowlisted.</td></tr>
-<tr><td>Pagador</td><td><code>/p/:token</code></td><td>o token na URL</td><td>HTML da cobrança e o JSON de status, sem <code>ramp_url</code>.</td></tr>
-</table>
-<div class="note cuidado"><strong>Cuidado</strong>A seed, o xprv e a chave da carteira de gas não passam por nenhuma dessas rotas. O processo da API calcula endereços com o xpub e não assina gasto. Quem gasta é o worker, num processo separado.</div>
-<h2>O que recusamos</h2>
+<p class="lede">Três papéis bastam. Quem opera o motor, o sistema da loja e quem paga. LNbits e Esplora são ferramentas do operador, não um quarto cliente.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber quem guarda qual segredo e quem pode chamar cada rota.</div>
+
+<h2>Quem opera</h2>
+<p>Usa o <code>ADMIN_TOKEN</code> no header <code>Authorization: Bearer</code>. Cria clientes da API, lista cobranças indiretamente pelo status, relê a outbox de webhooks e pede retry de um sweep. Também guarda o xpub, a senha do keystore, a carteira fria e as chaves do LNbits. Esse token não vai para a loja.</p>
+
+<h2>O sistema da loja</h2>
+<p>É um programa. Recebe, uma vez, três segredos: a API key (<code>mk_btc_live_…</code>), o segredo que assina cada pedido e o segredo que verifica o webhook. Cada chamada a <code>/v1/*</code> leva a chave e a assinatura HMAC. A loja escolhe o <code>external_id</code> do pedido e o valor em sats. Ela não escolhe o endereço Bitcoin.</p>
+
+<h2>Quem paga</h2>
+<p>Não tem conta no motor. Vê o QR que a loja renderizou, paga a invoice Lightning ou envia o valor on-chain para o endereço daquela cobrança. Não chama a API.</p>
+
+<h2>O que fica de fora desses três</h2>
 <ul>
-<li>Devolver <code>api_key</code>, <code>request_secret</code> ou <code>webhook_secret</code> numa listagem. Eles aparecem uma vez.</li>
-<li>Devolver <code>host_api_key</code> do perfil Ramp. Ela pode ser gravada, cifrada, e não volta na resposta.</li>
-<li>Devolver <code>ramp_url</code> em <code>/v1</code> ou em <code>/p/:token/status</code>.</li>
-<li>Deixar o pagador chamar <code>/v1</code> ou <code>/admin/api</code> com o token da página.</li>
+<li>O LNbits emite a invoice e é a fonte do pagamento Lightning. O motor consulta essa API de novo; não acredita só no POST do webhook.</li>
+<li>O Esplora é a fonte dos UTXOs, das confirmações e da taxa. Em produção ele deve ser self-hosted. Um Esplora público veria todos os endereços derivados.</li>
+<li>O worker é o mesmo operador, em outro processo. Ele concilia, expira, observa a rede, entrega webhooks e varre.</li>
 </ul>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Chame <code>GET /admin/api/clientes</code> com o token de admin. A lista traz <code>api_key_prefix</code>, nunca a chave inteira. Chame <code>GET /p/&lt;token&gt;/status</code> sem header de autorização. O JSON tem status e valor, e não tem <code>ramp_url</code> nem <code>page_url</code>.</div>
+
+<div class="note cuidado"><strong>Cuidado</strong>Vários clientes da API podem existir ao mesmo tempo. Cada um tem a própria chave e o próprio webhook. O sweep on-chain de todos eles vai para a mesma carteira fria, e o Lightning de todos cai na mesma wallet do LNbits. O motor não mantém um saldo separado por loja.</div>
 
 <nav class="pager"><a href="01-objetivo.html">← O objetivo</a><a href="03-uma-cobranca.html">Uma cobrança →</a></nav>
 </main>

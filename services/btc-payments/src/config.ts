@@ -89,6 +89,8 @@ const EnvSchema = z
         message: 'deve ser um caminho relativo nao-hardened, ex.: "0"',
       }),
     BTC_MAX_INDEX: intFromEnv(100_000, 0),
+    // Indice sequencial gravado no banco. O restore varre 0..next_receive_index
+    // a partir desse estado. Nao recupera um gap de carteira externa.
     BTC_GAP_LIMIT: intFromEnv(20, 1),
 
     INTENT_TTL_SECONDS: intFromEnv(600, 30, 86_400),
@@ -199,6 +201,13 @@ const EnvSchema = z
         code: 'custom',
         path: ['SIGNER_REMOTE_URL'],
         message: 'precisa ser https em producao',
+      });
+    }
+    if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SIGNER_REMOTE_TOKEN'],
+        message: 'obrigatorio em producao quando SIGNER_MODE=remote',
       });
     }
   });

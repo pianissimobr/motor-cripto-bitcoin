@@ -52,6 +52,10 @@ export type EsploraClientOptions = {
   logger?: Logger;
 };
 
+export function isEsploraNotFound(err: unknown): boolean {
+  return err instanceof UpstreamError && err.message.includes('HTTP 404');
+}
+
 export class EsploraClient {
   private readonly url: string;
   private readonly timeoutMs: number;

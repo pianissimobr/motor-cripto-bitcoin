@@ -7,12 +7,12 @@ import type { PaymentIntentStatus } from './types.js';
  */
 const TRANSITIONS: Record<PaymentIntentStatus, readonly PaymentIntentStatus[]> = {
   criando: ['pendente', 'falha_criacao'],
-  pendente: ['pago', 'parcial', 'expirado', 'cancelado'],
+  pendente: ['pago', 'pago_tardio', 'parcial', 'expirado', 'cancelado'],
   pago: ['reorg'],
-  parcial: ['pago_tardio', 'reorg'],
-  expirado: ['pago_tardio', 'cancelado'],
+  parcial: ['pago_tardio'],
+  expirado: ['pago_tardio'],
   pago_tardio: ['reorg'],
-  reorg: ['pago', 'pendente'],
+  reorg: ['pago', 'pago_tardio'],
   cancelado: [],
   falha_criacao: [],
 };

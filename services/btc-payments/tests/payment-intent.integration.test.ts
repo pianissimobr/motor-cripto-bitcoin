@@ -1,12 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { parseAccountXpub } from '../src/adapters/hd/derivation.js';
-import type { EsploraClient } from '../src/adapters/chain/esplora.js';
+import type { EsploraClient, EsploraTx } from '../src/adapters/chain/esplora.js';
+import { UpstreamError } from '../src/domain/errors.js';
 import type { LnbitsClient } from '../src/adapters/lnbits/client.js';
 import type { AppConfig } from '../src/config.js';
 import { createDb, type DbClient } from '../src/db/client.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
-import { webhookEvents } from '../src/db/schema.js';
+import { paymentIntents, webhookEvents } from '../src/db/schema.js';
 import type { PaymentIntent } from '../src/domain/types.js';
 import { silentLogger } from '../src/logger.js';
 import { OnchainWatcher } from '../src/services/onchain-watcher.js';
@@ -27,6 +28,9 @@ class FakeLnbits {
     { amountSats: bigint; paid: boolean }
   >();
   private counter = 0;
+  omitAmount = false;
+  amountMsat: number | undefined;
+  amountSats: number | undefined;
 
   async createInvoice(input: { amountSats: bigint }) {
     const paymentHash = `hash-${++this.counter}`;
@@ -43,12 +47,20 @@ class FakeLnbits {
   async getPayment(paymentHash: string) {
     const invoice = this.invoices.get(paymentHash);
     if (!invoice) throw new Error(`invoice desconhecida: ${paymentHash}`);
-    return {
+    const base = {
       payment_hash: paymentHash,
       paid: invoice.paid,
       pending: !invoice.paid,
       status: invoice.paid ? 'paid' : 'pending',
-      amount_sats: Number(invoice.amountSats),
+    };
+    if (this.omitAmount) return base;
+    return {
+      ...base,
+      ...(this.amountMsat !== undefined ? { amount_msat: this.amountMsat } : {}),
+      amount_sats:
+        this.amountSats !== undefined
+          ? this.amountSats
+          : Number(invoice.amountSats),
     };
   }
 
@@ -74,12 +86,26 @@ class FakeEsplora {
     }>
   >();
 
+  txs = new Set<string>();
+
   async getTipHeight(): Promise<number> {
     return this.tip;
   }
 
   async getAddressUtxos(address: string) {
     return this.utxos.get(address) ?? [];
+  }
+
+  async getTx(txid: string): Promise<EsploraTx> {
+    if (!this.txs.has(txid)) {
+      throw new UpstreamError('Esplora respondeu HTTP 404');
+    }
+    return {
+      txid,
+      status: { confirmed: true, block_height: this.tip, block_hash: 'b'.repeat(64) },
+      vin: [],
+      vout: [],
+    };
   }
 }
 
@@ -122,12 +148,13 @@ maybeDescribe('payment intent + onchain (integration)', () => {
   });
 
   async function createIntent(externalId: string, amountSats = 1000n) {
-    return service.create({
+    const created = await service.create({
       clientId: client.client.id,
       externalId,
       amountSats,
       description: 'Teste',
     });
+    return created.dto;
   }
 
   async function loadIntent(id: string): Promise<PaymentIntent | null> {
@@ -192,12 +219,14 @@ maybeDescribe('payment intent + onchain (integration)', () => {
   });
 
   it('expira intent sem pagamento e enfileira evento', async () => {
-    const dto = await service.create({
-      clientId: client.client.id,
-      externalId: 't4',
-      amountSats: 1000n,
-      expiresInSeconds: 30,
-    });
+    const dto = (
+      await service.create({
+        clientId: client.client.id,
+        externalId: 't4',
+        amountSats: 1000n,
+        expiresInSeconds: 30,
+      })
+    ).dto;
     now = new Date(now.getTime() + 31_000);
     const result = await service.expireDueIntents(10);
     expect(result.expired).toBe(1);
@@ -311,12 +340,14 @@ maybeDescribe('payment intent + onchain (integration)', () => {
 
 
   it('marca parcial quando o on-chain fica abaixo do esperado na expiracao', async () => {
-    const dto = await service.create({
-      clientId: client.client.id,
-      externalId: 't9',
-      amountSats: 1000n,
-      expiresInSeconds: 30,
-    });
+    const dto = (
+      await service.create({
+        clientId: client.client.id,
+        externalId: 't9',
+        amountSats: 1000n,
+        expiresInSeconds: 30,
+      })
+    ).dto;
     await repos.upsertOnchainPayment({
       intentId: dto.id,
       addressId: (await loadIntent(dto.id))!.onchainAddressId!,
@@ -437,5 +468,221 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     const restored = await watcher.runCycle(10);
     expect(restored.paid).toBe(1);
     expect((await loadIntent(dto.id))?.status).toBe('pago');
+    const events = await eventsFor(dto.id);
+    expect(events.filter((event) => event.eventType === 'payment_intent.paid')).toHaveLength(2);
+  });
+
+  it('nao reorga quando o UTXO foi gasto pelo nosso sweep', async () => {
+    const dto = await createIntent('t13');
+    const funding = 'a1'.repeat(32);
+    const sweepTx = 'b1'.repeat(32);
+    const esplora = new FakeEsplora();
+    esplora.utxos.set(dto.onchain!.address, [
+      {
+        txid: funding,
+        vout: 0,
+        value: 1000,
+        status: { confirmed: true, block_height: 100, block_hash: 'c1'.repeat(32) },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    expect((await watcher.runCycle(10)).paid).toBe(1);
+    const intent = await loadIntent(dto.id);
+    const claimed = await repos.claimSweep({
+      intentId: intent!.id,
+      addressId: intent!.onchainAddressId!,
+      amountSats: 900n,
+      feeSats: 100n,
+      coldWalletAddress: 'bcrt1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      inputs: [{ txid: funding, vout: 0, amountSats: '1000' }],
+    });
+    await repos.updateSweep({
+      id: claimed!.id,
+      status: 'aguardando_confirmacao_rede',
+      txid: sweepTx,
+    });
+    esplora.txs.add(sweepTx);
+    esplora.txs.add(funding);
+    esplora.utxos.clear();
+    const cycle = await watcher.runCycle(10);
+    expect(cycle.reorged).toBe(0);
+    expect((await loadIntent(dto.id))?.status).toBe('pago');
+    const payments = await repos.listOnchainPaymentsForIntent(dto.id);
+    expect(payments[0]?.status).toBe('gasto');
+  });
+
+  it('reorga quando o deposito some depois do gasto', async () => {
+    const dto = await createIntent('t14');
+    const funding = 'd1'.repeat(32);
+    const sweepTx = 'e1'.repeat(32);
+    const esplora = new FakeEsplora();
+    esplora.utxos.set(dto.onchain!.address, [
+      {
+        txid: funding,
+        vout: 0,
+        value: 1000,
+        status: { confirmed: true, block_height: 100, block_hash: 'f1'.repeat(32) },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    expect((await watcher.runCycle(10)).paid).toBe(1);
+    const intent = await loadIntent(dto.id);
+    const claimed = await repos.claimSweep({
+      intentId: intent!.id,
+      addressId: intent!.onchainAddressId!,
+      amountSats: 900n,
+      feeSats: 100n,
+      coldWalletAddress: 'bcrt1qxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      inputs: [{ txid: funding, vout: 0, amountSats: '1000' }],
+    });
+    await repos.updateSweep({
+      id: claimed!.id,
+      status: 'aguardando_confirmacao_rede',
+      txid: sweepTx,
+    });
+    await repos.markOnchainPaymentsGasto([
+      { txid: funding, vout: 0, amountSats: '1000' },
+    ]);
+    esplora.txs.add(sweepTx);
+    esplora.utxos.clear();
+    const cycle = await watcher.runCycle(10);
+    expect(cycle.reorged).toBe(1);
+    expect((await loadIntent(dto.id))?.status).toBe('reorg');
+  });
+
+  it('poeira que sai da mempool nao derruba um Lightning ja pago', async () => {
+    const dto = await createIntent('t15');
+    lnbits.markPaid(dto.lightning!.payment_hash);
+    await service.applyLightningPayment(dto.lightning!.payment_hash);
+    const dust = 'ab'.repeat(32);
+    const esplora = new FakeEsplora();
+    esplora.utxos.set(dto.onchain!.address, [
+      {
+        txid: dust,
+        vout: 0,
+        value: 100,
+        status: { confirmed: false },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    await watcher.runCycle(10);
+    esplora.utxos.clear();
+    const cycle = await watcher.runCycle(10);
+    expect(cycle.reorged).toBe(0);
+    expect((await loadIntent(dto.id))?.status).toBe('pago');
+    expect((await loadIntent(dto.id))?.paidRail).toBe('lightning');
+  });
+
+  it('mempool nao segura o prazo', async () => {
+    const dto = (
+      await service.create({
+        clientId: client.client.id,
+        externalId: 't16',
+        amountSats: 1000n,
+        expiresInSeconds: 30,
+      })
+    ).dto;
+    const intent = await loadIntent(dto.id);
+    await repos.upsertOnchainPayment({
+      intentId: dto.id,
+      addressId: intent!.onchainAddressId!,
+      txid: '11'.repeat(32),
+      vout: 0,
+      amountSats: 1000n,
+      blockHeight: null,
+      blockHash: null,
+      confirmations: 0,
+      status: 'mempool',
+    });
+    now = new Date(now.getTime() + 31_000);
+    const result = await service.expireDueIntents(10);
+    expect(result.expired).toBe(1);
+    expect((await loadIntent(dto.id))?.status).toBe('expirado');
+  });
+
+  it('recusa Lightning abaixo da invoice e sem valor', async () => {
+    const under = await createIntent('t17');
+    lnbits.amountSats = 10;
+    lnbits.markPaid(under.lightning!.payment_hash);
+    const underResult = await service.applyLightningPayment(under.lightning!.payment_hash);
+    expect(underResult.status).toBe('ignorado');
+    expect((await loadIntent(under.id))?.status).toBe('pendente');
+
+    const missing = await createIntent('t18');
+    lnbits.amountSats = undefined;
+    lnbits.omitAmount = true;
+    lnbits.markPaid(missing.lightning!.payment_hash);
+    const missingResult = await service.applyLightningPayment(missing.lightning!.payment_hash);
+    expect(missingResult.status).toBe('ignorado');
+    expect((await loadIntent(missing.id))?.status).toBe('pendente');
+  });
+
+  it('aceita Lightning em msat e em sats', async () => {
+    const msat = await createIntent('t19', 1000n);
+    lnbits.amountMsat = 1_000_000;
+    lnbits.amountSats = 1000;
+    lnbits.markPaid(msat.lightning!.payment_hash);
+    expect((await service.applyLightningPayment(msat.lightning!.payment_hash)).status).toBe('pago');
+
+    const sats = await createIntent('t20', 1000n);
+    lnbits.amountMsat = 1000;
+    lnbits.amountSats = 1;
+    lnbits.markPaid(sats.lightning!.payment_hash);
+    expect((await service.applyLightningPayment(sats.lightning!.payment_hash)).status).toBe('pago');
+  });
+
+  it('recusa reutilizar external_id que ainda esta criando', async () => {
+    const dto = await createIntent('t22');
+    await db.db
+      .update(paymentIntents)
+      .set({ status: 'criando' })
+      .where(eq(paymentIntents.id, dto.id));
+    await expect(createIntent('t22')).rejects.toThrow(/sendo criada/);
+  });
+
+  it('soma Lightning que chega depois do on-chain', async () => {
+    const dto = await createIntent('t21');
+    const esplora = new FakeEsplora();
+    esplora.utxos.set(dto.onchain!.address, [
+      {
+        txid: '22'.repeat(32),
+        vout: 0,
+        value: 1000,
+        status: { confirmed: true, block_height: 100, block_hash: '33'.repeat(32) },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    expect((await watcher.runCycle(10)).paid).toBe(1);
+    lnbits.markPaid(dto.lightning!.payment_hash);
+    const result = await service.applyLightningPayment(dto.lightning!.payment_hash);
+    expect(result.status).toBe('ja_processado');
+    const intent = await loadIntent(dto.id);
+    expect(intent?.paidRail).toBe('both');
+    expect(intent?.paidAmountSats).toBe(2000n);
+    expect(intent?.status).toBe('pago');
   });
 });

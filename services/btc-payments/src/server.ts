@@ -10,6 +10,7 @@ import { LnbitsClient } from './adapters/lnbits/client.js';
 import { EsploraClient } from './adapters/chain/esplora.js';
 import { assertAddress } from './adapters/hd/derivation.js';
 import { ClientService } from './services/client-service.js';
+import { AlertService } from './services/alert-service.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 
 export async function main(): Promise<void> {
@@ -66,12 +67,14 @@ export async function main(): Promise<void> {
     });
 
     const clients = new ClientService({ repos, config, logger });
+    const alerts = new AlertService({ ...config.alerts, logger });
     const paymentIntents = new PaymentIntentService({
       repos,
       lnbits,
       config,
       xpub,
       logger,
+      alerts,
     });
 
     const app = buildApp({
@@ -84,6 +87,7 @@ export async function main(): Promise<void> {
         repos,
         paymentIntents,
         clients,
+        esplora,
         getStatus: async () => {
           const [counts, lnbitsHealth, esploraHealth] = await Promise.all([
             repos.getStatusCounts(),

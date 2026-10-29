@@ -7,7 +7,7 @@
 - O servidor de enderecos usa **somente** o xpub.
 - O xprv fica no worker (keystore cifrado) ou em signer remoto.
 - O indice e alocado atomicamente no Postgres e nunca reutilizado.
-- O gap limit e respeitado porque a alocacao e sequencial.
+- `BTC_GAP_LIMIT` e o indice sequencial gravado no banco. O restore varre `0..next_receive_index` a partir desse estado. Isso nao recupera um gap de carteira externa.
 
 Fingerprint: o banco guarda um fingerprint do xpub. Se o `BTC_XPUB` mudar, o
 boot recusa para evitar derivar enderecos de outra carteira.
@@ -22,8 +22,10 @@ boot recusa para evitar derivar enderecos de outra carteira.
 - Parcial: pagamento menor que o esperado; vira `parcial` na expiracao.
 - Overpay: pagamento maior; `paid_amount_sats` e `overpaid_sats` registram o
   excesso.
-- Reorg: se um UTXO confirmado desaparece, o pagamento e reavaliado e a intent
-  pode ir para `reorg`.
+- Reorg: sumir da lista de UTXOs nao basta. Gasto pelo nosso sweep permanece
+  pago. So o tx de deposito ausente, ou um UTXO confirmado que voltou a
+  mempool, reabre a intent, e apenas se Lightning mais o on-chain ainda em
+  custodia ficarem abaixo do pedido.
 - Pagamento tardio: depois dos 10 min, o endereco continua observado por
   `INTENT_GRACE_SECONDS` (padrao 24h). Se cair, vira `pago_tardio`.
 

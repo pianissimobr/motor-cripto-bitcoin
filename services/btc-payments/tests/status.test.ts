@@ -14,6 +14,8 @@ describe('status', () => {
     expect(canTransition('expirado', 'pago_tardio')).toBe(true);
     expect(canTransition('pago', 'reorg')).toBe(true);
     expect(canTransition('reorg', 'pago')).toBe(true);
+    expect(canTransition('pendente', 'pago_tardio')).toBe(true);
+    expect(canTransition('reorg', 'pago_tardio')).toBe(true);
   });
 
   it('rejeita transicoes invalidas', () => {

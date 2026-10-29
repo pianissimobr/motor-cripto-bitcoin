@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html" aria-current="page">Varrer o valor</a></li>
@@ -45,39 +45,34 @@
 <p class="kicker">Parte 3 · O contrato</p>
 
 <h1>Varrer o valor</h1>
-<p class="lede">O USDC chega num endereço que o motor derivou. Ele não fica lá. A varredura leva o token até a carteira allowlisted e devolve o POL que sobrou para a carteira de gas.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Saber em que estados o token sai, por que <code>pago_sem_gas</code> espera POL, e quando a assinatura é manual.</div>
-<h2>O problema</h2>
-<p>O endereço derivado é uma conta nova. Ela recebe USDC e não tem POL para pagar a taxa de envio. Sem uma segunda carteira, só de gas, o valor fica preso. Sem allowlist, essa mesma carteira de gas poderia ser convencida a mandar o token para qualquer lugar.</p>
-<h2>O método</h2>
-<ol>
-<li>Entram na fila de varredura os links <code>pago</code>, <code>parcial</code>, <code>pago_sem_gas</code> e <code>nao_realizado</code> que ainda não foram marcados como já varridos no caso terminal.</li>
-<li>O worker lê o saldo do contrato no endereço derivado. Saldo zero com uma varredura já confirmada encerra o ciclo daquele link.</li>
-<li>O destino é a <code>wallet_address</code> gravada na cobrança, e ela ainda precisa estar allowlisted. Destino que saiu da lista gera o alerta de destino recusado. O token fica parado até alguém cadastrar de novo aquele endereço, de propósito.</li>
-<li>A carteira de gas, um EOA separado, manda POL bastante para a taxa. A chave dessa carteira só existe no worker. A API, se tiver <code>GAS_SPONSOR_ADDRESS</code>, mostra o saldo e não gasta.</li>
-<li>O worker assina o <code>transfer</code> do token para a carteira da loja, transmite e espera o recibo.</li>
-<li>O POL que sobra no endereço derivado volta para a carteira de gas. Sem endereço de gas válido, o troco fica no endereço derivado.</li>
-<li>Se o estado era <code>pago</code> ou <code>pago_sem_gas</code>, a passagem para <code>movido</code> existe e o webhook correspondente nasce. Se o estado era <code>parcial</code>, o token sai e o estado continua <code>parcial</code>. Se era <code>nao_realizado</code>, o estado continua e <code>reembolsado</code> passa a verdadeiro.</li>
-</ol>
-<p><code>pago_sem_gas</code> é o estado em que o token está lá e o patrocinador não conseguiu colocar POL. Recarregar a carteira de gas destrava o ciclo seguinte. O jeito simples de recarregar é sacar POL na rede Polygon, não na Ethereum: o endereço é o mesmo tipo de conta, a rede do saque é que muda.</p>
-<h3>Assinatura manual</h3>
-<p>No modo <code>SIGNER_MODE=psbt</code> o worker não tem a chave. Ele grava a transação não assinada e espera. O operador assina fora e envia o raw:</p>
-<pre>POST /admin/api/sweeps/:id/submit
-Authorization: Bearer $ADMIN_TOKEN
+<p class="lede">Varrer é juntar os UTXOs confirmados de um endereço de cobrança e enviá-los à carteira fria. A loja não chama essa etapa. O worker chama.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber o que sai do endereço, para onde vai, e o que o operador faz quando o sweep fica <code>manual</code>.</div>
 
-{"raw_transaction":"0x..."}</pre>
-<p>A resposta traz o id do movimento, o <code>txHash</code> e <code>status: "enviado"</code>. 400 é transação inválida. 404 é sweep inexistente. 409 é sweep que não está aguardando assinatura. Esses três status não são achatados num único 400.</p>
-<h2>O contrato</h2>
-<p>A loja não chama a varredura. Ela observa <code>status</code> e <code>wallet_address</code>. O operador observa alertas e, no modo manual, o submit acima. O saldo de POL não é uma rota de cobrança. É uma carteira que o operador mantém com fundo.</p>
-<h2>O que recusamos</h2>
+<h2>Quando entra na fila</h2>
+<p>O job <code>sweep</code> roda a cada 30 segundos se <code>SWEEP_ENABLED</code> está ligado e o signer subiu. Ele pega saídas <code>confirmado</code> de cobranças <code>pago</code>, <code>pago_tardio</code>, <code>parcial</code> ou <code>expirado</code>, já com o número de confirmações daquele valor. Agrupa por endereço. Não mexe em Lightning.</p>
+<p>O destino é sempre <code>COLD_WALLET_ADDRESS</code>, validado contra <code>BTC_NETWORK</code> na subida. Não existe carteira de destino por cliente.</p>
+
+<h2>Taxa e limites</h2>
+<p>A taxa vem de <code>GET /fee-estimates</code> do Esplora, no alvo <code>SWEEP_FEE_TARGET_BLOCKS</code> (padrão 6 blocos), vezes <code>SWEEP_FEE_MULTIPLIER</code>. A transação é P2WPKH, com sequence de RBF. O que sobra depois da taxa é a única saída, para a carteira fria.</p>
+<p>O sweep não é transmitido, e fica <code>manual</code>, quando:</p>
 <ul>
-<li>Varrer para um endereço digitado na hora.</li>
-<li>Usar a carteira de USDC para pagar o gas, ou a carteira de POL como destino do USDC.</li>
-<li>Mudar <code>parcial</code> para <code>movido</code> só porque o token saiu.</li>
-<li>Assinar gasto no processo da API. A API não recebe a chave do gas nem o keystore.</li>
+<li>o restante fica abaixo de <code>SWEEP_MIN_SATS</code> (padrão 1000) ou da poeira de 546 sats;</li>
+<li>a taxa passa de <code>SWEEP_MAX_FEE_PCT</code> (padrão <code>0.1</code>, ou seja 10% do valor);</li>
+<li>o modo do signer é <code>psbt</code> e alguém precisa assinar à mão.</li>
 </ul>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Depois de um <code>pago</code> com a carteira de POL financiada, o link chega a <code>movido</code> e o saldo de USDC do endereço derivado cai. O USDC aparece em <code>wallet_address</code>. Se o estado ficar em <code>pago_sem_gas</code>, o alerta de patrocinador é o lugar onde olhar, não um novo <code>POST /v1/links</code>.</div>
+
+<h2>Quem assina</h2>
+<ul>
+<li><code>local</code>: o worker abre o keystore cifrado com <code>SIGNER_PASSPHRASE</code>. O arquivo não entra na API.</li>
+<li><code>remote</code>: o worker manda a PSBT para <code>SIGNER_REMOTE_URL</code>. Em produção essa URL tem de ser HTTPS e <code>SIGNER_REMOTE_TOKEN</code> é obrigatório.</li>
+<li><code>psbt</code>: ninguém assina. A PSBT fica gravada para o operador.</li>
+</ul>
+<p>O worker confere que o keystore local corresponde ao <code>BTC_XPUB</code>. Se não corresponder, o job de sweep nem começa. Os outros jobs continuam.</p>
+
+<h2>Depois do broadcast</h2>
+<p>A saída da cobrança é marcada <code>gasto</code>. O sweep fica <code>aguardando_confirmacao_rede</code>. Se passar <code>SWEEP_RBF_AFTER_SECONDS</code> (padrão 10 minutos) sem confirmar, o worker reenvia com taxa maior, até <code>SWEEP_MAX_ATTEMPTS</code> (padrão 3). Esgotado isso, o status vai para <code>manual</code>.</p>
+<p>Antes do broadcast, local ou remoto, o worker decodifica o raw. Os inputs têm de ser os da PSBT, a única saída tem de ser <code>COLD_WALLET_ADDRESS</code> e a taxa tem de caber em <code>SWEEP_MAX_FEE_PCT</code>. Se não couber, o sweep vai para <code>falhou</code> e nada é transmitido.</p>
+<p><code>POST /admin/api/sweeps/:id/retry</code> devolve as saídas de <code>gasto</code> para <code>confirmado</code> e marca aquele sweep como <code>falhou</code>, para o ciclo seguinte tentar de novo. Não use isso num sweep que já está <code>sweepado</code>: a rota recusa. Se o tx ainda está na mempool, a rota também recusa e pede para esperar o RBF. Se já confirmou, recusa. Retry só segue quando o tx não existe mais.</p>
 
 <nav class="pager"><a href="12-webhooks.html">← Webhooks</a><a href="14-liquidacao.html">Liquidação →</a></nav>
 </main>

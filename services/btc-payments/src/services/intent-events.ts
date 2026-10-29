@@ -46,7 +46,7 @@ export async function enqueueIntentEvent(
     clientId: intent.clientId,
     intentId: intent.id,
     eventType,
-    dedupeKey: `intent:${intent.id}:${dedupeSuffix}`,
+    dedupeKey: `intent:${intent.id}:${dedupeSuffix}:${intent.version}`,
     payload: buildIntentEventPayload(intent, eventType, now),
   });
 }

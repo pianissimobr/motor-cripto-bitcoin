@@ -72,6 +72,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     config,
     xpub,
     logger,
+    alerts,
   });
   const onchainWatcher = new OnchainWatcher({
     repos,

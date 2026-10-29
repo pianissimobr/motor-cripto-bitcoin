@@ -124,13 +124,16 @@ maybeDescribe('sweep service (integration)', () => {
     amountSats: bigint,
     txid: string,
   ): Promise<PaymentIntent> {
-    const dto = await service.create({
+    const created = await service.create({
       clientId: client.client.id,
       externalId,
       amountSats,
       description: 'Sweep test',
     });
-    const intent = await repos.findIntentByIdForClient(dto.id, client.client.id);
+    const intent = await repos.findIntentByIdForClient(
+      created.dto.id,
+      client.client.id,
+    );
     if (!intent?.onchainAddressId) throw new Error('intent sem endereco');
     await repos.markIntentPaid({
       intentId: intent.id,

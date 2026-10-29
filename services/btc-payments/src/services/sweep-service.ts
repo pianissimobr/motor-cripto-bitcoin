@@ -9,6 +9,61 @@ import type { HdAddress, OnchainSweep, SweepInput } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
 
+function txidHex(txid: Uint8Array | string): string {
+  if (typeof txid === 'string') return txid.toLowerCase();
+  return hex.encode(txid).toLowerCase();
+}
+
+/** Recusa um raw que nao gasta exatamente os inputs da PSBT para a carteira fria. */
+export function assertSweepTransaction(input: {
+  rawTx: string;
+  inputs: SweepInput[];
+  coldWallet: string;
+  networkName: AppConfig['btc']['network'];
+  maxFeePct: number;
+}): void {
+  const network = networkFor(input.networkName);
+  const tx = btc.Transaction.fromRaw(hex.decode(input.rawTx), {
+    allowUnknownOutputs: true,
+  });
+  if (tx.inputsLength !== input.inputs.length) {
+    throw new Error('sweep assinado nao tem os mesmos inputs da PSBT');
+  }
+  for (let i = 0; i < input.inputs.length; i++) {
+    const vin = tx.getInput(i);
+    const expected = input.inputs[i];
+    if (!expected || vin.index !== expected.vout || !vin.txid) {
+      throw new Error('sweep assinado nao tem os mesmos inputs da PSBT');
+    }
+    if (txidHex(vin.txid) !== expected.txid.toLowerCase()) {
+      throw new Error('sweep assinado nao tem os mesmos inputs da PSBT');
+    }
+  }
+  if (tx.outputsLength !== 1) {
+    throw new Error('sweep assinado precisa ter uma unica saida');
+  }
+  const outputAddress = tx.getOutputAddress(0, network);
+  if (outputAddress !== input.coldWallet) {
+    throw new Error('sweep assinado nao paga a carteira fria');
+  }
+  const output = tx.getOutput(0);
+  if (output.amount === undefined) {
+    throw new Error('sweep assinado tem taxa ou valor invalido');
+  }
+  const total = input.inputs.reduce(
+    (sum, vin) => sum + BigInt(vin.amountSats),
+    0n,
+  );
+  const fee = total - output.amount;
+  const maxFeeBps = BigInt(Math.round(input.maxFeePct * 10_000));
+  if (fee <= 0n || output.amount <= 0n) {
+    throw new Error('sweep assinado tem taxa ou valor invalido');
+  }
+  if (maxFeeBps > 0n && fee * 10_000n > total * maxFeeBps) {
+    throw new Error('sweep assinado tem taxa acima do limite');
+  }
+}
+
 const DUST_SATS = 546n;
 const RBF_SEQUENCE = 0xfffffffd;
 
@@ -240,6 +295,13 @@ export class SweepService {
         return 'manual';
       }
 
+      assertSweepTransaction({
+        rawTx: signed.rawTx,
+        inputs,
+        coldWallet,
+        networkName: this.deps.config.btc.network,
+        maxFeePct: this.deps.config.sweep.maxFeePct,
+      });
       const broadcastTxid = await this.deps.esplora.broadcastTx(signed.rawTx);
       if (broadcastTxid.toLowerCase() !== signed.txid.toLowerCase()) {
         throw new Error(
@@ -491,6 +553,13 @@ export class SweepService {
         });
         return 'manual';
       }
+      assertSweepTransaction({
+        rawTx: signed.rawTx,
+        inputs: sweep.inputs,
+        coldWallet,
+        networkName: this.deps.config.btc.network,
+        maxFeePct: this.deps.config.sweep.maxFeePct,
+      });
       const broadcastTxid = await this.deps.esplora.broadcastTx(signed.rawTx);
       if (broadcastTxid.toLowerCase() !== signed.txid.toLowerCase()) {
         throw new Error('txid do RBF nao confere com o txid assinado');

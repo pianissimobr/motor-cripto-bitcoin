@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html" aria-current="page">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -45,76 +45,59 @@
 <p class="kicker">Parte 3 · O contrato</p>
 
 <h1>Criar a cobrança</h1>
-<p class="lede">A loja manda centavos, um perfil e uma carteira. O motor devolve a página. O endereço de depósito nasce aqui e a loja não o escolhe.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Criar um link de R$ 150,00, reconhecer a resposta de criação e a de reuso, e saber quando a mesma chave é conflito.</div>
-<h2>O problema</h2>
-<p>Um pedido HTTP pode chegar duas vezes: timeout no cliente, retry automático, clique duplo. Sem idempotência, a loja ganharia dois endereços para o mesmo pedido e quem paga não saberia qual usar. Com idempotência frouxa, um retry com valor diferente devolveria a cobrança antiga e a loja acharia que os R$ 150,00 tinham virado outro número.</p>
-<h2>O método</h2>
-<ol>
-<li>A loja serializa o corpo uma vez.</li>
-<li>Assina <code>POST</code>, <code>/v1/links</code>, o timestamp, um nonce novo e o hash desse corpo.</li>
-<li>Envia <code>Idempotency-Key</code> estável por pedido de negócio. Se omitir, <code>external_id</code> cumpre esse papel.</li>
-<li>O motor confere a carteira: ela pertence ao cliente autenticado e a chain é a do perfil.</li>
-<li>Reserva o próximo índice HD, deriva o endereço, grava a taxa e o esperado, e devolve <code>page_url</code>.</li>
-</ol>
-<p>Para R$ 150,00 no perfil de taxa <code>180000</code> e 6 decimais, <code>expected_base_units</code> é <code>"27000000"</code>. <code>expira_em</code> fica 60 minutos à frente. <code>liquidacao_ate</code> fica 1 dia à frente. O estado é <code>aguardando</code>.</p>
-<h2>O contrato</h2>
-<pre>POST /v1/links
-Authorization: Bearer mk_live_...
-X-Timestamp: 1792700000
-X-Nonce: pedido-150-01
-X-Signature: v1=...
-Content-Type: application/json
-Idempotency-Key: pedido-150
+<p class="lede"><code>POST /v1/payment-intents</code> reserva um endereço, cria a invoice e devolve o que a loja precisa mostrar. O corpo é assinado como está.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Criar, reler e cancelar uma cobrança sem inventar campo.</div>
 
-{
-  "external_id": "pedido-150",
-  "amount_cents": 15000,
-  "ramp_profile_id": "33333333-3333-4333-8333-333333333333",
-  "wallet_id": "22222222-2222-4222-8222-222222222222",
-  "final_url": "https://loja.example/obrigado"
-}</pre>
-<p><code>final_url</code> é opcional. Se vier, é <code>http</code> ou <code>https</code>. O corpo é estrito: campo desconhecido responde 400.</p>
-<p>Resposta 201, criação:</p>
-<pre>{
-  "data": {
-    "id": "44444444-4444-4444-8444-444444444444",
-    "external_id": "pedido-150",
-    "status": "aguardando",
-    "motivo_nao_realizado": null,
-    "valor_fiat_centavos": 15000,
-    "moeda_fiat": "BRL",
-    "chain": "polygon",
-    "asset": "USDC",
-    "token_contract": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
-    "decimals": 6,
-    "expected_base_units": "27000000",
-    "valor_recebido_base_units": "0",
-    "endereco_deposito": "0x5555555555555555555555555555555555555555",
-    "wallet_address": "0x1111111111111111111111111111111111111111",
-    "expira_em": "2026-10-23T16:00:00.000Z",
-    "liquidacao_ate": "2026-10-24T15:00:00.000Z",
-    "reembolsado": false,
-    "criado_em": "2026-10-23T15:00:00.000Z",
-    "page_url": "https://pay.example/p/token-opaco"
+<h2>Corpo</h2>
+<pre><code>{
+  "external_id": "pedido-123",
+  "amount_sats": "10000",
+  "description": "Pedido 123",
+  "expires_in_seconds": 600,
+  "metadata": { "order_id": "123" }
+}</code></pre>
+<p><code>external_id</code> e <code>amount_sats</code> são obrigatórios. <code>description</code> tem no máximo 200 caracteres e vira o <code>label</code> da URI. <code>expires_in_seconds</code> é opcional. <code>metadata</code> é um objeto livre, guardado com a cobrança e não devolvido no webhook.</p>
+
+<h2>Resposta 201</h2>
+<pre><code>{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "status": "pendente",
+  "amount_sats": "10000",
+  "description": "Pedido 123",
+  "expires_at": "2026-10-29T12:10:00.000Z",
+  "grace_until": "2026-10-30T12:10:00.000Z",
+  "paid_at": null,
+  "paid_rail": null,
+  "paid_amount_sats": null,
+  "overpaid_sats": null,
+  "lightning": {
+    "invoice": "lnbc...",
+    "payment_hash": "...",
+    "expires_at": "2026-10-29T12:10:00.000Z"
   },
-  "reused": false
-}</pre>
-<p>A mesma chave e o mesmo payload devolvem 200 com <code>reused: true</code> e o mesmo <code>data</code>. Não nasce outro endereço.</p>
-<p>Listar é <code>GET /v1/links?limit=50</code>. Consultar é <code>GET /v1/links/:id</code>. O <code>limit</code> vai de 1 a 200. Um id de outro cliente, ou inexistente, é 404. A resposta de leitura tem o mesmo objeto, inclusive <code>page_url</code>. Não inclui a URL da Ramp.</p>
-<p>Revogar é <code>POST /v1/links/:id/revoke</code>, sem corpo. A assinatura usa o hash da string vazia. Só cabe enquanto a transição para <code>nao_realizado</code> com motivo <code>revogado</code> é permitida. Link que já recebeu pagamento responde 409.</p>
-<h2>O que recusamos</h2>
-<table>
-<tr><th>HTTP</th><th>Código</th><th>Quando</th></tr>
-<tr><td>400</td><td><code>dados_invalidos</code></td><td>Corpo inválido, carteira de outro cliente, chain diferente da do perfil, campo a mais.</td></tr>
-<tr><td>404</td><td><code>nao_encontrado</code></td><td>Perfil inexistente, ou link que não é deste cliente.</td></tr>
-<tr><td>409</td><td><code>idempotencia_conflitante</code></td><td>Mesma chave, outro payload.</td></tr>
-<tr><td>409</td><td>conflito de estado</td><td>Revogação depois que o pagamento já existe.</td></tr>
-</table>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Envie <code>page_url</code> a quem paga. Não monte a URL da Ramp no seu sistema: ela não veio no JSON. Abra a página e confira se o valor em destaque é R$ 150,00.</div>
+  "onchain": {
+    "address": "bc1q...",
+    "amount_btc": "0.00010000",
+    "bip21": "bitcoin:bc1q...?amount=0.00010000&amp;label=Pedido%20123&amp;lightning=lnbc..."
+  },
+  "payment_uri": "bitcoin:bc1q...?amount=0.00010000&amp;lightning=lnbc...",
+  "qr_svg": "&lt;svg ...&gt;",
+  "created_at": "2026-10-29T12:00:00.000Z",
+  "updated_at": "2026-10-29T12:00:00.000Z"
+}</code></pre>
+<p>O mesmo <code>external_id</code> e o mesmo valor devolvem a cobrança já <code>pendente</code> com <code>200</code>. Outro valor no mesmo id devolve <code>409</code>. Se a criação ainda está em <code>criando</code>, a resposta é <code>409</code> pedindo para tentar de novo, sem devolver uma cobrança sem invoice. Se a invoice falhou, o status fica <code>falha_criacao</code> e esse <code>external_id</code> não serve para uma nova tentativa.</p>
 
-<nav class="pager"><a href="08-preparar-a-loja.html">← Preparar a loja</a><a href="10-pagina-publica.html">A página de quem paga →</a></nav>
+<h2>Ler e cancelar</h2>
+<ul>
+<li><code>GET /v1/payment-intents/:id</code></li>
+<li><code>GET /v1/payment-intents?external_id=pedido-123</code></li>
+<li><code>POST /v1/payment-intents/:id/cancel</code> sem corpo. Só em <code>pendente</code>. Responde a cobrança já <code>cancelado</code>.</li>
+</ul>
+<p>O <code>GET</code> com query também é assinado. O <code>PATH</code> da string canônica é <code>/v1/payment-intents</code>, sem a query. O corpo assinado é vazio.</p>
+<p>Uma loja não lê a cobrança de outra. Id desconhecido ou de outro cliente é <code>404</code>.</p>
+
+<nav class="pager"><a href="08-preparar-a-loja.html">← Preparar a loja</a><a href="10-pagina-publica.html">O QR de quem paga →</a></nav>
 </main>
 </div>
 </body>

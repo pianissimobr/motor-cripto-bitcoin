@@ -1,7 +1,11 @@
 import type { AppConfig } from '../config.js';
-import type { EsploraClient, EsploraUtxo } from '../adapters/chain/esplora.js';
+import {
+  isEsploraNotFound,
+  type EsploraClient,
+  type EsploraUtxo,
+} from '../adapters/chain/esplora.js';
 import type { Repositories } from '../db/repositories.js';
-import type { PaymentIntent } from '../domain/types.js';
+import type { OnchainPayment, OnchainSweep, PaymentIntent, SweepInput } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import { enqueueIntentEvent } from './intent-events.js';
 import type { AlertService } from './alert-service.js';
@@ -41,9 +45,14 @@ export class OnchainWatcher {
     limit = this.deps.config.jobs.batchSize,
   ): Promise<OnchainCycleResult> {
     const now = this.now();
-    const intents = await this.deps.repos.listWatchableOnchainIntents(
+    const watching = await this.deps.repos.listWatchableOnchainIntents(
       now,
       limit,
+    );
+    const recovery = await this.deps.repos.listRecoveryIntents(now, limit);
+    const seen = new Set(watching.map((intent) => intent.id));
+    const intents = watching.concat(
+      recovery.filter((intent) => !seen.has(intent.id)),
     );
     const result: OnchainCycleResult = {
       checked: intents.length,
@@ -59,7 +68,11 @@ export class OnchainWatcher {
 
     for (const intent of intents) {
       try {
-        await this.processIntent(intent, tip, result);
+        if (this.isRecovery(intent, now)) {
+          await this.processRecovery(intent, tip);
+        } else {
+          await this.processIntent(intent, tip, result);
+        }
       } catch (err) {
         result.errors++;
         this.deps.logger.error(
@@ -113,14 +126,27 @@ export class OnchainWatcher {
       await this.deps.repos.markHdAddressUsed(address.id);
     }
 
-    let reorgDetected = false;
+    const watchSwept = this.withinPaidWindow(intent);
+    const sweeps = await this.deps.repos.listSweepsForAddress(address.id);
+    let sweptStillOurs = 0n;
+    let realReorg = false;
+
     for (const payment of previous) {
-      if (payment.status !== 'mempool' && payment.status !== 'confirmado') {
+      const trackSpent = payment.status === 'gasto' && watchSwept;
+      if (
+        payment.status !== 'mempool' &&
+        payment.status !== 'confirmado' &&
+        !trackSpent
+      ) {
         continue;
       }
       const key = `${payment.txid}:${payment.vout}`;
       const utxo = utxoMap.get(key);
-      if (!utxo) {
+      if (
+        utxo &&
+        (payment.status === 'confirmado' || payment.status === 'gasto') &&
+        !utxo.status.confirmed
+      ) {
         await this.deps.repos.updateOnchainPaymentStatus({
           txid: payment.txid,
           vout: payment.vout,
@@ -128,22 +154,39 @@ export class OnchainWatcher {
           confirmations: 0,
           blockHeight: null,
           blockHash: null,
+          forceFromGasto: payment.status === 'gasto',
         });
-        reorgDetected = true;
+        realReorg = true;
         continue;
       }
-      if (payment.status === 'confirmado' && !utxo.status.confirmed) {
-        // O UTXO continua na mempool, mas perdeu a confirmacao: reorg.
-        await this.deps.repos.updateOnchainPaymentStatus({
-          txid: payment.txid,
-          vout: payment.vout,
-          status: 'reorg',
-          confirmations: 0,
-          blockHeight: null,
-          blockHash: null,
-        });
-        reorgDetected = true;
+      if (utxo) continue;
+
+      const spentByUs = await this.spentByOurSweep(sweeps, payment);
+      if (spentByUs && (await this.txExists(payment.txid))) {
+        if (payment.status !== 'gasto') {
+          await this.deps.repos.updateOnchainPaymentStatus({
+            txid: payment.txid,
+            vout: payment.vout,
+            status: 'gasto',
+            confirmations: payment.confirmations,
+            blockHeight: payment.blockHeight,
+            blockHash: payment.blockHash,
+          });
+        }
+        sweptStillOurs += payment.amountSats;
+        continue;
       }
+
+      await this.deps.repos.updateOnchainPaymentStatus({
+        txid: payment.txid,
+        vout: payment.vout,
+        status: 'reorg',
+        confirmations: 0,
+        blockHeight: null,
+        blockHash: null,
+        forceFromGasto: payment.status === 'gasto',
+      });
+      realReorg = true;
     }
 
     const total = utxos.reduce((acc, utxo) => acc + BigInt(utxo.value), 0n);
@@ -189,31 +232,45 @@ export class OnchainWatcher {
         }
       }
 
-      if (reorgDetected && confirmed < intent.amountSats) {
-        const updated = await this.deps.repos.markIntentReorg(intent.id);
-        if (updated) {
-          result.reorged++;
-          await enqueueIntentEvent(
-            { repos: this.deps.repos, now: () => this.now() },
-            updated,
-            'payment_intent.reorged',
-            'reorg',
-          );
-          await this.deps.repos.insertAuditEvent({
-            actor: 'worker',
-            action: 'intent.reorged',
-            entity: 'payment_intent',
-            entityId: updated.id,
-            metadata: { externalId: updated.externalId },
-          });
-          await this.deps.alerts?.send({
-            level: 'warn',
-            title: 'reorg detectado em pagamento on-chain',
-            metadata: {
-              intentId: updated.id,
-              externalId: updated.externalId,
-            },
-          });
+      if (realReorg && intent.paidRail !== 'lightning') {
+        const lightning = await this.lightningPortion(intent);
+        const custody = lightning + confirmed + sweptStillOurs;
+        if (custody >= intent.amountSats) {
+          if (intent.paidRail === 'both' && lightning >= intent.amountSats) {
+            await this.deps.repos.revisePaidCustody({
+              intentId: intent.id,
+              paidRail: 'lightning',
+              paidAmountSats: lightning,
+              overpaidSats:
+                lightning > intent.amountSats ? lightning - intent.amountSats : 0n,
+            });
+          }
+        } else {
+          const updated = await this.deps.repos.markIntentReorg(intent.id);
+          if (updated) {
+            result.reorged++;
+            await enqueueIntentEvent(
+              { repos: this.deps.repos, now: () => this.now() },
+              updated,
+              'payment_intent.reorged',
+              'reorg',
+            );
+            await this.deps.repos.insertAuditEvent({
+              actor: 'worker',
+              action: 'intent.reorged',
+              entity: 'payment_intent',
+              entityId: updated.id,
+              metadata: { externalId: updated.externalId },
+            });
+            await this.deps.alerts?.send({
+              level: 'warn',
+              title: 'reorg detectado em pagamento on-chain',
+              metadata: {
+                intentId: updated.id,
+                externalId: updated.externalId,
+              },
+            });
+          }
         }
       }
       return;
@@ -221,7 +278,9 @@ export class OnchainWatcher {
 
     if (confirmed >= intent.amountSats) {
       const late =
-        intent.status === 'expirado' || intent.status === 'parcial';
+        this.now().getTime() > intent.expiresAt.getTime() ||
+        intent.status === 'expirado' ||
+        intent.status === 'parcial';
       const status = late ? 'pago_tardio' : 'pago';
       const paidRail = intent.paidRail === 'lightning' ? 'both' : 'onchain';
       const overpaidSats =
@@ -282,6 +341,106 @@ export class OnchainWatcher {
         },
         'pagamento on-chain ainda sem confirmacoes suficientes',
       );
+    }
+  }
+
+  private isRecovery(intent: PaymentIntent, now: Date): boolean {
+    if (intent.status === 'cancelado') return true;
+    if (intent.status !== 'expirado' && intent.status !== 'parcial') return false;
+    return intent.graceUntil.getTime() <= now.getTime();
+  }
+
+  private withinPaidWindow(intent: PaymentIntent): boolean {
+    if (intent.status !== 'pago' && intent.status !== 'pago_tardio') return false;
+    if (!intent.paidAt) return false;
+    return this.now().getTime() - intent.paidAt.getTime() <= 24 * 60 * 60 * 1000;
+  }
+
+  private async lightningPortion(intent: PaymentIntent): Promise<bigint> {
+    if (intent.paidRail !== 'lightning' && intent.paidRail !== 'both') return 0n;
+    if (!intent.lightningPaymentHash) return 0n;
+    const payment = await this.deps.repos.findLightningPaymentByHash(
+      intent.lightningPaymentHash,
+    );
+    if (!payment || payment.status !== 'pago') return 0n;
+    return payment.amountSats;
+  }
+
+  private async spentByOurSweep(
+    sweeps: OnchainSweep[],
+    payment: OnchainPayment,
+  ): Promise<boolean> {
+    for (const sweep of sweeps) {
+      if (!sweep.txid) continue;
+      const inputs = sweep.inputs as SweepInput[];
+      const matches = inputs.some(
+        (input) => input.txid === payment.txid && input.vout === payment.vout,
+      );
+      if (!matches) continue;
+      if (await this.txExists(sweep.txid)) return true;
+    }
+    return false;
+  }
+
+  private async txExists(txid: string): Promise<boolean> {
+    try {
+      await this.deps.esplora.getTx(txid);
+      return true;
+    } catch (err) {
+      if (isEsploraNotFound(err)) return false;
+      throw err;
+    }
+  }
+
+  private async processRecovery(intent: PaymentIntent, tip: number): Promise<void> {
+    if (!intent.onchainAddressId) return;
+    const address = await this.deps.repos.findHdAddressById(
+      intent.onchainAddressId,
+    );
+    if (!address) return;
+    await this.deps.repos.touchIntent(intent.id);
+    const previous = await this.deps.repos.listOnchainPaymentsForIntent(intent.id);
+    const known = new Set(previous.map((payment) => `${payment.txid}:${payment.vout}`));
+    const utxos = await this.deps.esplora.getAddressUtxos(address.address);
+    for (const utxo of utxos) {
+      const key = `${utxo.txid}:${utxo.vout}`;
+      await this.deps.repos.upsertOnchainPayment({
+        intentId: intent.id,
+        addressId: address.id,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        amountSats: BigInt(utxo.value),
+        blockHeight: utxo.status.block_height ?? null,
+        blockHash: utxo.status.block_hash ?? null,
+        confirmations: this.confirmationsFor(utxo, tip),
+        status: utxo.status.confirmed ? 'confirmado' : 'mempool',
+      });
+      if (known.has(key)) continue;
+      this.deps.logger.warn(
+        { intentId: intent.id, txid: utxo.txid, vout: utxo.vout },
+        'fundos fora do prazo no endereco da cobranca',
+      );
+      await this.deps.repos.insertAuditEvent({
+        actor: 'worker',
+        action: 'fundos_fora_do_prazo',
+        entity: 'payment_intent',
+        entityId: intent.id,
+        metadata: {
+          txid: utxo.txid,
+          vout: utxo.vout,
+          amountSats: String(utxo.value),
+        },
+      });
+      await this.deps.alerts?.send({
+        level: 'warn',
+        title: 'fundos fora do prazo',
+        metadata: {
+          intentId: intent.id,
+          externalId: intent.externalId,
+          txid: utxo.txid,
+          amountSats: String(utxo.value),
+        },
+      });
     }
   }
 

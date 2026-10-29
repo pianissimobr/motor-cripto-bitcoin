@@ -6,9 +6,11 @@ import {
   inArray,
   isNotNull,
   lte,
+  ne,
   or,
   sql,
 } from 'drizzle-orm';
+import { assertTransition } from '../domain/status.js';
 import type {
   ApiClient,
   HdAddress,
@@ -76,6 +78,8 @@ export type MarkIntentPaidInput = {
   paidAmountSats: bigint;
   overpaidSats: bigint;
   paidAt: Date;
+  lightningPaymentHash?: string;
+  lightningRaw?: Record<string, unknown> | null;
 };
 
 export type CreateClientInput = {
@@ -141,6 +145,13 @@ export type UpdateSweepInput = {
   coldWalletAddress?: string | null;
 };
 
+export type ClientBalance = {
+  clientId: string;
+  name: string;
+  paidRail: string;
+  paidAmountSats: string;
+};
+
 export type StatusCounts = {
   intents: Record<string, number>;
   webhooks: Record<string, number>;
@@ -148,6 +159,7 @@ export type StatusCounts = {
   pendingIntents: number;
   dueWebhooks: number;
   activeSweeps: number;
+  clientBalances: ClientBalance[];
 };
 
 export type InsertWebhookEventInput = {
@@ -213,10 +225,25 @@ export type Repositories = {
     intentId: string,
     onchainAmountSats: bigint,
   ) => Promise<PaymentIntent | null>;
+  addLightningToOnchainPaidIntent: (input: {
+    intentId: string;
+    lightningSats: bigint;
+    paymentHash: string;
+    paidAt: Date;
+    raw?: Record<string, unknown> | null;
+  }) => Promise<PaymentIntent | null>;
   markIntentExpired: (intentId: string) => Promise<PaymentIntent | null>;
   markIntentPartial: (intentId: string) => Promise<PaymentIntent | null>;
   markIntentCanceled: (intentId: string) => Promise<PaymentIntent | null>;
   markIntentReorg: (intentId: string) => Promise<PaymentIntent | null>;
+  revisePaidCustody: (input: {
+    intentId: string;
+    paidRail: PaidRail;
+    paidAmountSats: bigint;
+    overpaidSats: bigint;
+  }) => Promise<PaymentIntent | null>;
+  listRecoveryIntents: (now: Date, limit: number) => Promise<PaymentIntent[]>;
+  touchIntent: (id: string) => Promise<void>;
 
   // On-chain payments
   upsertOnchainPayment: (
@@ -230,8 +257,13 @@ export type Repositories = {
     confirmations: number;
     blockHeight: number | null;
     blockHash: string | null;
+    /** Permite sair de `gasto` quando o tx de deposito sumiu. */
+    forceFromGasto?: boolean;
   }) => Promise<void>;
-  sumOnchainForIntent: (intentId: string) => Promise<bigint>;
+  sumOnchainForIntent: (
+    intentId: string,
+    statuses?: Array<'mempool' | 'confirmado'>,
+  ) => Promise<bigint>;
 
   // Sweep
   listConfirmedOnchainPaymentsForSweep: (
@@ -247,6 +279,7 @@ export type Repositories = {
   listSweepsToMonitor: (limit: number) => Promise<OnchainSweep[]>;
   updateSweep: (input: UpdateSweepInput) => Promise<OnchainSweep | null>;
   listSweeps: (limit: number) => Promise<OnchainSweep[]>;
+  listSweepsForAddress: (addressId: string) => Promise<OnchainSweep[]>;
   markOnchainPaymentsGasto: (inputs: SweepInput[]) => Promise<void>;
   restoreOnchainPayments: (inputs: SweepInput[]) => Promise<void>;
 
@@ -254,6 +287,10 @@ export type Repositories = {
   findLightningPaymentByHash: (
     paymentHash: string,
   ) => Promise<LightningPayment | null>;
+  noteLightningMismatch: (
+    paymentHash: string,
+    detail: Record<string, unknown>,
+  ) => Promise<boolean>;
 
   // Webhooks
   insertWebhookEvent: (
@@ -294,6 +331,32 @@ const ACTIVE_SWEEP_STATUSES = [
   'aguardando_confirmacao_rede',
   'manual',
 ] as const;
+
+async function transitionIntent(
+  database: Db,
+  intentId: string,
+  to: PaymentIntentStatus,
+  from: readonly PaymentIntentStatus[],
+  set: Record<string, unknown>,
+): Promise<PaymentIntent | null> {
+  return database.transaction(async (tx) => {
+    const locked = await tx
+      .select()
+      .from(paymentIntents)
+      .where(eq(paymentIntents.id, intentId))
+      .for('update')
+      .limit(1);
+    const current = locked[0];
+    if (!current || !from.includes(current.status)) return null;
+    assertTransition(current.status, to);
+    const rows = await tx
+      .update(paymentIntents)
+      .set(set)
+      .where(eq(paymentIntents.id, intentId))
+      .returning();
+    return rows[0] ?? null;
+  });
+}
 
 export function createRepositories(db: Db): Repositories {
   return {
@@ -634,30 +697,51 @@ export function createRepositories(db: Db): Repositories {
     },
 
     async markIntentPaid(input) {
-      const rows = await db
-        .update(paymentIntents)
-        .set({
-          status: input.status,
-          paidRail: input.paidRail,
-          paidAmountSats: input.paidAmountSats,
-          overpaidSats: input.overpaidSats,
-          paidAt: input.paidAt,
-          version: sql`${paymentIntents.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(paymentIntents.id, input.intentId),
-            inArray(paymentIntents.status, [
-              'pendente',
-              'expirado',
-              'parcial',
-              'reorg',
-            ]),
-          ),
-        )
-        .returning();
-      return rows[0] ?? null;
+      return db.transaction(async (tx) => {
+        const locked = await tx
+          .select()
+          .from(paymentIntents)
+          .where(eq(paymentIntents.id, input.intentId))
+          .for('update')
+          .limit(1);
+        const current = locked[0];
+        const from: PaymentIntentStatus[] = [
+          'pendente',
+          'expirado',
+          'parcial',
+          'reorg',
+        ];
+        if (!current || !from.includes(current.status)) return null;
+        assertTransition(current.status, input.status);
+        const rows = await tx
+          .update(paymentIntents)
+          .set({
+            status: input.status,
+            paidRail: input.paidRail,
+            paidAmountSats: input.paidAmountSats,
+            overpaidSats: input.overpaidSats,
+            paidAt: input.paidAt,
+            version: sql`${paymentIntents.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentIntents.id, input.intentId))
+          .returning();
+        const updated = rows[0];
+        if (!updated) return null;
+        if (input.lightningPaymentHash) {
+          await tx
+            .update(lightningPayments)
+            .set({
+              status: 'pago',
+              amountSats: input.paidAmountSats,
+              paidAt: input.paidAt,
+              raw: input.lightningRaw ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(lightningPayments.paymentHash, input.lightningPaymentHash));
+        }
+        return updated;
+      });
     },
 
     async addOnchainToLightningPaidIntent(intentId, onchainAmountSats) {
@@ -681,76 +765,135 @@ export function createRepositories(db: Db): Repositories {
       return rows[0] ?? null;
     },
 
+    async addLightningToOnchainPaidIntent(input) {
+      return db.transaction(async (tx) => {
+        const locked = await tx
+          .select()
+          .from(paymentIntents)
+          .where(eq(paymentIntents.id, input.intentId))
+          .for('update')
+          .limit(1);
+        const current = locked[0];
+        if (
+          !current ||
+          (current.status !== 'pago' && current.status !== 'pago_tardio') ||
+          current.paidRail !== 'onchain'
+        ) {
+          return null;
+        }
+        assertTransition(current.status, current.status);
+        const rows = await tx
+          .update(paymentIntents)
+          .set({
+            paidRail: 'both',
+            paidAmountSats: sql`coalesce(${paymentIntents.paidAmountSats}, 0) + ${input.lightningSats}`,
+            overpaidSats: sql`greatest(0, coalesce(${paymentIntents.paidAmountSats}, 0) + ${input.lightningSats} - ${paymentIntents.amountSats})`,
+            version: sql`${paymentIntents.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentIntents.id, input.intentId))
+          .returning();
+        const updated = rows[0];
+        if (!updated) return null;
+        await tx
+          .update(lightningPayments)
+          .set({
+            status: 'pago',
+            amountSats: input.lightningSats,
+            paidAt: input.paidAt,
+            raw: input.raw ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(lightningPayments.paymentHash, input.paymentHash));
+        return updated;
+      });
+    },
+
     async markIntentExpired(intentId) {
-      const rows = await db
-        .update(paymentIntents)
-        .set({
-          status: 'expirado',
-          version: sql`${paymentIntents.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(paymentIntents.id, intentId),
-            eq(paymentIntents.status, 'pendente'),
-          ),
-        )
-        .returning();
-      return rows[0] ?? null;
+      return transitionIntent(db, intentId, 'expirado', ['pendente'], {
+        status: 'expirado',
+        version: sql`${paymentIntents.version} + 1`,
+        updatedAt: new Date(),
+      });
     },
 
     async markIntentPartial(intentId) {
-      const rows = await db
-        .update(paymentIntents)
-        .set({
-          status: 'parcial',
-          version: sql`${paymentIntents.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(paymentIntents.id, intentId),
-            eq(paymentIntents.status, 'pendente'),
-          ),
-        )
-        .returning();
-      return rows[0] ?? null;
+      return transitionIntent(db, intentId, 'parcial', ['pendente'], {
+        status: 'parcial',
+        version: sql`${paymentIntents.version} + 1`,
+        updatedAt: new Date(),
+      });
     },
 
     async markIntentCanceled(intentId) {
-      const rows = await db
-        .update(paymentIntents)
-        .set({
-          status: 'cancelado',
-          version: sql`${paymentIntents.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(paymentIntents.id, intentId),
-            eq(paymentIntents.status, 'pendente'),
-          ),
-        )
-        .returning();
-      return rows[0] ?? null;
+      return transitionIntent(db, intentId, 'cancelado', ['pendente'], {
+        status: 'cancelado',
+        version: sql`${paymentIntents.version} + 1`,
+        updatedAt: new Date(),
+      });
     },
 
     async markIntentReorg(intentId) {
-      const rows = await db
-        .update(paymentIntents)
-        .set({
-          status: 'reorg',
-          version: sql`${paymentIntents.version} + 1`,
-          updatedAt: new Date(),
-        })
+      return transitionIntent(db, intentId, 'reorg', ['pago', 'pago_tardio'], {
+        status: 'reorg',
+        version: sql`${paymentIntents.version} + 1`,
+        updatedAt: new Date(),
+      });
+    },
+
+    async revisePaidCustody(input) {
+      return db.transaction(async (tx) => {
+        const locked = await tx
+          .select()
+          .from(paymentIntents)
+          .where(eq(paymentIntents.id, input.intentId))
+          .for('update')
+          .limit(1);
+        const current = locked[0];
+        if (!current || (current.status !== 'pago' && current.status !== 'pago_tardio')) {
+          return null;
+        }
+        assertTransition(current.status, current.status);
+        const rows = await tx
+          .update(paymentIntents)
+          .set({
+            paidRail: input.paidRail,
+            paidAmountSats: input.paidAmountSats,
+            overpaidSats: input.overpaidSats,
+            version: sql`${paymentIntents.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentIntents.id, input.intentId))
+          .returning();
+        return rows[0] ?? null;
+      });
+    },
+
+    async listRecoveryIntents(now, limit) {
+      return db
+        .select()
+        .from(paymentIntents)
         .where(
           and(
-            eq(paymentIntents.id, intentId),
-            inArray(paymentIntents.status, ['pago', 'pago_tardio']),
+            isNotNull(paymentIntents.onchainAddressId),
+            or(
+              eq(paymentIntents.status, 'cancelado'),
+              and(
+                inArray(paymentIntents.status, ['expirado', 'parcial']),
+                lte(paymentIntents.graceUntil, now),
+              ),
+            ),
           ),
         )
-        .returning();
-      return rows[0] ?? null;
+        .orderBy(asc(paymentIntents.updatedAt))
+        .limit(limit);
+    },
+
+    async touchIntent(id) {
+      await db
+        .update(paymentIntents)
+        .set({ updatedAt: new Date() })
+        .where(eq(paymentIntents.id, id));
     },
 
     async upsertOnchainPayment(input) {
@@ -797,6 +940,13 @@ export function createRepositories(db: Db): Repositories {
     },
 
     async updateOnchainPaymentStatus(input) {
+      const filters = [
+        eq(onchainPayments.txid, input.txid),
+        eq(onchainPayments.vout, input.vout),
+      ];
+      if (!input.forceFromGasto && input.status !== 'gasto') {
+        filters.push(ne(onchainPayments.status, 'gasto'));
+      }
       await db
         .update(onchainPayments)
         .set({
@@ -806,22 +956,17 @@ export function createRepositories(db: Db): Repositories {
           blockHash: input.blockHash,
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(onchainPayments.txid, input.txid),
-            eq(onchainPayments.vout, input.vout),
-          ),
-        );
+        .where(and(...filters));
     },
 
-    async sumOnchainForIntent(intentId) {
+    async sumOnchainForIntent(intentId, statuses = ['mempool', 'confirmado']) {
       const rows = await db
         .select({ amountSats: onchainPayments.amountSats })
         .from(onchainPayments)
         .where(
           and(
             eq(onchainPayments.intentId, intentId),
-            inArray(onchainPayments.status, ['mempool', 'confirmado']),
+            inArray(onchainPayments.status, statuses),
           ),
         );
       return rows.reduce((total, row) => total + row.amountSats, 0n);
@@ -847,7 +992,7 @@ export function createRepositories(db: Db): Repositories {
         join hd_addresses ha on ha.id = op.address_id
         join payment_intents pi on pi.id = op.intent_id
         where op.status = 'confirmado'
-          and pi.status in ('pago','pago_tardio','parcial','expirado')
+          and pi.status in ('pago','pago_tardio','parcial','expirado','cancelado')
           and op.confirmations >= case
             when pi.amount_sats >= ${opts.highValueSats.toString()}::bigint
               then ${opts.highValueConfirmations}::int
@@ -978,6 +1123,13 @@ export function createRepositories(db: Db): Repositories {
         .limit(limit);
     },
 
+    async listSweepsForAddress(addressId) {
+      return db
+        .select()
+        .from(onchainSweeps)
+        .where(eq(onchainSweeps.addressId, addressId));
+    },
+
     async markOnchainPaymentsGasto(inputs) {
       for (const input of inputs) {
         await db
@@ -1014,6 +1166,23 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(lightningPayments.paymentHash, paymentHash))
         .limit(1);
       return rows[0] ?? null;
+    },
+
+    async noteLightningMismatch(paymentHash, detail) {
+      const rows = await db
+        .update(lightningPayments)
+        .set({
+          raw: { kind: 'amount_mismatch', ...detail },
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(lightningPayments.paymentHash, paymentHash),
+            sql`coalesce(${lightningPayments.raw}->>'kind', '') = ''`,
+          ),
+        )
+        .returning({ id: lightningPayments.id });
+      return rows.length > 0;
     },
 
     async insertWebhookEvent(input) {
@@ -1126,6 +1295,21 @@ export function createRepositories(db: Db): Repositories {
       ]);
       const toRecord = (rows: Array<{ status: string; count: number }>) =>
         Object.fromEntries(rows.map((row) => [row.status, Number(row.count)]));
+      const balances = await db.execute<{
+        client_id: string;
+        name: string;
+        paid_rail: string;
+        paid_amount_sats: string;
+      }>(sql`
+        select c.id as client_id, c.name, pi.paid_rail,
+               coalesce(sum(pi.paid_amount_sats), 0)::text as paid_amount_sats
+        from api_clients c
+        join payment_intents pi on pi.client_id = c.id
+        where pi.status in ('pago', 'pago_tardio')
+          and pi.paid_rail is not null
+        group by c.id, c.name, pi.paid_rail
+        order by c.name, pi.paid_rail
+      `);
       return {
         intents: toRecord(intents),
         webhooks: toRecord(webhooks),
@@ -1133,6 +1317,12 @@ export function createRepositories(db: Db): Repositories {
         pendingIntents: Number(pending[0]?.count ?? 0),
         dueWebhooks: Number(due[0]?.count ?? 0),
         activeSweeps: Number(active[0]?.count ?? 0),
+        clientBalances: balances.map((row) => ({
+          clientId: row.client_id,
+          name: row.name,
+          paidRail: row.paid_rail,
+          paidAmountSats: String(row.paid_amount_sats),
+        })),
       };
     },
 

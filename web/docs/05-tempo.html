@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -45,32 +45,36 @@
 <p class="kicker">Parte 2 · O método</p>
 
 <h1>Tempo</h1>
-<p class="lede">A página e a blockchain não compartilham o mesmo relógio. A página fecha em uma hora. A leitura do pagamento continua até o fim da janela de liquidação.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Distinguir <code>expira_em</code> de <code>liquidacao_ate</code> e ler as datas em UTC.</div>
-<h2>O problema</h2>
-<p>Se a página e o pagamento vencessem juntos, um USDC que chegasse no minuto 61 seria ignorado. Quem pagou já gastou o dinheiro. O motor separa “a página ainda mostra o botão” de “ainda aceitamos o que a rede registrar”.</p>
-<h2>O método</h2>
-<p>Na criação, com os padrões <code>LINK_TTL_MINUTES=60</code> e <code>SETTLEMENT_DAYS=1</code>, um link nascido às <code>2026-10-23T15:00:00.000Z</code> recebe:</p>
-<pre>expira_em       2026-10-23T16:00:00.000Z
-liquidacao_ate  2026-10-24T15:00:00.000Z</pre>
-<p>Até <code>expira_em</code>, a página está ativa e o estado pode seguir <code>aguardando</code>. Passada a hora, se ainda não houve pagamento confirmado, o estado vai a <code>expirado</code>. O botão da Ramp some. O worker continua lendo a rede até <code>liquidacao_ate</code>.</p>
-<p>Todas as datas da API são ISO 8601 em UTC, com o sufixo <code>Z</code>. A página pública escreve o mesmo instante como <code>2026-10-23 16:00:00 UTC</code>. Não há fuso do servidor nessa frase.</p>
-<p>O relógio da assinatura é outro: <code>X-Timestamp</code> é Unix em segundos e precisa cair numa janela de 300 segundos para os dois lados. Isso não tem relação com a validade da cobrança.</p>
-<h2>O contrato</h2>
+<p class="lede">A invoice Lightning expira em minutos. O Bitcoin on-chain não. Por isso existem dois relógios: <code>expires_at</code> e <code>grace_until</code>.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Saber até quando um pagamento ainda muda o pedido, e qual status isso produz.</div>
+
+<h2>Os dois relógios</h2>
 <table>
-<tr><th>Campo</th><th>O que fecha</th><th>Padrão</th></tr>
-<tr><td><code>expira_em</code></td><td>A página e o botão de pagar</td><td>60 minutos</td></tr>
-<tr><td><code>liquidacao_ate</code></td><td>A classificação final do link</td><td>1 dia corrido</td></tr>
-<tr><td><code>X-Timestamp</code></td><td>A aceitação daquele pedido HTTP</td><td>±300 segundos</td></tr>
+<thead><tr><th>Campo</th><th>Padrão</th><th>Para quê</th></tr></thead>
+<tbody>
+<tr><td><code>expires_at</code></td><td>10 minutos (<code>INTENT_TTL_SECONDS=600</code>)</td><td>Prazo da invoice e o momento em que um pedido sem pagamento vira <code>expirado</code>.</td></tr>
+<tr><td><code>grace_until</code></td><td>24 horas depois (<code>INTENT_GRACE_SECONDS=86400</code>)</td><td>Janela em que um on-chain atrasado ainda vira <code>pago_tardio</code>.</td></tr>
+</tbody>
 </table>
-<h2>O que recusamos</h2>
-<ul>
-<li>Apagar a cobrança quando a página vence. <code>expirado</code> ainda pode receber pagamento dentro da janela.</li>
-<li>Tratar pagamento depois de <code>liquidacao_ate</code> como se a janela ainda estivesse aberta. Ele é registrado, varrido, e o motivo fica <code>pagamento_apos_prazo</code>.</li>
-<li>Comparar a data com o fuso local da máquina. Use o instante UTC.</li>
-</ul>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>No JSON do link, <code>liquidacao_ate</code> é posterior a <code>expira_em</code>. Na página, as duas frases citam o horário em UTC. Se a página mostrar o fuso da cidade do servidor, a versão no ar não é esta.</div>
+<p>A loja pode pedir outro prazo em <code>expires_in_seconds</code>, entre 30 segundos e 24 horas. A carência é da operação, não do pedido.</p>
+
+<h2>O que acontece em cada momento</h2>
+<ol>
+<li>Antes de <code>expires_at</code>, Lightning liquidado ou on-chain já confirmado vira <code>pago</code>.</li>
+<li>No vencimento, se não entrou nada, vira <code>expirado</code> e sai <code>payment_intent.expired</code>.</li>
+<li>No vencimento, se entrou on-chain a menos do pedido, vira <code>parcial</code>.</li>
+<li>No vencimento, sats que ainda estão só na mempool não seguram o relógio. Se o confirmado não cobre o pedido, a cobrança vira <code>expirado</code> ou <code>parcial</code>. O watcher continua olhando esse endereço até <code>grace_until</code>.</li>
+<li>Entre <code>expires_at</code> e <code>grace_until</code>, on-chain que completa o valor vira <code>pago_tardio</code>. Lightning que o LNbits ainda considera pago, com a intent já <code>expirado</code> ou <code>parcial</code>, também vira <code>pago_tardio</code>.</li>
+<li>Depois de <code>grace_until</code>, o watcher deixa de olhar intents <code>expirado</code> e <code>parcial</code>.</li>
+</ol>
+
+<h2>Confirmações</h2>
+<p>O padrão é 1 confirmação. Pedido de 1.000.000 sats ou mais espera 3 (<code>ONCHAIN_HIGH_VALUE_SATS</code> e <code>ONCHAIN_HIGH_VALUE_CONFIRMATIONS</code>). Um UTXO na mempool não conta para marcar <code>pago</code> e não adia o vencimento. Confirmação com o relógio já depois de <code>expires_at</code> grava <code>pago_tardio</code>, mesmo que a cobrança ainda estivesse <code>pendente</code>.</p>
+
+<h2>Relógio da assinatura</h2>
+<p>Cada pedido da loja leva <code>X-Timestamp</code> em segundos Unix. Fora de uma janela de 300 segundos o motor recusa, antes mesmo de olhar o nonce.</p>
+
+<div class="note conferir"><strong>Como conferir</strong>Crie uma cobrança sem <code>expires_in_seconds</code>. <code>expires_at</code> menos <code>created_at</code> dá 600 segundos. <code>grace_until</code> menos <code>expires_at</code> dá 86400 segundos, com os padrões de fábrica.</div>
 
 <nav class="pager"><a href="04-dinheiro.html">← Dinheiro</a><a href="06-estados.html">Estados →</a></nav>
 </main>

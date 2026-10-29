@@ -26,7 +26,7 @@
 <li><a href="07-confianca.html">Confiança</a></li>
 <li><a href="08-preparar-a-loja.html">Preparar a loja</a></li>
 <li><a href="09-criar-cobranca.html">Criar a cobrança</a></li>
-<li><a href="10-pagina-publica.html">A página de quem paga</a></li>
+<li><a href="10-pagina-publica.html">O QR de quem paga</a></li>
 <li><a href="11-provar-o-pagamento.html">Provar o pagamento</a></li>
 <li><a href="12-webhooks.html">Webhooks</a></li>
 <li><a href="13-varrer.html">Varrer o valor</a></li>
@@ -45,37 +45,36 @@
 <p class="kicker">Parte 2 · O método</p>
 
 <h1>Dinheiro</h1>
-<p class="lede">Reais são centavos inteiros. USDC é uma string de unidades mínimas. A taxa fica congelada no link. A tolerância diz o que ainda conta como valor cheio.</p>
-<div class="note objetivo"><strong>Objetivo</strong>Calcular o esperado de uma cobrança e ler <code>valor_recebido_base_units</code> sem usar número decimal solto.</div>
-<h2>O problema</h2>
-<p>R$ 150,00 escrito como <code>150.00</code> num JSON convida erro de arredondamento. USDC tem 6 casas. <code>0.18</code> vezes <code>150</code> não é uma conta que se faça com ponto flutuante quando o resultado vai para a rede.</p>
-<h2>O método</h2>
-<p>A loja envia <code>amount_cents: 15000</code>. O perfil guarda a taxa <code>180000</code>, que significa 180000 unidades mínimas de USDC por R$ 1,00. Como o USDC tem 6 decimais, 180000 unidades são 0,18 USDC.</p>
-<pre>15000 centavos = 150 reais
-150 × 180000 = 27000000 unidades mínimas
-27000000 / 10^6 = 27 USDC</pre>
-<p>O link grava <code>expected_base_units: "27000000"</code> na criação. Se alguém atualizar a taxa do perfil amanhã, esta cobrança continua comparando com 27 USDC. A comparação usa a taxa do nascimento, não a taxa viva.</p>
-<p>A tolerância padrão é 1% (<code>PAYMENT_TOLERANCE_PCT</code>). Dentro dela, o recebido pode ir a <code>pago</code>. Fora dela, para menos, fica <code>parcial</code>. Para mais, o extra também é registrado e varrido: o motor não devolve o que sobrou para a Ramp.</p>
-<p>O valor que realmente chegou aparece em <code>valor_recebido_base_units</code>, sempre string. Some com inteiro grande, não com <code>Number</code> de JavaScript se o valor puder passar de 2^53.</p>
-<h2>O contrato</h2>
+<p class="lede">A unidade do contrato é o satoshi, inteiro, em string. Um bitcoin são 100.000.000 satoshis. O motor não converte real e não usa ponto flutuante para valor.</p>
+<div class="note objetivo"><strong>Objetivo</strong>Ler <code>amount_sats</code>, <code>paid_amount_sats</code> e <code>amount_btc</code> sem arredondar.</div>
+
+<h2>O que a loja envia</h2>
+<p><code>amount_sats</code> pode ser string decimal (<code>"10000"</code>) ou número inteiro. String é o caminho seguro para valores grandes. O motor recusa sinal, fração e qualquer coisa acima de 21 milhões de BTC. Zero não passa da checagem do banco.</p>
+<p>Não há cotação. Se a loja cobra em reais, ela calcula os sats antes de chamar a API e guarda essa conta do lado dela.</p>
+
+<h2>O que volta</h2>
 <table>
-<tr><th>Campo</th><th>Unidade</th><th>Exemplo de R$ 150,00</th></tr>
-<tr><td><code>amount_cents</code> / <code>valor_fiat_centavos</code></td><td>centavos inteiros</td><td><code>15000</code></td></tr>
-<tr><td><code>moeda_fiat</code></td><td>código de 3 letras</td><td><code>BRL</code></td></tr>
-<tr><td><code>taxa_token_por_fiat_base_units</code></td><td>unidades mínimas por 1,00 de fiat</td><td><code>"180000"</code></td></tr>
-<tr><td><code>decimals</code></td><td>casas do token</td><td><code>6</code></td></tr>
-<tr><td><code>expected_base_units</code></td><td>string inteira</td><td><code>"27000000"</code></td></tr>
-<tr><td><code>valor_recebido_base_units</code></td><td>string inteira</td><td><code>"27000000"</code> quando chega cheio</td></tr>
+<thead><tr><th>Campo</th><th>Exemplo</th><th>Significado</th></tr></thead>
+<tbody>
+<tr><td><code>amount_sats</code></td><td><code>"10000"</code></td><td>Valor pedido.</td></tr>
+<tr><td><code>onchain.amount_btc</code></td><td><code>"0.00010000"</code></td><td>O mesmo valor com 8 casas, para a URI BIP21.</td></tr>
+<tr><td><code>paid_amount_sats</code></td><td><code>"10000"</code></td><td>Quanto o motor contabilizou ao marcar pago. Pode ser maior.</td></tr>
+<tr><td><code>overpaid_sats</code></td><td><code>"0"</code></td><td>Excesso sobre o pedido.</td></tr>
+<tr><td><code>paid_rail</code></td><td><code>lightning</code>, <code>onchain</code> ou <code>both</code></td><td>Qual trilho fechou, ou se os dois ocorreram.</td></tr>
+</tbody>
 </table>
-<p><code>amount_cents</code> aceita de 1 a <code>100000000</code> (um milhão de reais). A taxa, quando enviada, é string de dígitos ou inteiro não negativo.</p>
-<h2>O que recusamos</h2>
+
+<h2>Quanto basta</h2>
+<p>On-chain, a cobrança fecha quando a soma dos UTXOs com confirmações suficientes é maior ou igual ao pedido. Não há percentual de tolerância. Abaixo disso, no momento da expiração, o estado é <code>parcial</code> se entrou algum sats, ou <code>expirado</code> se não entrou nada.</p>
+<p>Pagar a mais é aceito. O excesso fica em <code>overpaid_sats</code> e, no on-chain, segue no sweep junto com o restante.</p>
+
+<h2>Onde o sats para</h2>
 <ul>
-<li>Corpo com <code>"amount_cents": 150.00</code> ou string. O campo é inteiro.</li>
-<li>Usar a cotação do dia lida na hora do webhook. A referência é a taxa gravada.</li>
-<li>Recusar dinheiro que chegou a mais ou a menos. A menos, fora da tolerância, muda o estado. O token se move mesmo assim.</li>
+<li>Lightning: na wallet do LNbits. O motor não saca esse saldo.</li>
+<li>On-chain: no endereço exclusivo da cobrança, até o sweep mandar para <code>COLD_WALLET_ADDRESS</code>. A taxa da varredura sai desse próprio valor.</li>
 </ul>
-<h2>Como conferir</h2>
-<div class="note conferir"><strong>Como conferir</strong>Crie o link de <code>15000</code> centavos no perfil de taxa <code>180000</code> e 6 decimais. A resposta traz <code>expected_base_units</code> igual a <code>"27000000"</code>. Se vier outro número, a taxa do perfil não é a do exemplo.</div>
+
+<div class="note conferir"><strong>Como conferir</strong>Para 10.000 sats, <code>amount_btc</code> tem de ser exatamente <code>0.00010000</code>. Se a loja mostrar outro decimal, o QR on-chain pede um valor diferente do pedido.</div>
 
 <nav class="pager"><a href="03-uma-cobranca.html">← Uma cobrança</a><a href="05-tempo.html">Tempo →</a></nav>
 </main>
