@@ -101,3 +101,7 @@ pre.creds {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.wallet-block { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.wallet-block h3 { font-size: 15px; margin: 0 0 6px; }
+.wallet-current { margin-bottom: 6px; }
+.wallet-current .valor { word-break: break-all; }

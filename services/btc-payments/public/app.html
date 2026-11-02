@@ -49,21 +49,32 @@
       <p class="muted">O dinheiro vai direto para as suas carteiras, sem passar pela plataforma e sem conversão:
         <strong>Lightning</strong> cai na sua wallet LNbits, <strong>on-chain</strong> nos endereços do seu xpub e
         <strong>PIX</strong> vira USDC na sua carteira Base. Cadastre ao menos uma carteira Bitcoin para cobrar em BTC.</p>
-      <form id="wallet-form">
-        <label>Tipo
-          <select id="wallet-kind">
-            <option value="lightning_lnbits">Lightning (sua wallet LNbits)</option>
-            <option value="btc_deposit">BTC on-chain (xpub)</option>
-            <option value="usdc_settlement">USDC Base (recebe o PIX)</option>
-          </select>
-        </label>
-        <label id="wallet-lnbits-url-label">URL do LNbits<input id="wallet-lnbits-url" type="url" placeholder="https://seu-lnbits.com"></label>
-        <label id="wallet-lnbits-key-label">Invoice key<input id="wallet-lnbits-key" autocomplete="off" placeholder="Invoice/read key (nunca a Admin key)"></label>
-        <label id="wallet-xpub-label" class="hidden">xpub<input id="wallet-xpub" placeholder="tpub.../xpub..."></label>
-        <label id="wallet-addr-label" class="hidden">Endereço USDC<input id="wallet-addr" placeholder="0x..."></label>
-        <button type="submit">Adicionar</button>
-      </form>
-      <div id="wallets"></div>
+      <div class="wallet-block">
+        <h3>⚡ Lightning <span class="muted">(sua wallet LNbits)</span></h3>
+        <div id="wallet-current-lightning_lnbits" class="wallet-current"></div>
+        <form class="wallet-form" data-kind="lightning_lnbits">
+          <label>URL do LNbits<input name="lnbits_url" type="url" required placeholder="https://seu-lnbits.com"></label>
+          <label>Invoice key<input name="invoice_key" autocomplete="off" required placeholder="Invoice/read key (nunca a Admin key)"></label>
+          <button type="submit">Salvar Lightning</button>
+        </form>
+      </div>
+      <div class="wallet-block">
+        <h3>₿ BTC on-chain <span class="muted">(seu xpub)</span></h3>
+        <div id="wallet-current-btc_deposit" class="wallet-current"></div>
+        <form class="wallet-form" data-kind="btc_deposit">
+          <label>xpub (BIP84, m/84'/0'/0')<input name="xpub" autocomplete="off" required placeholder="xpub..."></label>
+          <button type="submit">Salvar xpub</button>
+        </form>
+      </div>
+      <div class="wallet-block">
+        <h3>💵 USDC na Base <span class="muted">(recebe o PIX)</span></h3>
+        <div id="wallet-current-usdc_settlement" class="wallet-current"></div>
+        <form class="wallet-form" data-kind="usdc_settlement">
+          <label>Endereço USDC na rede Base<input name="address" autocomplete="off" required pattern="0x[0-9a-fA-F]{40}" placeholder="0x..."></label>
+          <p class="muted">Use um endereço seu na rede <strong>Base</strong> (não Ethereum nem Polygon). O PIX pago vira USDC e cai nele.</p>
+          <button type="submit">Salvar endereço USDC</button>
+        </form>
+      </div>
     </div>
   </div>
 

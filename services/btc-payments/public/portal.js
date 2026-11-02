@@ -118,25 +118,27 @@ async function submitWebhook(e) {
   }
 }
 
+const WALLET_KINDS = ['lightning_lnbits', 'btc_deposit', 'usdc_settlement'];
+
 async function loadWallets() {
   const data = await api('GET', `/v1/portal/merchants/${state.merchantId}/wallets`);
   const list = (data.data ?? []).filter((w) => w.status === 'ativo');
-  const node = el('wallets');
-  node.innerHTML = '';
-  const labels = {
-    lightning_lnbits: 'Lightning (LNbits)',
-    btc_deposit: 'BTC on-chain (xpub)',
-    usdc_settlement: 'USDC Base (PIX)',
-  };
-  for (const w of list) {
+  for (const kind of WALLET_KINDS) {
+    const node = el(`wallet-current-${kind}`);
+    const w = list.find((x) => x.kind === kind);
+    node.innerHTML = '';
+    if (!w) {
+      node.innerHTML = '<span class="muted">Não cadastrada.</span>';
+      continue;
+    }
     const row = document.createElement('div');
     row.className = 'row';
-    row.style.marginBottom = '8px';
     const info = document.createElement('div');
     info.style.flex = '1';
     info.innerHTML =
-      `<strong>${escapeHtml(labels[w.kind] ?? w.kind)}</strong>` +
-      `<div class="muted" style="word-break:break-all">${escapeHtml(w.lnbits_url ?? w.xpub ?? w.address)}</div>`;
+      '<strong>Cadastrada:</strong> ' +
+      `<span class="valor">${escapeHtml(w.lnbits_url ?? w.xpub ?? w.address)}</span>` +
+      '<div class="muted">Salvar outra substitui esta.</div>';
     const del = document.createElement('button');
     del.className = 'danger';
     del.textContent = 'Remover';
@@ -213,24 +215,26 @@ async function submitCheckout(e) {
 
 async function submitWallet(e) {
   e.preventDefault();
-  const kind = el('wallet-kind').value;
+  const form = e.target;
+  const kind = form.dataset.kind;
+  const field = (name) => form.elements[name].value.trim();
   const body =
     kind === 'lightning_lnbits'
-      ? {
-          kind,
-          lnbits_url: el('wallet-lnbits-url').value.trim(),
-          invoice_key: el('wallet-lnbits-key').value.trim(),
-        }
+      ? { kind, lnbits_url: field('lnbits_url'), invoice_key: field('invoice_key') }
       : kind === 'btc_deposit'
-        ? { kind, xpub: el('wallet-xpub').value.trim() }
-        : { kind, address: el('wallet-addr').value.trim() };
+        ? { kind, xpub: field('xpub') }
+        : { kind, address: field('address') };
   el('erro').textContent = '';
+  const button = form.querySelector('button[type=submit]');
+  button.disabled = true;
   try {
     await api('POST', `/v1/portal/merchants/${state.merchantId}/wallets`, body);
-    el('wallet-lnbits-key').value = '';
+    form.reset();
     await loadWallets();
   } catch (err) {
     showError(err);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -289,14 +293,6 @@ async function submitSubscription(e) {
   }
 }
 
-function toggleWalletKind() {
-  const kind = el('wallet-kind').value;
-  el('wallet-lnbits-url-label').classList.toggle('hidden', kind !== 'lightning_lnbits');
-  el('wallet-lnbits-key-label').classList.toggle('hidden', kind !== 'lightning_lnbits');
-  el('wallet-xpub-label').classList.toggle('hidden', kind !== 'btc_deposit');
-  el('wallet-addr-label').classList.toggle('hidden', kind !== 'usdc_settlement');
-}
-
 function escapeHtml(s) {
   return String(s ?? '')
     .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -309,12 +305,12 @@ async function init() {
     window.location.href = '/login.html';
   });
   el('checkout-form').addEventListener('submit', submitCheckout);
-  el('wallet-form').addEventListener('submit', submitWallet);
+  for (const form of document.querySelectorAll('.wallet-form')) {
+    form.addEventListener('submit', submitWallet);
+  }
   el('subscription-form').addEventListener('submit', submitSubscription);
   el('webhook-form').addEventListener('submit', submitWebhook);
   el('gen-credentials').addEventListener('click', () => void generateCredentials());
-  el('wallet-kind').addEventListener('change', toggleWalletKind);
-  toggleWalletKind();
   try {
     const me = await fetch('/auth/me');
     if (!me.ok) {
