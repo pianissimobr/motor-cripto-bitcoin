@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../config.js';
 import type { Repositories } from '../db/repositories.js';
 import {
+  AppError,
   ConflictError,
   ForbiddenError,
   NotFoundError,
@@ -22,6 +23,8 @@ import {
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
 import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
+import type { FxService } from '../services/fx-service.js';
+import type { MarketService } from '../services/market-service.js';
 import { SESSION_COOKIE, csrfHeaderOf, sessionTokenOf } from './auth-routes.js';
 
 export type PortalRoutesDeps = {
@@ -36,6 +39,10 @@ export type PortalRoutesDeps = {
   subscriptions?: SubscriptionService;
   lnbitsFor?: LnbitsFactory;
   walletNotifier?: WalletChangeNotifier;
+  /** Cotacao BTC em R$/US$ para cobrar em moeda local. */
+  fx?: FxService;
+  /** Precos de mercado so para o grafico do portal. */
+  market?: MarketService;
 };
 
 const createMerchantSchema = z
@@ -78,6 +85,9 @@ const checkoutSchema = z
     amount_sats: z
       .union([z.string().regex(/^\d+$/), z.number().int().positive()])
       .optional(),
+    /** Valor em centavos de `currency` (R$ ou US$); o motor converte em sats. */
+    amount: z.union([z.string().regex(/^\d+$/), z.number().int().positive()]).optional(),
+    currency: z.enum(['BRL', 'USD']).optional(),
     description: z.string().trim().max(200).optional(),
     expires_in_seconds: z.number().int().min(30).max(86_400).optional(),
     settlement_wallet_id: z.string().uuid().optional(),
@@ -360,17 +370,77 @@ export function registerPortalRoutes(
     return deps.clients.rotateApiKey(id, 'portal');
   });
 
+  // Cotacao do BTC (R$ e US$) para o formulario de checkout. Cache curto
+  // para nao bater na fonte a cada tecla.
+  let ratesCache: { at: number; body: Record<string, unknown> } | null = null;
+  app.get('/v1/portal/fx/rates', async (request) => {
+    await userIdOrThrow(request);
+    if (!deps.fx) {
+      throw new AppError('cotacao indisponivel', {
+        code: 'fx_unavailable',
+        statusCode: 503,
+        expose: true,
+      });
+    }
+    if (ratesCache && Date.now() - ratesCache.at < 30_000) return ratesCache.body;
+    const rates = await deps.fx.getRates();
+    const body = {
+      rates: rates.map((rate) => ({
+        currency: rate.currency,
+        btc_price_cents: rate.btcPriceCents.toString(),
+        source: rate.source,
+        observed_at: rate.observedAt.toISOString(),
+      })),
+    };
+    ratesCache = { at: Date.now(), body };
+    return body;
+  });
+
+  // Precos de mercado (grafico decorativo do dashboard).
+  app.get('/v1/portal/market', async (request, reply) => {
+    await userIdOrThrow(request);
+    const snapshot = deps.market ? await deps.market.snapshot() : null;
+    if (!snapshot) {
+      return reply.status(503).send({
+        error: { code: 'market_unavailable', message: 'mercado indisponivel' },
+      });
+    }
+    return snapshot;
+  });
+
   app.post('/v1/portal/merchants/:id/checkout', async (request, reply) => {
     const { id } = parse(idParamsSchema, request.params, 'params');
     await memberOrThrow(request, id, true);
     const body = parse(checkoutSchema, request.body ?? {}, 'corpo');
-    if (body.amount_sats === undefined) {
-      throw new ValidationError('amount_sats obrigatorio');
+    let amountSats: bigint;
+    let fiat: { currency: 'BRL' | 'USD'; amountFiat: bigint; fxQuoteId: string } | null = null;
+    if (body.amount !== undefined) {
+      if (!body.currency) throw new ValidationError('currency obrigatorio com amount');
+      if (body.amount_sats !== undefined) {
+        throw new ValidationError('informe amount ou amount_sats, nao os dois');
+      }
+      if (!deps.fx) {
+        throw new AppError('cotacao indisponivel', {
+          code: 'fx_unavailable',
+          statusCode: 503,
+          expose: true,
+        });
+      }
+      // Sem conversao: o lojista recebe BTC; a cotacao so traduz o preco, sem margem.
+      const quote = await deps.fx.createQuote({
+        merchantId: id,
+        amountFiatCents: BigInt(body.amount),
+        currency: body.currency,
+        spreadBps: 0,
+        ttlSeconds: deps.config.fx.quoteTtlSeconds,
+      });
+      amountSats = quote.amountOut;
+      fiat = { currency: body.currency, amountFiat: quote.amountIn, fxQuoteId: quote.id };
+    } else if (body.amount_sats !== undefined) {
+      amountSats = BigInt(body.amount_sats);
+    } else {
+      throw new ValidationError('informe o valor (amount + currency ou amount_sats)');
     }
-    const amountSats =
-      typeof body.amount_sats === 'number'
-        ? BigInt(body.amount_sats)
-        : BigInt(body.amount_sats);
     const created = await deps.paymentIntents.create({
       clientId: id,
       externalId:
@@ -379,6 +449,9 @@ export function registerPortalRoutes(
       amountSats,
       description: body.description ?? null,
       metadata: body.metadata ?? null,
+      ...(fiat
+        ? { currency: fiat.currency, amountFiat: fiat.amountFiat, fxQuoteId: fiat.fxQuoteId }
+        : {}),
       ...(body.expires_in_seconds !== undefined
         ? { expiresInSeconds: body.expires_in_seconds }
         : {}),

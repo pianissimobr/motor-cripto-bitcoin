@@ -30,11 +30,29 @@
     </div>
   </div>
 
+  <div class="card" id="market-card">
+    <h2>Mercado <span class="muted">últimos 7 dias</span></h2>
+    <div class="mk-wrap">
+      <div class="mk-hero">
+        <div id="mk-head" class="mk-head"></div>
+        <div id="mk-chart" class="mk-chart"></div>
+      </div>
+      <div id="mk-tiles" class="mk-tiles"></div>
+    </div>
+    <p id="mk-note" class="muted">Carregando preços…</p>
+  </div>
+
   <div class="row">
     <div class="col card">
       <h2>Criar checkout (one-time)</h2>
       <form id="checkout-form">
-        <label>Valor em sats<input id="checkout-sats" inputmode="numeric" required placeholder="1000"></label>
+        <p class="muted">Informe o valor em <strong>uma</strong> das moedas; as outras são calculadas na hora.</p>
+        <div class="amount-grid">
+          <label>R$<input id="amt-brl" inputmode="decimal" autocomplete="off" placeholder="0,00"></label>
+          <label>US$<input id="amt-usd" inputmode="decimal" autocomplete="off" placeholder="0,00"></label>
+          <label>Bitcoin (sats)<input id="amt-sats" inputmode="numeric" autocomplete="off" placeholder="0"></label>
+        </div>
+        <p id="amt-hint" class="muted">Carregando cotação…</p>
         <label>Descrição<input id="checkout-desc" maxlength="200" placeholder="Pedido #123"></label>
         <button type="submit">Gerar QR</button>
       </form>

@@ -13,6 +13,7 @@ import { AuthService } from './services/auth-service.js';
 import { NoopEmailSender } from './services/email-sender.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { FxService } from './services/fx-service.js';
+import { MarketService } from './services/market-service.js';
 import { HttpFxPriceProvider } from './adapters/fx/http.js';
 import { LedgerService } from './ledger/ledger-service.js';
 import { MerchantWalletService } from './services/merchant-wallet-service.js';
@@ -90,6 +91,7 @@ export async function main(): Promise<void> {
       db.db,
       new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
     );
+    const market = new MarketService({ logger });
     const ledger = new LedgerService(db.db);
     const wallets = new MerchantWalletService(db.db);
     const metrics = new MetricsService({ repos, ledger });
@@ -136,6 +138,7 @@ export async function main(): Promise<void> {
         clients,
         auth,
         fx,
+        market,
         ledger,
         wallets,
         metrics,

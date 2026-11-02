@@ -19,6 +19,7 @@ import type { LedgerService } from '../ledger/ledger-service.js';
 import type { Logger } from '../logger.js';
 import type { ClientService } from '../services/client-service.js';
 import type { FxService } from '../services/fx-service.js';
+import type { MarketService } from '../services/market-service.js';
 import {
   createLightningWallet,
   type LnbitsFactory,
@@ -48,6 +49,7 @@ export type ApiServices = {
   getStatus?: () => Promise<Record<string, unknown>>;
   auth?: AuthService;
   fx?: FxService;
+  market?: MarketService;
   wallets?: MerchantWalletService;
   ledger?: LedgerService;
   lnbitsFor?: LnbitsFactory;
@@ -322,6 +324,8 @@ export function registerApiRoutes(
         ...(services.subscriptions ? { subscriptions: services.subscriptions } : {}),
         ...(services.lnbitsFor ? { lnbitsFor: services.lnbitsFor } : {}),
         ...(services.walletNotifier ? { walletNotifier: services.walletNotifier } : {}),
+        ...(services.fx ? { fx: services.fx } : {}),
+        ...(services.market ? { market: services.market } : {}),
       });
     }
   }

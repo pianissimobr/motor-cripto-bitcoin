@@ -13,6 +13,7 @@ import { NoopEmailSender } from '../src/services/email-sender.js';
 import { MerchantWalletService } from '../src/services/merchant-wallet-service.js';
 import { ReportService } from '../src/services/report-service.js';
 import { SubscriptionService } from '../src/services/subscription-service.js';
+import { FixedFxPriceProvider, FxService } from '../src/services/fx-service.js';
 import { addBitcoinWallets, testConfig, testTpub, truncateAll } from './helpers.js';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
@@ -102,6 +103,11 @@ maybeDescribe('portal auth (integration)', () => {
         wallets,
         reports,
         subscriptions,
+        // R$ 500.000,00 e US$ 100.000,00 por BTC.
+        fx: new FxService(
+          db.db,
+          new FixedFxPriceProvider({ BRL: 50_000_000n, USD: 10_000_000n }),
+        ),
       },
     });
   }
@@ -183,6 +189,55 @@ maybeDescribe('portal auth (integration)', () => {
     expect(creds.webhook_secret).toBeTruthy();
     const client = await repos.findClientById(merchantId);
     expect(client?.apiKeyPrefix).toBe(creds.api_key.slice(0, 20));
+  });
+
+  it('checkout aceita valor em R$ e trava a cotacao em sats', async () => {
+    const app = makeApp();
+    const reg = await register(app, 'fx@example.com');
+    const merchantId = (reg.json() as { merchant: { id: string } }).merchant.id;
+    await addBitcoinWallets(db, config, merchantId, { lightning: false });
+    const { sid, csrf } = await sessionFor(app, 'fx@example.com');
+    const headers = { cookie: `portal_sid=${sid}; portal_csrf=${csrf}`, 'x-csrf-token': csrf };
+
+    const rates = await app.inject({
+      method: 'GET',
+      url: '/v1/portal/fx/rates',
+      headers: { cookie: `portal_sid=${sid}` },
+    });
+    expect(rates.statusCode).toBe(200);
+    expect(rates.json().rates.map((r: { currency: string }) => r.currency).sort()).toEqual([
+      'BRL',
+      'USD',
+    ]);
+
+    const brl = await app.inject({
+      method: 'POST',
+      url: `/v1/portal/merchants/${merchantId}/checkout`,
+      headers,
+      payload: { amount: '5000', currency: 'BRL', description: 'R$ 50' },
+    });
+    expect(brl.statusCode).toBe(201);
+    const intent = brl.json() as { amount_sats: string; amount_fiat: string; currency: string };
+    // R$ 50,00 a R$ 500.000/BTC = 0,0001 BTC, sem margem.
+    expect(intent.amount_sats).toBe('10000');
+    expect(intent.amount_fiat).toBe('5000');
+    expect(intent.currency).toBe('BRL');
+
+    const both = await app.inject({
+      method: 'POST',
+      url: `/v1/portal/merchants/${merchantId}/checkout`,
+      headers,
+      payload: { amount: '5000', currency: 'BRL', amount_sats: '10' },
+    });
+    expect(both.statusCode).toBe(400);
+
+    const market = await app.inject({
+      method: 'GET',
+      url: '/v1/portal/market',
+      headers: { cookie: `portal_sid=${sid}` },
+    });
+    expect(market.statusCode).toBe(503);
+    expect((await app.inject({ method: 'GET', url: '/v1/portal/fx/rates' })).statusCode).toBe(401);
   });
 
   it('nao revela api key/request secret no perfil (so prefixo)', async () => {

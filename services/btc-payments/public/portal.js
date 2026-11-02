@@ -1,3 +1,5 @@
+import { loadMarket } from '/market.js';
+
 const COOKIE_SID = 'portal_sid';
 const COOKIE_CSRF = 'portal_csrf';
 
@@ -186,19 +188,121 @@ async function loadKpis() {
   cells[3].textContent = rows.length ? `${Math.round((paid.length / rows.length) * 100)}%` : '—';
 }
 
+// ---- Valor do checkout: R$, US$ ou sats; o campo digitado manda ----
+const fx = { brl: null, usd: null, source: null };
+const AMOUNT_FIELDS = { brl: 'amt-brl', usd: 'amt-usd', sats: 'amt-sats' };
+const money2 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const intFmt = new Intl.NumberFormat('pt-BR');
+
+/** "1.234,56", "1234.56", "50" -> 1234.56. O ultimo separador seguido de 1-2 digitos e o decimal. */
+function parseMoney(text) {
+  const t = String(text).replace(/[^\d.,]/g, '');
+  if (!t) return null;
+  const m = t.match(/^(.*?)[.,](\d{1,2})$/);
+  const whole = (m ? m[1] : t).replace(/[.,]/g, '');
+  const n = Number(`${whole || '0'}.${m ? m[2] : '0'}`);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseSats(text) {
+  const t = String(text).replace(/\D/g, '');
+  const n = t ? Number(t) : null;
+  return n && Number.isSafeInteger(n) ? n : null;
+}
+
+function updateAmounts(source) {
+  if (source) fx.source = source;
+  const src = fx.source;
+  const hint = el('amt-hint');
+  for (const [key, id] of Object.entries(AMOUNT_FIELDS)) {
+    el(id).classList.toggle('calc', Boolean(src) && key !== src);
+  }
+  if (!src) return;
+  const raw = el(AMOUNT_FIELDS[src]).value;
+  let sats = null;
+  if (src === 'sats') sats = parseSats(raw);
+  else if (fx[src]) {
+    const v = parseMoney(raw);
+    sats = v ? Math.floor((v * 1e8) / fx[src]) : null;
+  }
+  for (const key of ['brl', 'usd', 'sats']) {
+    if (key === src) continue;
+    const input = el(AMOUNT_FIELDS[key]);
+    if (sats === null) input.value = '';
+    else if (key === 'sats') input.value = intFmt.format(sats);
+    else input.value = fx[key] ? money2.format((sats / 1e8) * fx[key]) : '';
+  }
+  if (sats !== null) {
+    const btc = (sats / 1e8).toLocaleString('pt-BR', { minimumFractionDigits: 8, maximumFractionDigits: 8 });
+    hint.textContent = `= ${btc} BTC. ${src === 'sats' ? 'Cobrança fixa em sats.' : 'A cotação é travada ao gerar o QR.'}`;
+  } else {
+    showRateHint();
+  }
+}
+
+function showRateHint() {
+  const hint = el('amt-hint');
+  if (fx.brl || fx.usd) {
+    const parts = [];
+    if (fx.brl) parts.push(`R$ ${money2.format(fx.brl)}`);
+    if (fx.usd) parts.push(`US$ ${money2.format(fx.usd)}`);
+    hint.textContent = `1 BTC = ${parts.join(' · ')}`;
+  } else {
+    hint.textContent = 'Cotação indisponível agora: informe o valor em sats.';
+  }
+}
+
+async function loadRates() {
+  try {
+    const data = await api('GET', '/v1/portal/fx/rates');
+    for (const r of data.rates ?? []) {
+      const price = Number(r.btc_price_cents) / 100;
+      if (r.currency === 'BRL') fx.brl = price;
+      if (r.currency === 'USD') fx.usd = price;
+    }
+  } catch {
+    fx.brl = null;
+    fx.usd = null;
+  }
+  el('amt-brl').disabled = !fx.brl;
+  el('amt-usd').disabled = !fx.usd;
+  if (fx.source && fx.source !== 'sats' && !fx[fx.source]) fx.source = null;
+  updateAmounts();
+  if (!fx.source) showRateHint();
+}
+
 async function submitCheckout(e) {
   e.preventDefault();
-  const sats = el('checkout-sats').value.trim();
   const description = el('checkout-desc').value.trim();
+  const src = fx.source;
+  let amount;
+  if (src === 'sats') {
+    const sats = parseSats(el('amt-sats').value);
+    if (sats) amount = { amount_sats: String(sats) };
+  } else if (src === 'brl' || src === 'usd') {
+    const v = parseMoney(el(AMOUNT_FIELDS[src]).value);
+    if (v) amount = { amount: String(Math.round(v * 100)), currency: src.toUpperCase() };
+  }
+  if (!amount) {
+    showError(new Error('Informe o valor em R$, US$ ou sats.'));
+    return;
+  }
+  el('erro').textContent = '';
+  const button = e.target.querySelector('button[type=submit]');
+  button.disabled = true;
   try {
     const data = await api('POST', `/v1/portal/merchants/${state.merchantId}/checkout`, {
-      amount_sats: sats,
+      ...amount,
       ...(description ? { description } : {}),
     });
     el('checkout-result').classList.remove('hidden');
     const qr = data.qr_svg ?? '';
     el('checkout-qr').innerHTML = qr;
     el('checkout-uri').textContent = data.payment_uri ?? '';
+    // Mostra o valor que realmente ficou na cobranca (cotacao travada).
+    if (data.amount_sats) {
+      el('amt-sats').value = intFmt.format(Number(data.amount_sats));
+    }
     const link = el('checkout-link');
     if (data.id) {
       link.href = `/pay/${data.id}`;
@@ -210,6 +314,8 @@ async function submitCheckout(e) {
     await loadKpis();
   } catch (err) {
     showError(err);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -311,6 +417,9 @@ async function init() {
   el('subscription-form').addEventListener('submit', submitSubscription);
   el('webhook-form').addEventListener('submit', submitWebhook);
   el('gen-credentials').addEventListener('click', () => void generateCredentials());
+  for (const key of Object.keys(AMOUNT_FIELDS)) {
+    el(AMOUNT_FIELDS[key]).addEventListener('input', () => updateAmounts(key));
+  }
   try {
     const me = await fetch('/auth/me');
     if (!me.ok) {
@@ -320,7 +429,12 @@ async function init() {
     await loadMerchants();
   } catch (err) {
     window.location.href = '/login.html';
+    return;
   }
+  void loadRates();
+  void loadMarket();
+  setInterval(() => void loadRates(), 60_000);
+  setInterval(() => void loadMarket(), 5 * 60_000);
 }
 
 void init();
