@@ -1,5 +1,11 @@
 # API do serviço Bitcoin
 
+> **Referência histórica.** Este texto descreve uma versão anterior do motor
+> (com xpub e carteira fria da plataforma, sweep e conversão). Hoje o dinheiro
+> cai direto nas carteiras do lojista (wallet LNbits, xpub e USDC na Base) e não
+> há sweep nem conversão. O contrato atual está em
+> [services/btc-payments/README.md](../services/btc-payments/README.md).
+
 Base local: `http://localhost:4580`. Em produção, `PUBLIC_BASE_URL` do `services/btc-payments/.env`.
 
 Este documento é o contrato. O mapa do código e o caminho de um pagamento estão em [guia.md](guia.md). O livro HTML, com a mesma matéria, está em [index.html](index.html).

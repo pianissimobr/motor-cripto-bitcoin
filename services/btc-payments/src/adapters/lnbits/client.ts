@@ -33,6 +33,8 @@ export type LnbitsClientOptions = {
   apiKey: string;
   timeoutMs?: number;
   logger?: Logger;
+  /** fetch usado nas chamadas; o LNbits do lojista usa um fetch que bloqueia a rede interna. */
+  fetchImpl?: typeof fetch;
 };
 
 export class LnbitsClient {
@@ -40,8 +42,10 @@ export class LnbitsClient {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
   private readonly logger?: Logger;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(opts: LnbitsClientOptions) {
+    this.fetchImpl = opts.fetchImpl ?? fetch;
     this.url = opts.url.replace(/\/+$/, '');
     this.apiKey = opts.apiKey;
     this.timeoutMs = opts.timeoutMs ?? 10_000;
@@ -158,6 +162,35 @@ export class LnbitsClient {
     };
   }
 
+  /**
+   * Diz se a chave e uma Admin key (que gasta o saldo). Tenta pagar uma invoice
+   * invalida: o LNbits confere a chave antes de ler o corpo, entao uma Invoice
+   * key e recusada com 401/403, e uma Admin key passa da autenticacao e falha
+   * so na invoice. Nenhum pagamento acontece: a invoice nao e decodificavel.
+   * Retorna null quando a resposta nao permite concluir.
+   */
+  async isAdminKey(): Promise<boolean | null> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.url}/api/v1/payments`, {
+        method: 'POST',
+        headers: {
+          'X-Api-Key': this.apiKey,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ out: true, bolt11: 'lnbc1motorcriptoverificacaodechave' }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch {
+      return null;
+    }
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 401 || response.status === 403) return false;
+    if (response.status >= 400 && response.status < 600) return true;
+    return null;
+  }
+
   async health(): Promise<{ ok: boolean; detail?: string }> {
     try {
       const response = await this.request('/api/v1/wallet', { method: 'GET' });
@@ -179,7 +212,7 @@ export class LnbitsClient {
   ): Promise<Response> {
     let response: Response;
     try {
-      response = await fetch(`${this.url}${path}`, {
+      response = await this.fetchImpl(`${this.url}${path}`, {
         method: init.method,
         headers: {
           'X-Api-Key': this.apiKey,

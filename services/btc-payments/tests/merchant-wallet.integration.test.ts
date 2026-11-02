@@ -51,9 +51,8 @@ maybeDescribe('merchant wallets (integration)', () => {
     wallets = new MerchantWalletService(db.db);
     service = new PaymentIntentService({
       repos,
-      lnbits: new FakeLnbits() as unknown as LnbitsClient,
+      lnbitsFor: () => new FakeLnbits() as unknown as LnbitsClient,
       config,
-      xpub: parseAccountXpub(config.btc.xpub, config.btc.network),
       logger: silentLogger,
     });
     client = await createTestClient(repos, config);

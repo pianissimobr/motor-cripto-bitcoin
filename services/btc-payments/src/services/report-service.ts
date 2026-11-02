@@ -17,6 +17,9 @@ export type ReportSummary = {
   pixPaid: number;
   pixBrlCents: string;
   pixUsdcMinor: string;
+  /** USDC das conversoes BTC entregue direto na carteira da loja. */
+  btcUsdcMinor: string;
+  /** Total de USDC entregue a loja (BTC convertido + PIX liquidado). */
   payoutUsdcMinor: string;
 };
 
@@ -52,7 +55,7 @@ type PixAgg = {
   usdc_minor: string;
 };
 
-type PayoutAgg = { usdc_minor: string };
+type ConversionAgg = { usdc_minor: string };
 
 export class ReportService {
   private readonly db: Db;
@@ -62,7 +65,7 @@ export class ReportService {
   }
 
   async summary(clientId: string, since: Date): Promise<ReportSummary> {
-    const [intentRows, pixRows, payoutRows] = await Promise.all([
+    const [intentRows, pixRows, conversionRows] = await Promise.all([
       this.db.execute<IntentAgg>(sql`
         select
           count(*)::int as intents_total,
@@ -75,7 +78,7 @@ export class ReportService {
           coalesce(sum(paid_amount_sats) filter (where paid_rail = 'onchain'), 0)::text as rail_onchain,
           coalesce(sum(paid_amount_sats) filter (where paid_rail = 'both'), 0)::text as rail_both
         from payment_intents
-        where client_id = ${clientId} and created_at >= ${since}
+        where client_id = ${clientId} and created_at >= ${since.toISOString()}::timestamptz
       `),
       this.db.execute<PixAgg>(sql`
         select
@@ -84,12 +87,12 @@ export class ReportService {
           coalesce(sum(amount_brl_cents), 0)::text as brl_cents,
           coalesce(sum(asset_amount_minor) filter (where status = 'liquidado'), 0)::text as usdc_minor
         from pix_charges
-        where client_id = ${clientId} and created_at >= ${since}
+        where client_id = ${clientId} and created_at >= ${since.toISOString()}::timestamptz
       `),
-      this.db.execute<PayoutAgg>(sql`
-        select coalesce(sum(amount_minor) filter (where status in ('enviando','confirmado')), 0)::text as usdc_minor
-        from payouts
-        where merchant_id = ${clientId} and created_at >= ${since}
+      this.db.execute<ConversionAgg>(sql`
+        select coalesce(sum(target_amount_minor) filter (where status = 'convertida'), 0)::text as usdc_minor
+        from conversion_orders
+        where merchant_id = ${clientId} and created_at >= ${since.toISOString()}::timestamptz
       `),
     ]);
 
@@ -105,7 +108,7 @@ export class ReportService {
       rail_both: '0',
     };
     const pix = pixRows[0] ?? { total: 0, paid: 0, brl_cents: '0', usdc_minor: '0' };
-    const payout = payoutRows[0] ?? { usdc_minor: '0' };
+    const conversion = conversionRows[0] ?? { usdc_minor: '0' };
 
     return {
       intentsTotal: intent.intents_total,
@@ -123,7 +126,8 @@ export class ReportService {
       pixPaid: pix.paid,
       pixBrlCents: pix.brl_cents,
       pixUsdcMinor: pix.usdc_minor,
-      payoutUsdcMinor: payout.usdc_minor,
+      btcUsdcMinor: conversion.usdc_minor,
+      payoutUsdcMinor: (BigInt(conversion.usdc_minor) + BigInt(pix.usdc_minor)).toString(),
     };
   }
 
@@ -138,7 +142,7 @@ export class ReportService {
         count(*)::int as count,
         coalesce(sum(coalesce(paid_amount_sats, 0)), 0)::text as sats
       from payment_intents
-      where client_id = ${clientId} and created_at >= ${since}
+      where client_id = ${clientId} and created_at >= ${since.toISOString()}::timestamptz
       group by 1
       order by 1
     `);
@@ -158,7 +162,7 @@ export class ReportService {
         count(*) filter (where status in ('pago','pago_tardio'))::int as paid,
         coalesce(sum(amount_sats), 0)::text as sats
       from payment_intents
-      where client_id = ${clientId} and created_at >= ${since}
+      where client_id = ${clientId} and created_at >= ${since.toISOString()}::timestamptz
       group by 1
       order by 1
     `);

@@ -1,5 +1,11 @@
 # Como o repositório funciona
 
+> **Referência histórica.** Este texto descreve uma versão anterior do motor
+> (com xpub e carteira fria da plataforma, sweep e conversão). Hoje o dinheiro
+> cai direto nas carteiras do lojista (wallet LNbits, xpub e USDC na Base) e não
+> há sweep nem conversão. O contrato atual está em
+> [services/btc-payments/README.md](../services/btc-payments/README.md).
+
 Este texto descreve o repositório inteiro: o que cada pasta faz, como um pagamento Bitcoin anda de ponta a ponta, onde cada regra mora no código e o que o serviço recusa fazer. O contrato HTTP, com corpos e códigos, está em [API.md](API.md). O livro HTML, com a mesma matéria, está em [index.html](index.html).
 
 Há dois motores neste repositório. Só `services/btc-payments` é o contrato

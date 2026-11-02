@@ -130,3 +130,41 @@ export async function createTestClient(
 
   return { client, apiKey, requestSecret, webhookSecret };
 }
+
+/**
+ * Carteiras Bitcoin do lojista: xpub on-chain (enderecos de cobranca dele) e
+ * wallet LNbits (Lightning direto nele). Nos testes o LNbits e falso, entao a
+ * Invoice key cifrada e so um marcador.
+ */
+export async function addBitcoinWallets(
+  db: DbClient,
+  config: AppConfig,
+  merchantId: string,
+  rails: { lightning?: boolean; onchain?: boolean } = {},
+): Promise<{ lightningWalletId: string | null; btcWalletId: string | null }> {
+  const { MerchantWalletService } = await import('../src/services/merchant-wallet-service.js');
+  const wallets = new MerchantWalletService(db.db);
+  let lightningWalletId: string | null = null;
+  let btcWalletId: string | null = null;
+  if (rails.onchain !== false) {
+    btcWalletId = (
+      await wallets.createBtcDeposit({
+        merchantId,
+        xpub: testTpub(),
+        derivationPrefix: config.btc.derivationPrefix,
+        network: config.btc.network,
+        gapLimit: config.btc.gapLimit,
+      })
+    ).id;
+  }
+  if (rails.lightning !== false) {
+    lightningWalletId = (
+      await wallets.createLightningLnbits({
+        merchantId,
+        lnbitsUrl: 'http://lnbits.lojista.test',
+        secretEnc: 'teste',
+      })
+    ).id;
+  }
+  return { lightningWalletId, btcWalletId };
+}

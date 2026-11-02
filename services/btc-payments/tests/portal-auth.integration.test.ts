@@ -13,7 +13,7 @@ import { NoopEmailSender } from '../src/services/email-sender.js';
 import { MerchantWalletService } from '../src/services/merchant-wallet-service.js';
 import { ReportService } from '../src/services/report-service.js';
 import { SubscriptionService } from '../src/services/subscription-service.js';
-import { testConfig, truncateAll } from './helpers.js';
+import { addBitcoinWallets, testConfig, testTpub, truncateAll } from './helpers.js';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
@@ -57,7 +57,7 @@ maybeDescribe('portal auth (integration)', () => {
   });
 
   function makeApp() {
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     const lnbits = {
       async createInvoice() {
         throw new Error('nao usado');
@@ -76,9 +76,8 @@ maybeDescribe('portal auth (integration)', () => {
     });
     const paymentIntents = new PaymentIntentService({
       repos,
-      lnbits,
+      lnbitsFor: () => lnbits,
       config,
-      xpub,
       logger: silentLogger,
     });
     const wallets = new MerchantWalletService(db.db);
@@ -127,8 +126,8 @@ maybeDescribe('portal auth (integration)', () => {
     const app = makeApp();
     const reg = await register(app, 'a@example.com');
     expect(reg.statusCode).toBe(201);
-    const body = reg.json() as { verification_token: string; merchant: { api_key: string } };
-    expect(body.merchant.api_key).toMatch(/^mk_btc_live_/);
+    const body = reg.json() as { verification_token: string; merchant: { apiKey: string } };
+    expect(body.merchant.apiKey).toMatch(/^mk_btc_live_/);
     expect(body.verification_token).toBeTruthy();
 
     const verify = await app.inject({
@@ -171,6 +170,26 @@ maybeDescribe('portal auth (integration)', () => {
     expect(detailBody).not.toHaveProperty('api_key');
     expect(detailBody).not.toHaveProperty('request_secret');
     expect(csrf).toBeTruthy();
+  });
+
+  it('em producao nao devolve token de reset nem de verificacao na resposta', async () => {
+    const prod = testConfig({
+      NODE_ENV: 'production',
+      ADMIN_TOKEN: 'a'.repeat(32),
+      METRICS_TOKEN: 'metrics-token-de-teste',
+      DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+    });
+    const auth = new AuthService({
+      repos,
+      clients: new ClientService({ repos, config: prod, logger: silentLogger }),
+      config: prod,
+      logger: silentLogger,
+      emailSender: new NoopEmailSender(silentLogger),
+    });
+    const reg = await auth.register({ email: 'prod@example.com', password: 'senha-forte-123' });
+    expect(reg.verificationToken).toBeUndefined();
+    const forgot = await auth.forgotPassword('prod@example.com');
+    expect(forgot).toEqual({ ok: true });
   });
 
   it('isola lojas entre usuarios (IDOR -> 403)', async () => {

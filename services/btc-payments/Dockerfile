@@ -20,6 +20,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY public ./public
 RUN npm prune --omit=dev
 USER node
 EXPOSE 4580

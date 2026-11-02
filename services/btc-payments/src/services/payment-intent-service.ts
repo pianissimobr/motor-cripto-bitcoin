@@ -5,12 +5,18 @@ import {
   parseAccountXpub,
   type AccountXpub,
 } from '../adapters/hd/derivation.js';
-import type { LnbitsClient } from '../adapters/lnbits/client.js';
+import type { LnbitsFactory } from './merchant-lightning.js';
 import type { Repositories } from '../db/repositories.js';
-import { buildBip21, buildLnbitsWebhookUrl } from '../domain/bip21.js';
+import {
+  buildBip21,
+  buildLnbitsWebhookUrl,
+  lnbitsWalletWebhookToken,
+} from '../domain/bip21.js';
 import {
   AppError,
+  BitcoinWalletRequiredError,
   ConflictError,
+  GapLimitReachedError,
   NotFoundError,
   ServiceUnavailableError,
   UpstreamError,
@@ -97,9 +103,9 @@ export type LightningWebhookResult = {
 
 export type PaymentIntentServiceDeps = {
   repos: Repositories;
-  lnbits: LnbitsClient | null;
+  /** Abre a wallet LNbits do lojista. Null quando o Lightning esta desligado. */
+  lnbitsFor: LnbitsFactory | null;
   config: AppConfig;
-  xpub: AccountXpub | null;
   logger: Logger;
   alerts?: AlertService;
   now?: () => Date;
@@ -118,9 +124,7 @@ export class PaymentIntentService {
       throw new ValidationError('expires_in_seconds deve estar entre 30 e 86400');
     }
 
-    const lightningEnabled = this.deps.config.lightning.enabled;
-    const onchainEnabled = this.deps.config.onchain.enabled;
-    if (!lightningEnabled && !onchainEnabled) {
+    if (!this.deps.config.lightning.enabled && !this.deps.config.onchain.enabled) {
       throw new ServiceUnavailableError('nenhum trilho Bitcoin habilitado');
     }
 
@@ -130,6 +134,32 @@ export class PaymentIntentService {
     );
     if (existing) return this.handleExisting(existing, input.amountSats);
 
+    // O Bitcoin vai direto para as carteiras do lojista. A cobranca oferece
+    // so os trilhos que ele cadastrou: Lightning (wallet LNbits dele) e/ou
+    // on-chain (enderecos derivados do xpub dele).
+    const lightningWallet =
+      this.deps.config.lightning.enabled && this.deps.lnbitsFor
+        ? await this.deps.repos.findActiveLightningWalletForClient(input.clientId)
+        : null;
+    let wallet = this.deps.config.onchain.enabled
+      ? await this.resolveWallet(input.clientId, input.walletId)
+      : null;
+    if (!lightningWallet && !wallet) throw new BitcoinWalletRequiredError();
+    if (wallet && (await this.gapLimitReached(wallet))) {
+      // A carteira do lojista nao enxergaria o proximo endereco. Sem on-chain
+      // nesta cobranca: segue so com Lightning, se houver.
+      await this.deps.alerts?.send({
+        level: 'warn',
+        title: 'xpub do lojista no gap limit',
+        message: 'cobranca criada sem trilho on-chain',
+        metadata: { clientId: input.clientId, walletId: wallet.id },
+      });
+      if (!lightningWallet) throw new GapLimitReachedError(this.deps.config.btc.gapLimit);
+      wallet = null;
+    }
+    const lightningEnabled = lightningWallet !== null;
+    const onchainEnabled = wallet !== null;
+
     const now = this.now();
     const expiresAt = new Date(now.getTime() + ttl * 1000);
     const graceUntil = new Date(
@@ -138,24 +168,15 @@ export class PaymentIntentService {
     const description = input.description?.trim() || null;
     const metadata = input.metadata ?? null;
 
-    let wallet: MerchantWallet | null = null;
-    let accountXpub: AccountXpub | null = this.deps.xpub;
-    let derivationPrefix = this.deps.config.btc.derivationPrefix;
-    if (onchainEnabled) {
-      wallet = await this.resolveWallet(input.clientId, input.walletId);
-      accountXpub = wallet
-        ? parseAccountXpub(wallet.xpub!, this.deps.config.btc.network)
-        : this.deps.xpub;
-      if (!accountXpub) {
-        throw new ServiceUnavailableError('BTC_XPUB ausente para o on-chain');
-      }
-      derivationPrefix =
-        wallet?.derivationPrefix ?? this.deps.config.btc.derivationPrefix;
-    }
+    const accountXpub: AccountXpub | null = wallet
+      ? parseAccountXpub(wallet.xpub!, this.deps.config.btc.network)
+      : null;
+    const derivationPrefix =
+      wallet?.derivationPrefix ?? this.deps.config.btc.derivationPrefix;
 
     let created;
     try {
-      if (onchainEnabled) {
+      if (wallet) {
         const createInput = {
           clientId: input.clientId,
           externalId: input.externalId,
@@ -186,12 +207,10 @@ export class PaymentIntentService {
             };
           },
         };
-        created = wallet
-          ? await this.deps.repos.createIntentWithWalletAddress({
-              ...createInput,
-              merchantWalletId: wallet.id,
-            })
-          : await this.deps.repos.createIntentWithAddress(createInput);
+        created = await this.deps.repos.createIntentWithWalletAddress({
+          ...createInput,
+          merchantWalletId: wallet.id,
+        });
       } else {
         created = await this.deps.repos.createIntentLightningOnly({
           clientId: input.clientId,
@@ -227,7 +246,7 @@ export class PaymentIntentService {
       });
     }
 
-    if (!lightningEnabled) {
+    if (!lightningWallet) {
       await this.deps.repos.insertAuditEvent({
         actor: 'api',
         action: 'intent.created',
@@ -253,8 +272,7 @@ export class PaymentIntentService {
 
     const memo = (description ?? `Pedido ${input.externalId}`).slice(0, 200);
     const webhookToken = this.deps.config.lightning.webhookToken;
-    const lnbits = this.deps.lnbits;
-    if (!lnbits || !webhookToken) {
+    if (!this.deps.lnbitsFor || !webhookToken) {
       await this.deps.repos.markCreationFailed(
         created.intent.id,
         created.address?.id ?? null,
@@ -263,10 +281,12 @@ export class PaymentIntentService {
     }
     const webhookUrl = buildLnbitsWebhookUrl(
       this.deps.config.lightning.webhookBaseUrl,
-      webhookToken,
+      lnbitsWalletWebhookToken(webhookToken, lightningWallet.id),
+      lightningWallet.id,
     );
 
     try {
+      const lnbits = this.deps.lnbitsFor(lightningWallet);
       const invoice = await lnbits.createInvoice({
         amountSats: input.amountSats,
         memo,
@@ -279,6 +299,7 @@ export class PaymentIntentService {
         invoice: invoice.payment_request,
         lightningExpiresAt: expiresAt,
         amountSats: input.amountSats,
+        lightningWalletId: lightningWallet.id,
       });
       await this.deps.repos.insertAuditEvent({
         actor: 'api',
@@ -364,20 +385,35 @@ export class PaymentIntentService {
    */
   async applyLightningPayment(
     paymentHash: string,
+    /** Wallet que mandou o webhook: so pode tocar invoices dela. */
+    fromWalletId?: string,
   ): Promise<LightningWebhookResult> {
-    const lnbits = this.deps.lnbits;
-    if (!this.deps.config.lightning.enabled || !lnbits) {
+    if (!this.deps.config.lightning.enabled || !this.deps.lnbitsFor) {
       return { status: 'ignorado' };
     }
     const intent = await this.deps.repos.findIntentByLightningPaymentHash(
       paymentHash,
     );
     if (!intent) return { status: 'desconhecido' };
+    if (fromWalletId !== undefined && intent.lightningWalletId !== fromWalletId) {
+      return { status: 'desconhecido' };
+    }
     if (intent.status === 'falha_criacao') {
       return { status: 'ja_processado', id_transacao: intent.externalId };
     }
 
-    const payment = await lnbits.getPayment(paymentHash);
+    // A prova vem da wallet LNbits do lojista onde a invoice foi criada.
+    const lightningWallet = intent.lightningWalletId
+      ? await this.deps.repos.findMerchantWalletById(intent.lightningWalletId)
+      : await this.deps.repos.findActiveLightningWalletForClient(intent.clientId);
+    if (!lightningWallet) {
+      this.deps.logger.warn(
+        { intentId: intent.id, paymentHash },
+        'wallet LNbits do lojista nao encontrada para conferir o pagamento',
+      );
+      return { status: 'ignorado', id_transacao: intent.externalId };
+    }
+    const payment = await this.deps.lnbitsFor(lightningWallet).getPayment(paymentHash);
     if (!payment.paid) return { status: 'ignorado' };
 
     const resolved = resolvePaidSats({
@@ -552,7 +588,7 @@ export class PaymentIntentService {
     paid: number;
     errors: number;
   }> {
-    if (!this.deps.config.lightning.enabled || !this.deps.lnbits) {
+    if (!this.deps.config.lightning.enabled || !this.deps.lnbitsFor) {
       return { checked: 0, paid: 0, errors: 0 };
     }
     const intents = await this.deps.repos.listPendingLightningIntents(limit);
@@ -605,7 +641,7 @@ export class PaymentIntentService {
         }
 
         const onchainSum = intent.onchainAddressId
-          ? await this.deps.repos.sumOnchainForIntent(intent.id, ['confirmado'])
+          ? await this.deps.repos.sumOnchainForIntent(intent.id, ['confirmado', 'gasto'])
           : 0n;
 
         // Mempool nao segura o prazo. So o que ja confirmou conta aqui.
@@ -651,14 +687,26 @@ export class PaymentIntentService {
     };
   }
 
+  /**
+   * Enderecos seguidos sem deposito no fim do xpub. Ao chegar no gap limit, o
+   * proximo endereco ficaria invisivel para a carteira do lojista.
+   */
+  private async gapLimitReached(wallet: MerchantWallet): Promise<boolean> {
+    const usage = await this.deps.repos.getWalletGapUsage(wallet.id);
+    if (!usage) return false;
+    const unusedTail = usage.nextIndex - (usage.lastUsedIndex + 1);
+    return unusedTail >= this.deps.config.btc.gapLimit;
+  }
+
   private async resolveWallet(
     clientId: string,
     walletId?: string,
   ): Promise<MerchantWallet | null> {
+    // Sem carteira padrao da plataforma: o on-chain so existe com o xpub do
+    // proprio lojista (os enderecos de cobranca ja sao dele).
     const wallet = walletId
       ? await this.deps.repos.findMerchantWalletById(walletId)
-      : ((await this.deps.repos.findActiveBtcDepositWalletForClient(clientId)) ??
-        (await this.deps.repos.findDefaultBtcWallet()));
+      : await this.deps.repos.findActiveBtcDepositWalletForClient(clientId);
 
     if (!wallet) return null;
     if (wallet.kind !== 'btc_deposit') {

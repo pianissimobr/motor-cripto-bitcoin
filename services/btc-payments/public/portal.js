@@ -63,14 +63,48 @@ async function loadMerchants() {
 
 async function refresh() {
   if (!state.merchantId) return;
-  await Promise.all([loadWallets(), loadIntents(), loadKpis(), loadSubscriptions()]);
+  await Promise.all([
+    loadWallets(),
+    loadIntents(),
+    loadKpis(),
+    loadSubscriptions(),
+    loadWebhook(),
+  ]);
+}
+
+async function loadWebhook() {
+  const data = await api('GET', `/v1/portal/merchants/${state.merchantId}`);
+  el('webhook-url').value = data.webhook_url ?? '';
+  el('webhook-status').textContent = data.webhook_url
+    ? 'Webhook configurado.'
+    : 'Nenhum webhook configurado: a loja não recebe avisos.';
+}
+
+async function submitWebhook(e) {
+  e.preventDefault();
+  el('erro').textContent = '';
+  try {
+    const data = await api('PATCH', `/v1/portal/merchants/${state.merchantId}`, {
+      webhook_url: el('webhook-url').value.trim(),
+    });
+    el('webhook-status').textContent = data.webhookUrl
+      ? 'Webhook salvo.'
+      : 'Webhook removido: a loja não recebe avisos.';
+  } catch (err) {
+    showError(err);
+  }
 }
 
 async function loadWallets() {
   const data = await api('GET', `/v1/portal/merchants/${state.merchantId}/wallets`);
-  const list = data.data ?? [];
+  const list = (data.data ?? []).filter((w) => w.status === 'ativo');
   const node = el('wallets');
   node.innerHTML = '';
+  const labels = {
+    lightning_lnbits: 'Lightning (LNbits)',
+    btc_deposit: 'BTC on-chain (xpub)',
+    usdc_settlement: 'USDC Base (PIX)',
+  };
   for (const w of list) {
     const row = document.createElement('div');
     row.className = 'row';
@@ -78,8 +112,8 @@ async function loadWallets() {
     const info = document.createElement('div');
     info.style.flex = '1';
     info.innerHTML =
-      `<strong>${escapeHtml(w.kind)}</strong> <span class="muted">${escapeHtml(w.status)}</span>` +
-      `<div class="muted" style="word-break:break-all">${escapeHtml(w.address)}</div>`;
+      `<strong>${escapeHtml(labels[w.kind] ?? w.kind)}</strong>` +
+      `<div class="muted" style="word-break:break-all">${escapeHtml(w.lnbits_url ?? w.xpub ?? w.address)}</div>`;
     const del = document.createElement('button');
     del.className = 'danger';
     del.textContent = 'Remover';
@@ -157,11 +191,20 @@ async function submitCheckout(e) {
 async function submitWallet(e) {
   e.preventDefault();
   const kind = el('wallet-kind').value;
-  const body = kind === 'btc_deposit'
-    ? { kind, xpub: el('wallet-xpub').value.trim() }
-    : { kind, address: el('wallet-addr').value.trim() };
+  const body =
+    kind === 'lightning_lnbits'
+      ? {
+          kind,
+          lnbits_url: el('wallet-lnbits-url').value.trim(),
+          invoice_key: el('wallet-lnbits-key').value.trim(),
+        }
+      : kind === 'btc_deposit'
+        ? { kind, xpub: el('wallet-xpub').value.trim() }
+        : { kind, address: el('wallet-addr').value.trim() };
+  el('erro').textContent = '';
   try {
     await api('POST', `/v1/portal/merchants/${state.merchantId}/wallets`, body);
+    el('wallet-lnbits-key').value = '';
     await loadWallets();
   } catch (err) {
     showError(err);
@@ -225,6 +268,8 @@ async function submitSubscription(e) {
 
 function toggleWalletKind() {
   const kind = el('wallet-kind').value;
+  el('wallet-lnbits-url-label').classList.toggle('hidden', kind !== 'lightning_lnbits');
+  el('wallet-lnbits-key-label').classList.toggle('hidden', kind !== 'lightning_lnbits');
   el('wallet-xpub-label').classList.toggle('hidden', kind !== 'btc_deposit');
   el('wallet-addr-label').classList.toggle('hidden', kind !== 'usdc_settlement');
 }
@@ -243,6 +288,7 @@ async function init() {
   el('checkout-form').addEventListener('submit', submitCheckout);
   el('wallet-form').addEventListener('submit', submitWallet);
   el('subscription-form').addEventListener('submit', submitSubscription);
+  el('webhook-form').addEventListener('submit', submitWebhook);
   el('wallet-kind').addEventListener('change', toggleWalletKind);
   toggleWalletKind();
   try {

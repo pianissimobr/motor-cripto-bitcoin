@@ -22,7 +22,6 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "client:create": "tsx scripts/seed-client.ts",
     "intent:create": "tsx scripts/create-intent.ts",
-    "wallet:init": "tsx scripts/init-wallet.ts",
     "wallet:base:init": "tsx scripts/init-base-wallet.ts",
     "backup": "bash scripts/backup.sh",
     "backup:verify": "bash scripts/verify-backup.sh",
@@ -44,6 +43,7 @@
     "pino": "^10.4.0",
     "postgres": "^3.4.9",
     "qrcode": "^1.5.4",
+    "undici": "^7.12.0",
     "viem": "^2.57.13",
     "zod": "^4.6.7"
   },

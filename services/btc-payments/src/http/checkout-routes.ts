@@ -62,21 +62,16 @@ export function checkoutHtml(dto: Awaited<ReturnType<PaymentIntentService['getPu
   ${invoice ? `<div class="muted" style="margin-top:8px">Invoice Lightning: <span style="word-break:break-all">${escapeHtml(invoice)}</span></div>` : ''}
 </div>
 </main>
-<script>
-async function poll() {
-  try {
-    const res = await fetch(window.location.pathname + '/status');
-    if (!res.ok) return;
-    const data = await res.json();
-    const node = document.getElementById('status');
-    if (node && data.status) node.textContent = data.status;
-    if (data.paid) window.location.reload();
-  } catch {}
-}
-setInterval(poll, 5000);
-</script>
+<script src="/pay-status.js" defer></script>
 </body>
 </html>`;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** O id da cobranca e o token publico; formato invalido e so "nao existe". */
+function assertPublicId(id: string): void {
+  if (!UUID_RE.test(id)) throw new NotFoundError('cobranca nao encontrada');
 }
 
 export function registerCheckoutRoutes(
@@ -85,6 +80,7 @@ export function registerCheckoutRoutes(
 ): void {
   app.get('/pay/:id', async (request, reply) => {
     const params = request.params as { id: string };
+    assertPublicId(params.id);
     const dto = await deps.paymentIntents.getPublicById(params.id);
     if (!dto) throw new NotFoundError('cobranca nao encontrada');
     const html = checkoutHtml(dto);
@@ -97,6 +93,7 @@ export function registerCheckoutRoutes(
 
   app.get('/pay/:id/status', async (request) => {
     const params = request.params as { id: string };
+    assertPublicId(params.id);
     const dto = await deps.paymentIntents.getPublicById(params.id);
     if (!dto) throw new NotFoundError('cobranca nao encontrada');
     const paid = dto.status === 'pago' || dto.status === 'pago_tardio';

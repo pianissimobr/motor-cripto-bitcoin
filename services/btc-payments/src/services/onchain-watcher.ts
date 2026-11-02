@@ -5,7 +5,7 @@ import {
   type EsploraUtxo,
 } from '../adapters/chain/esplora.js';
 import type { Repositories } from '../db/repositories.js';
-import type { OnchainPayment, OnchainSweep, PaymentIntent, SweepInput } from '../domain/types.js';
+import type { PaymentIntent } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import { enqueueIntentEvent } from './intent-events.js';
 import type { AlertService } from './alert-service.js';
@@ -126,13 +126,18 @@ export class OnchainWatcher {
       await this.deps.repos.markHdAddressUsed(address.id);
     }
 
-    const watchSwept = this.withinPaidWindow(intent);
-    const sweeps = await this.deps.repos.listSweepsForAddress(address.id);
-    let sweptStillOurs = 0n;
+    // O endereco e do lojista: ele pode gastar o BTC a qualquer momento. Uma
+    // saida que some da lista de UTXO com o tx de deposito ainda confirmado
+    // foi gasta (`gasto`) e continua valendo como pagamento. So o deposito
+    // sumido, ou de volta a mempool, e reorg de verdade.
+    const isPaid = intent.status === 'pago' || intent.status === 'pago_tardio';
+    const watchSpent = !isPaid || this.withinPaidWindow(intent);
+    let spentStillValid = 0n;
+    let spentConfirmedEnough = 0n;
     let realReorg = false;
 
     for (const payment of previous) {
-      const trackSpent = payment.status === 'gasto' && watchSwept;
+      const trackSpent = payment.status === 'gasto' && watchSpent;
       if (
         payment.status !== 'mempool' &&
         payment.status !== 'confirmado' &&
@@ -161,19 +166,26 @@ export class OnchainWatcher {
       }
       if (utxo) continue;
 
-      const spentByUs = await this.spentByOurSweep(sweeps, payment);
-      if (spentByUs && (await this.txExists(payment.txid))) {
+      const deposit = await this.depositStatus(payment.txid);
+      if (deposit.kind === 'confirmed') {
+        const confirmations = Math.max(0, tip - deposit.blockHeight + 1);
         if (payment.status !== 'gasto') {
           await this.deps.repos.updateOnchainPaymentStatus({
             txid: payment.txid,
             vout: payment.vout,
             status: 'gasto',
-            confirmations: payment.confirmations,
-            blockHeight: payment.blockHeight,
+            confirmations,
+            blockHeight: deposit.blockHeight,
             blockHash: payment.blockHash,
           });
         }
-        sweptStillOurs += payment.amountSats;
+        spentStillValid += payment.amountSats;
+        if (confirmations >= required) spentConfirmedEnough += payment.amountSats;
+        continue;
+      }
+      if (deposit.kind === 'unconfirmed' && payment.status === 'mempool') {
+        // Gasto ainda na mempool (ex.: o lojista encadeou outra tx): nao conta
+        // nem reverte; o proximo ciclo decide quando o deposito confirmar.
         continue;
       }
 
@@ -190,9 +202,11 @@ export class OnchainWatcher {
     }
 
     const total = utxos.reduce((acc, utxo) => acc + BigInt(utxo.value), 0n);
-    const confirmed = utxos
-      .filter((utxo) => this.confirmationsFor(utxo, tip) >= required)
-      .reduce((acc, utxo) => acc + BigInt(utxo.value), 0n);
+    // Saidas ja gastas pelo lojista contam pelo deposito confirmado.
+    const confirmed =
+      utxos
+        .filter((utxo) => this.confirmationsFor(utxo, tip) >= required)
+        .reduce((acc, utxo) => acc + BigInt(utxo.value), 0n) + spentConfirmedEnough;
 
     if (intent.status === 'pago' || intent.status === 'pago_tardio') {
       if (confirmed >= intent.amountSats && intent.paidRail === 'lightning') {
@@ -234,7 +248,7 @@ export class OnchainWatcher {
 
       if (realReorg && intent.paidRail !== 'lightning') {
         const lightning = await this.lightningPortion(intent);
-        const custody = lightning + confirmed + sweptStillOurs;
+        const custody = lightning + confirmed + (spentStillValid - spentConfirmedEnough);
         if (custody >= intent.amountSats) {
           if (intent.paidRail === 'both' && lightning >= intent.amountSats) {
             await this.deps.repos.revisePaidCustody({
@@ -366,28 +380,22 @@ export class OnchainWatcher {
     return payment.amountSats;
   }
 
-  private async spentByOurSweep(
-    sweeps: OnchainSweep[],
-    payment: OnchainPayment,
-  ): Promise<boolean> {
-    for (const sweep of sweeps) {
-      if (!sweep.txid) continue;
-      const inputs = sweep.inputs as SweepInput[];
-      const matches = inputs.some(
-        (input) => input.txid === payment.txid && input.vout === payment.vout,
-      );
-      if (!matches) continue;
-      if (await this.txExists(sweep.txid)) return true;
-    }
-    return false;
-  }
-
-  private async txExists(txid: string): Promise<boolean> {
+  /** Estado do tx de deposito no Esplora. Erro que nao e 404 sobe (blip nao e reorg). */
+  private async depositStatus(
+    txid: string,
+  ): Promise<
+    | { kind: 'missing' }
+    | { kind: 'unconfirmed' }
+    | { kind: 'confirmed'; blockHeight: number }
+  > {
     try {
-      await this.deps.esplora.getTx(txid);
-      return true;
+      const tx = await this.deps.esplora.getTx(txid);
+      if (!tx.status.confirmed || tx.status.block_height === undefined) {
+        return { kind: 'unconfirmed' };
+      }
+      return { kind: 'confirmed', blockHeight: tx.status.block_height };
     } catch (err) {
-      if (isEsploraNotFound(err)) return false;
+      if (isEsploraNotFound(err)) return { kind: 'missing' };
       throw err;
     }
   }

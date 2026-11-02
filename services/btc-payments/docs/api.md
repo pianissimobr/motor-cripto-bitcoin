@@ -38,7 +38,7 @@ Escopos por cliente:
 ```text
 payments:write  payments:read
 wallets:read    wallets:write
-balances:read   conversions:read  payouts:read
+balances:read   conversions:read  payouts:read   (os tres ultimos: so historico)
 ```
 
 Escopo ausente retorna `403`.
@@ -103,19 +103,21 @@ Status: `criando`, `pendente`, `pago`, `parcial`, `expirado`, `pago_tardio`,
 Somente `pendente`. Pagamento Lightning tardio de uma cobranca cancelada nao
 altera o status; fica registrado para revisao.
 
-## Saldos e liquidação
+## Historico
 
-- `GET /v1/balances` retorna contas do ledger com `debit`, `credit` e
-  `balance` em string. Para passivos, `balance` e `credit - debit`.
-- `GET /v1/conversions` e `GET /v1/conversions/:id` retornam a ordem THORChain,
-  `target_amount_minor` em USDC (6 casas) e, no detalhe, as pernas.
-- `GET /v1/payouts` e `GET /v1/payouts/:id` retornam o payout USDC na Base.
+`GET /v1/balances`, `GET /v1/conversions` e `GET /v1/payouts` ficam so como
+historico de versoes anteriores. O motor nao converte nem paga: o dinheiro vai
+direto para as carteiras do lojista.
 
 ## Carteiras
 
 `GET /v1/wallets`
 
 `POST /v1/wallets` aceita:
+
+```json
+{ "kind": "lightning_lnbits", "lnbits_url": "https://seu-lnbits.com", "invoice_key": "..." }
+```
 
 ```json
 { "kind": "btc_deposit", "xpub": "tpub...", "derivation_prefix": "0" }
@@ -139,12 +141,8 @@ Exigem `Authorization: Bearer <ADMIN_TOKEN>`:
 
 ```text
 GET  /admin/api/merchants
-GET  /admin/api/treasury
-GET  /admin/api/conversions
-POST /admin/api/conversions/:id/retry
-GET  /admin/api/payouts
-POST /admin/api/payouts/:id/approve
-POST /admin/api/payouts/:id/retry
+GET  /admin/api/conversions            (historico)
+GET  /admin/api/payouts            (historico)
 GET  /admin/api/reconciliation
 ```
 
@@ -154,8 +152,9 @@ do ledger batem por ativo.
 
 ## PIX -> USDC
 
-`POST /v1/pix-charges` cria uma cobrança PIX na Lunium e entrega USDC na Base
-para a treasury da plataforma. O `PayoutService` liquida a loja.
+`POST /v1/pix-charges` cria uma cobrança PIX na Lunium que entrega USDC na Base
+direto na carteira `usdc_settlement` da loja. Sem essa carteira a resposta e
+`409 settlement_wallet_required`.
 
 ```json
 {
@@ -198,20 +197,6 @@ GET /v1/pix-charges?external_id=pedido-123
 ```
 
 Detalhes em [pix.md](pix.md).
-
-## Webhooks de liquidacao
-
-Alem dos eventos de pagamento, o worker envia:
-
-```text
-payment_intent.converted
-payment_intent.conversion_failed
-payment_intent.conversion_refunded
-payment_intent.payout_pending
-payment_intent.payout_sent
-payment_intent.payout_confirmed
-payment_intent.payout_failed
-```
 
 ## Erros
 

@@ -1,9 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Address } from 'viem';
 import { parseAccountXpub } from '../src/adapters/hd/derivation.js';
 import type { LnbitsClient } from '../src/adapters/lnbits/client.js';
-import type { UsdcPayoutAdapter } from '../src/adapters/payout/base-usdc.js';
 import type { AppConfig } from '../src/config.js';
 import { signRequest } from '../src/crypto/hmac.js';
 import { createDb, type DbClient } from '../src/db/client.js';
@@ -13,20 +11,15 @@ import { buildApp } from '../src/http/app.js';
 import { LedgerService } from '../src/ledger/ledger-service.js';
 import { silentLogger } from '../src/logger.js';
 import { ClientService } from '../src/services/client-service.js';
-import { ConversionService } from '../src/services/conversion-service.js';
 import { FixedFxPriceProvider, FxService } from '../src/services/fx-service.js';
 import { MerchantWalletService } from '../src/services/merchant-wallet-service.js';
 import { MetricsService } from '../src/services/metrics-service.js';
 import { PaymentIntentService } from '../src/services/payment-intent-service.js';
-import { PayoutService } from '../src/services/payout-service.js';
 import { testConfig, testTpub, truncateAll } from './helpers.js';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
 const USDC_WALLET = '0x1111111111111111111111111111111111111111';
-const USDC_HOT = '0x2222222222222222222222222222222222222222';
-const BTC_TXID = 'a'.repeat(64);
-const BASE_TXID = `0x${'b'.repeat(64)}`;
 
 class FakeLnbits {
   private counter = 0;
@@ -40,24 +33,6 @@ class FakeLnbits {
   }
 }
 
-function fakePayoutAdapter(): UsdcPayoutAdapter {
-  return {
-    getAddress: () => '0x2222222222222222222222222222222222222222' as Address,
-    async getGasBalanceWei() {
-      return 1_000_000_000_000_000_000n;
-    },
-    async transfer() {
-      return { kind: 'sent', txid: `0x${'b'.repeat(64)}` };
-    },
-    async getConfirmation() {
-      return { confirmed: true, reverted: false, blockNumber: 1n };
-    },
-    describe() {
-      return 'fake';
-    },
-  };
-}
-
 maybeDescribe('phase 6 API (integration)', () => {
   let db: DbClient;
   let repos: Repositories;
@@ -66,8 +41,6 @@ maybeDescribe('phase 6 API (integration)', () => {
   let wallets: MerchantWalletService;
   let paymentIntents: PaymentIntentService;
   let clients: ClientService;
-  let conversions: ConversionService;
-  let payouts: PayoutService;
   let fx: FxService;
   let metrics: MetricsService;
 
@@ -78,11 +51,8 @@ maybeDescribe('phase 6 API (integration)', () => {
     }
     await truncateAll(db);
     config = testConfig({
-      CONVERSION_ENABLED: 'true',
-      PAYOUT_ENABLED: 'true',
-      PAYOUT_NEW_WALLET_CARE_SECONDS: '0',
     });
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     await repos.initHdWalletState({
       gapLimit: config.btc.gapLimit,
       xpubFingerprint: xpub.fingerprint,
@@ -91,9 +61,8 @@ maybeDescribe('phase 6 API (integration)', () => {
     wallets = new MerchantWalletService(db.db);
     paymentIntents = new PaymentIntentService({
       repos,
-      lnbits: new FakeLnbits() as unknown as LnbitsClient,
+      lnbitsFor: () => new FakeLnbits() as unknown as LnbitsClient,
       config,
-      xpub,
       logger: silentLogger,
     });
     clients = new ClientService({ repos, config, logger: silentLogger });
@@ -102,35 +71,6 @@ maybeDescribe('phase 6 API (integration)', () => {
       new FixedFxPriceProvider({ BRL: 50_000_000n, USD: 1_000_000n }),
     );
     metrics = new MetricsService({ repos, ledger });
-    conversions = new ConversionService({
-      repos,
-      ledger,
-      swap: {
-        async quote() {
-          throw new Error('nao usado');
-        },
-        async getStatus() {
-          throw new Error('nao usado');
-        },
-      },
-      sender: {
-        async send() {
-          return { kind: 'sent' as const, txid: BTC_TXID };
-        },
-        describe() {
-          return 'fake';
-        },
-      },
-      config,
-      logger: silentLogger,
-    });
-    payouts = new PayoutService({
-      repos,
-      ledger,
-      adapter: fakePayoutAdapter(),
-      config,
-      logger: silentLogger,
-    });
   });
 
   afterAll(async () => {
@@ -152,8 +92,6 @@ maybeDescribe('phase 6 API (integration)', () => {
         ledger,
         metrics,
         wallets,
-        conversions,
-        payouts,
       },
     });
   }
@@ -217,9 +155,17 @@ maybeDescribe('phase 6 API (integration)', () => {
     });
   }
 
-  it('expõe carteiras, saldo, conversões, payouts e taxas', async () => {
+  it('expõe carteiras, saldo, conversões, historico de payouts e taxas', async () => {
     const app = buildTestApp();
-    const created = await createApiClient(app);
+    const created = await createApiClient(app, [
+      'payments:write',
+      'payments:read',
+      'wallets:read',
+      'wallets:write',
+      'balances:read',
+      'conversions:read',
+      'payouts:read',
+    ]);
     const wallet = await app.inject({
       method: 'POST',
       url: '/v1/wallets',
@@ -291,35 +237,24 @@ maybeDescribe('phase 6 API (integration)', () => {
     await repos.updateIntentSettlement({
       intentId,
       from: ['nao_iniciado'],
-      to: 'convertido',
+      to: 'pago',
       conversionOrderId: order.id,
     });
+    // Entrega direta: o ledger so registra o BTC; o USDC foi da THORChain
+    // para a carteira do lojista sem passar pela plataforma.
     await ledger.postTransaction({
-      kind: 'conversion_completed',
-      referenceType: 'conversion_order',
-      referenceId: order.id,
+      kind: 'payment_received',
+      referenceType: 'payment_intent',
+      referenceId: intentId,
       entries: [
+        { accountCode: PLATFORM_ACCOUNTS.treasuryBtc, asset: 'BTC', debitMinor: 100_000n },
         {
-          accountCode: PLATFORM_ACCOUNTS.treasuryUsdc,
-          asset: 'USDC',
-          debitMinor: 50_000_000n,
-        },
-        {
-          accountCode: merchantAccountCode(created.id, 'usdc_available'),
+          accountCode: merchantAccountCode(created.id, 'btc_receivable'),
           merchantId: created.id,
-          asset: 'USDC',
-          creditMinor: 50_000_000n,
+          asset: 'BTC',
+          creditMinor: 100_000n,
         },
       ],
-    });
-    const payout = await repos.createPayout({
-      merchantId: created.id,
-      walletId: wallet.json().id,
-      amountMinor: 50_000_000n,
-      idempotencyKey: `conversion:${order.id}`,
-      conversionId: order.id,
-      destinationAddress: USDC_WALLET,
-      status: 'pendente',
     });
 
     const balances = await get(app, created, '/v1/balances');
@@ -327,8 +262,8 @@ maybeDescribe('phase 6 API (integration)', () => {
     expect(
       balances.json().balances.some(
         (item: { account_code: string; balance: string }) =>
-          item.account_code === merchantAccountCode(created.id, 'usdc_available') &&
-          item.balance === '50000000',
+          item.account_code === merchantAccountCode(created.id, 'btc_receivable') &&
+          item.balance === '100000',
       ),
     ).toBe(true);
 
@@ -346,11 +281,7 @@ maybeDescribe('phase 6 API (integration)', () => {
 
     const payoutsResponse = await get(app, created, '/v1/payouts');
     expect(payoutsResponse.statusCode).toBe(200);
-    expect(payoutsResponse.json().data[0].id).toBe(payout.id);
-
-    const payoutResponse = await get(app, created, `/v1/payouts/${payout.id}`);
-    expect(payoutResponse.statusCode).toBe(200);
-    expect(payoutResponse.json().status).toBe('pendente');
+    expect(payoutsResponse.json().data).toHaveLength(0);
 
     const walletsResponse = await get(app, created, '/v1/wallets');
     expect(walletsResponse.statusCode).toBe(200);
@@ -375,14 +306,13 @@ maybeDescribe('phase 6 API (integration)', () => {
     expect(reconcile.statusCode).toBe(200);
     expect(reconcile.json().ok).toBe(true);
 
-    const approved = await app.inject({
+    const approve = await app.inject({
       method: 'POST',
-      url: `/admin/api/payouts/${payout.id}/approve`,
+      url: `/admin/api/payouts/${randomUUID()}/approve`,
       headers: { authorization: `Bearer ${config.server.adminToken}` },
       payload: {},
     });
-    expect(approved.statusCode).toBe(200);
-    expect(approved.json().status).toBe('aprovado');
+    expect(approve.statusCode).toBe(404);
 
     await app.close();
   });

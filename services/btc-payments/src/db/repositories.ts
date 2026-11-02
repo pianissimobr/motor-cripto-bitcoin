@@ -121,6 +121,7 @@ export type SetLightningInvoiceInput = {
   invoice: string;
   lightningExpiresAt: Date;
   amountSats: bigint;
+  lightningWalletId?: string | null;
 };
 
 export type MarkIntentPaidInput = {
@@ -380,6 +381,8 @@ export type Repositories = {
     merchantId: string;
     role: MerchantMember['role'];
   }) => Promise<MerchantMember>;
+  /** E-mails dos membros ativos de uma loja (para avisos de seguranca). */
+  listMerchantMemberEmails: (merchantId: string) => Promise<string[]>;
   findMerchantMember: (
     userId: string,
     merchantId: string,
@@ -518,6 +521,11 @@ export type Repositories = {
   markHdAddressUsed: (id: string) => Promise<void>;
 
   // Carteiras de liquidacao / treasury
+  /** Uso do xpub do lojista: proximo indice e o maior indice que ja recebeu deposito. */
+  getWalletGapUsage: (
+    walletId: string,
+  ) => Promise<{ nextIndex: number; lastUsedIndex: number } | null>;
+  findActiveLightningWalletForClient: (clientId: string) => Promise<MerchantWallet | null>;
   findActiveUsdcSettlementWalletForClient: (
     clientId: string,
   ) => Promise<MerchantWallet | null>;
@@ -571,6 +579,10 @@ export type Repositories = {
   ) => Promise<ConversionLeg>;
   insertProviderEvent: (input: InsertProviderEventInput) => Promise<boolean>;
   hasProviderEvent: (provider: string, externalId: string) => Promise<boolean>;
+  findProviderEvent: (
+    provider: string,
+    externalId: string,
+  ) => Promise<{ eventType: string; payload: Record<string, unknown> } | null>;
   listUnprocessedProviderEvents: (
     provider: string,
     limit: number,
@@ -718,7 +730,7 @@ export type Repositories = {
   }) => Promise<void>;
   sumOnchainForIntent: (
     intentId: string,
-    statuses?: Array<'mempool' | 'confirmado'>,
+    statuses?: Array<'mempool' | 'confirmado' | 'gasto'>,
   ) => Promise<bigint>;
 
   // Sweep
@@ -1722,6 +1734,7 @@ export function createRepositories(db: Db): Repositories {
             lightningPaymentHash: input.paymentHash,
             lightningInvoice: input.invoice,
             lightningExpiresAt: input.lightningExpiresAt,
+            lightningWalletId: input.lightningWalletId ?? null,
             status: 'pendente',
             version: sql`${paymentIntents.version} + 1`,
             updatedAt: new Date(),
@@ -2334,6 +2347,44 @@ export function createRepositories(db: Db): Repositories {
       return rows[0] ?? null;
     },
 
+    async listMerchantMemberEmails(merchantId) {
+      const rows = await db
+        .select({ email: users.email })
+        .from(merchantMembers)
+        .innerJoin(users, eq(users.id, merchantMembers.userId))
+        .where(eq(merchantMembers.merchantId, merchantId));
+      return rows.map((row) => row.email);
+    },
+
+    async getWalletGapUsage(walletId) {
+      const rows = await db.execute<{ next_index: number; last_used: number }>(sql`
+        select s.next_receive_index::int as next_index,
+               coalesce(max(a.index) filter (where a.status in ('usada', 'sweepada')), -1)::int as last_used
+          from merchant_wallet_state s
+          left join hd_addresses a on a.merchant_wallet_id = s.wallet_id
+         where s.wallet_id = ${walletId}
+         group by s.next_receive_index
+      `);
+      const row = rows[0];
+      return row ? { nextIndex: row.next_index, lastUsedIndex: row.last_used } : null;
+    },
+
+    async findActiveLightningWalletForClient(clientId) {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(
+          and(
+            eq(merchantWallets.merchantId, clientId),
+            eq(merchantWallets.kind, 'lightning_lnbits'),
+            eq(merchantWallets.status, 'ativo'),
+          ),
+        )
+        .orderBy(desc(merchantWallets.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
     async findActiveUsdcSettlementWalletForClient(clientId) {
       const rows = await db
         .select()
@@ -2822,6 +2873,20 @@ export function createRepositories(db: Db): Repositories {
         })
         .returning({ id: providerEvents.id });
       return rows.length > 0;
+    },
+
+    async findProviderEvent(provider, externalId) {
+      const rows = await db
+        .select({ eventType: providerEvents.eventType, payload: providerEvents.payload })
+        .from(providerEvents)
+        .where(
+          and(
+            eq(providerEvents.provider, provider),
+            eq(providerEvents.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     async hasProviderEvent(provider, externalId) {

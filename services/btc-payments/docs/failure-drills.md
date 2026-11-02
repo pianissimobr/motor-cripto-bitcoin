@@ -23,18 +23,13 @@ Crie um cliente com `webhook_url` invalida, pague uma intent e confira
 `webhook_events.attempts`, `next_attempt_at` e `last_error`. Reprocesse com
 `POST /admin/api/webhooks/:id/replay`.
 
-## 4. Payout revertido
-
-Use uma carteira/signer descartavel e force um revert on-chain. Confirme
-`payout.status=falhou`, o evento `payment_intent.payout_failed` e o estorno no
-ledger.
-
 ## 5. Divergencia no ledger
 
 Em banco de teste, remova uma entry e confirme que
 `GET /admin/api/reconciliation` retorna `ok=false` e que o worker alerta.
 
-## 6. Restart no meio do sweep
+## 6. Lojista gasta o BTC recebido
 
-Reinicie API/worker durante um sweep e confirme idempotencia: sem sweep
-duplicado, sem ledger duplicado e status consistente.
+Pague uma cobranca on-chain, espere `pago` e gaste o UTXO pela carteira do
+lojista. Confirme que a cobranca continua `pago`, a saida vira `gasto` e nenhum
+`payment_intent.reorged` e enviado.

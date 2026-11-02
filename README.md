@@ -1,42 +1,51 @@
 # Motor Cripto
 
-Pagamentos em **Bitcoin** (Lightning e on-chain) e **PIX**, com liquidação em
-**USDC na Base** para a carteira que o lojista cadastra.
+Cobranças em **Bitcoin** (Lightning e on-chain) e **PIX**, com o dinheiro
+caindo **direto nas carteiras do lojista**. O motor não guarda, não varre e não
+converte nada: ele cria a cobrança, mostra o QR, prova o pagamento na fonte e
+avisa a loja por webhook.
 
 O produto é o serviço em [`services/btc-payments`](services/btc-payments): uma
-API HTTP, um worker e um portal do lojista. Ele cria a cobrança, mostra o QR,
-prova o pagamento na fonte (LNbits, Esplora ou Lunium) e avisa a loja por
-webhook. O motor Polygon/Ramp que está em `legacy/` é **legado** e não faz
-parte do contrato atual.
+API HTTP, um worker e um portal do lojista. O motor Polygon/Ramp em `legacy/` é
+**legado** e não faz parte do contrato atual.
 
-## O que ele faz
+## As três carteiras do lojista
 
-| Trilho | Entrada | Como prova | Liquidação |
-| --- | --- | --- | --- |
-| Lightning | invoice no LNbits (`lnbc...`) | `GET /api/v1/payments/{hash}` no LNbits | conversão THORChain → USDC na Base |
-| On-chain BTC | endereço BIP84 derivado do xpub + Esplora | UTXOs/confirmações no Esplora; sweep opcional | conversão THORChain → USDC na Base |
-| PIX | cobrança na Lunium (`qr_copypaste`) | webhook + consulta canônica na Lunium | treasury USDC → payout na Base |
+Cada loja cadastra no portal (ou em `POST /v1/wallets`) as carteiras dos
+trilhos que quer aceitar:
 
-- **Portal do lojista**: `/login`, `/signup`, `/portal`, carteiras, relatórios e assinaturas.
-- **Checkout público**: `/pay/:id` e o snippet `/checkout.js`.
-- **Settlement**: o dinheiro cai na carteira `usdc_settlement` (`0x...` na Base) que a loja cadastra. O motor **não guarda** os dólares.
+| Trilho | Carteira do lojista | Como o motor prova o pagamento |
+| --- | --- | --- |
+| Lightning | wallet LNbits dele (URL + Invoice key) | consulta a invoice na própria wallet dele |
+| On-chain BTC | xpub BIP84 dele: cada cobrança usa um endereço derivado | UTXOs e confirmações no Esplora |
+| PIX | endereço USDC (0x) na Base | status canônico na Lunium + conferência on-chain |
+
+- A cobrança Bitcoin oferece só os trilhos que a loja cadastrou. Sem carteira
+  Lightning nem xpub, a resposta é `409 bitcoin_wallet_required`.
+- O PIX exige o endereço USDC: a Lunium entrega o dólar digital direto nele.
+  Sem ele, `409 settlement_wallet_required`.
+- A Invoice key do LNbits é guardada cifrada (AES-256-GCM) e nunca volta nas
+  respostas. Use a Invoice/read key, nunca a Admin key.
+
+## O que mais tem
+
+- **Portal do lojista**: `/login`, `/signup`, `/portal`, carteiras, webhook,
+  checkouts, relatórios e assinaturas.
+- **Checkout público**: `/pay/:id` e o snippet `/checkout.js`, que funciona em
+  qualquer domínio.
 - **API**: `/v1/*` com API key + HMAC; `/admin/api/*` com `ADMIN_TOKEN`.
-- **Worker**: conciliação Lightning, expiração, on-chain, webhooks, sweep, conversão, payout, PIX, assinaturas e reconciliação.
+- **Worker**: confere Lightning, expira cobranças, observa a chain, concilia o
+  PIX, gera ciclos de assinatura e entrega webhooks.
 
 ## Arquitetura
 
 ```text
 loja/API ──HMAC──► btc-payments (4580) ──► Postgres
                          │
-                         ├──► LNbits ──► LND ──► rede Lightning
-                         ├──► Esplora (on-chain BTC)
-                         └──► Lunium (PIX)
-                         │
-worker ◄─────────────────┘
-   ├── prova o pagamento na fonte
-   ├── converte BTC → USDC (THORChain)
-   ├── payout USDC na Base (PAYOUT_ENABLED)
-   └── webhook assinado para a loja
+                         ├──► LNbits do lojista (invoice e prova Lightning)
+                         ├──► Esplora (prova on-chain nos endereços do xpub do lojista)
+                         └──► Lunium (PIX → USDC na carteira do lojista)
+worker ── prova na fonte ── webhook assinado para a loja
 ```
 
 ## Começar (local)
@@ -47,42 +56,28 @@ python3 start.py          # escolhe Lightning/on-chain/PIX e cria/valida o .env
 docker compose up -d
 npm install
 npm run migrate
-npm run dev
+npm run dev               # API em :4580
+npm run worker            # outro terminal
 ```
 
 `python3 start.py --up` já sobe o compose e aplica as migrations.
-
-Em outro terminal:
-
-```bash
-npm run worker
-```
-
-- `http://localhost:4580/health`
-- `http://localhost:4580/ready`
-- `http://localhost:4580/portal`
-
-Para o sweep, `npm run wallet:init` mostra o mnemonic uma vez e o `BTC_XPUB`.
-O `xprv` fica só no keystore do worker.
+Depois abra `http://localhost:4580/portal`, crie a conta e cadastre as
+carteiras da loja.
 
 ## Produção
-
-O deploy de produção está documentado em
-[`services/btc-payments/docs/deployment.md`](services/btc-payments/docs/deployment.md)
-e no [`docker-compose.prod.yml`](services/btc-payments/docker-compose.prod.yml):
 
 ```bash
 cd services/btc-payments
 cp .env.production.example .env.production
-# edite DOMAIN, POSTGRES_*, ADMIN_TOKEN, DATA_ENCRYPTION_KEY, BTC_XPUB,
-# COLD_WALLET_ADDRESS, LNBITS_*, ESPLORA_URL, CONVERSION_*, PAYOUT_* e SIGNER_*
+# edite DOMAIN, POSTGRES_*, ADMIN_TOKEN, DATA_ENCRYPTION_KEY, METRICS_TOKEN,
+# LNBITS_WEBHOOK_TOKEN, ESPLORA_URL e, se usar PIX, LUNIUM_*
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml up -d --build
 ```
 
-O compose de produção usa Caddy para 80/443. Em host compartilhado que já tem
-nginx nessas portas, mantenha o nginx como borda e faça proxy para a API em
-`4580` (ver [runbook](services/btc-payments/docs/runbook.md)).
+O compose de produção usa Caddy para 80/443. Detalhes em
+[`deployment.md`](services/btc-payments/docs/deployment.md) e no
+[runbook](services/btc-payments/docs/runbook.md).
 
 ## Repositório
 
@@ -93,24 +88,23 @@ motor-cripto-bitcoin/
 └── legacy/                  # motor Polygon/Ramp arquivado (não é o contrato atual)
 ```
 
-O motor **Polygon/Ramp** (`legacy/src/`, `legacy/db/`, `legacy/web/admin/`,
-`legacy/start.py`, `legacy/docker-compose.yml`, `legacy/PLANO.md`,
-`legacy/projetoo.md`, `legacy/ENDURECIMENTO.md`) é legado: não implementa
-`/v1/payment-intents` nem o fluxo atual.
-
 ## Documentação
 
 - [Serviço btc-payments](services/btc-payments/README.md) — subir, carteiras, API e worker.
 - [Manual do lojista](services/btc-payments/docs/manual.md) — integrar e operar.
-- [Contrato HTTP](docs/API.md) — corpos, códigos e autenticação.
-- [Mapa do repositório](docs/guia.md) — como o dinheiro anda no código.
+- [PIX → USDC](services/btc-payments/docs/pix.md), [on-chain](services/btc-payments/docs/onchain.md), [checkout](services/btc-payments/docs/checkout.md) e [webhooks](services/btc-payments/docs/webhooks.md).
 - [Deployment](services/btc-payments/docs/deployment.md) e [runbook](services/btc-payments/docs/runbook.md).
-- [PIX → USDC](services/btc-payments/docs/pix.md), [checkout](services/btc-payments/docs/checkout.md) e [webhooks](services/btc-payments/docs/webhooks.md).
-- Livro HTML: [docs/index.html](docs/index.html).
+- `docs/API.md`, `docs/guia.md` e o livro `docs/index.html` descrevem versões
+  anteriores (com sweep, carteira fria e conversão) e ficam como referência
+  histórica.
 
 ## Segurança
 
-- A API não guarda seed nem `xprv`. O `xprv` do sweep fica no keystore do worker ou num signer remoto.
-- Segredos da loja são cifrados com AES-256-GCM.
-- Webhooks de entrada nunca são prova: o motor sempre confere na fonte (LNbits ou Lunium).
-- `ADMIN_TOKEN`, `METRICS_TOKEN`, `DATA_ENCRYPTION_KEY` e chaves de payout ficam só no `.env`/secret manager.
+- A plataforma não tem seed, xprv nem chave de carteira: não há fundos sob a
+  guarda dela. O xpub do lojista só deriva endereços.
+- Segredos da loja (request secret, webhook secret, Invoice key do LNbits) são
+  cifrados com AES-256-GCM.
+- Webhooks de entrada nunca são prova: o motor sempre confere na fonte.
+- `ADMIN_TOKEN`, `METRICS_TOKEN` e `DATA_ENCRYPTION_KEY` ficam só no
+  `.env`/secret manager. Perder a `DATA_ENCRYPTION_KEY` invalida as Invoice keys
+  e os segredos gravados.

@@ -1,39 +1,32 @@
 # Runbook operacional
 
+O motor não guarda dinheiro: Lightning cai na wallet LNbits de cada lojista,
+on-chain nos endereços do xpub dele e PIX vira USDC na carteira Base dele. A
+operação cuida de cobranças, provas de pagamento e webhooks, não de fundos.
+
 ## Deploy inicial
 
-1. Aponte o DNS do `DOMAIN` para o servidor.
-2. Abra 80/443 no firewall.
-3. Gere a carteira em uma maquina confiavel:
-
-```bash
-cd services/btc-payments
-npm ci
-npm run wallet:init
-```
-
-4. Guarde o mnemonic offline. Copie `BTC_XPUB` e, se `SIGNER_MODE=local`, o
-   `data/keystore.json` para o servidor (`chown 1000:1000`, modo 0600).
-5. Crie `.env.production` a partir de `.env.production.example` e preencha:
-   - `DOMAIN`, `ADMIN_TOKEN`, `DATA_ENCRYPTION_KEY`;
+1. Aponte o DNS do `DOMAIN` para o servidor e abra 80/443 no firewall.
+2. Crie `.env.production` a partir de `.env.production.example` e preencha:
+   - `DOMAIN`, `ADMIN_TOKEN`, `DATA_ENCRYPTION_KEY`, `METRICS_TOKEN`;
    - `POSTGRES_*` e `DATABASE_URL`;
-   - `BTC_XPUB`, `COLD_WALLET_ADDRESS`;
-   - `LNBITS_*` e `ESPLORA_URL`;
-   - `SIGNER_MODE` (`remote` recomendado).
-6. Suba:
+   - `LNBITS_WEBHOOK_TOKEN` e `LNBITS_WEBHOOK_BASE_URL` (URL pública HTTPS);
+   - `ESPLORA_URL` (Esplora/electrs self-hosted);
+   - `LUNIUM_*`, se o PIX estiver ligado.
+3. Suba:
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-7. Verifique:
+4. Verifique:
 
 ```bash
 curl https://$DOMAIN/health
 curl https://$DOMAIN/ready
 ```
 
-8. Crie o primeiro cliente:
+5. Crie o primeiro cliente (ou deixe o lojista se cadastrar em `/signup`):
 
 ```bash
 curl -X POST https://$DOMAIN/admin/api/clients \
@@ -42,109 +35,65 @@ curl -X POST https://$DOMAIN/admin/api/clients \
   -d '{"name":"Loja","webhook_url":"https://loja.example.com/webhooks/btc"}'
 ```
 
+6. O lojista cadastra as carteiras no portal: wallet LNbits (URL + Invoice
+   key), xpub on-chain e endereço USDC na Base para o PIX.
+
 ## Monitoramento
 
-- `GET /admin/api/status` (Bearer `ADMIN_TOKEN`):
-  - contagens por status de intents, webhooks e sweeps;
-  - `dueWebhooks`, `activeSweeps`;
-  - saude do LNbits/Esplora;
-  - fingerprint do xpub e modo do signer.
+- `GET /admin/api/status` (Bearer `ADMIN_TOKEN`): contagens por status de
+  cobranças e webhooks, `dueWebhooks`, saúde do Esplora, rede e trilhos ligados.
 - Logs do worker: `docker compose -f docker-compose.prod.yml logs -f worker`.
-- `GET /metrics` (Bearer `METRICS_TOKEN` se configurado): contagens de
-  intents, webhooks, sweeps, conversoes, payouts e totais do ledger.
-- PIX: `GET /admin/api/pix-charges`; para forcar sincronizacao use
-  `POST /admin/api/pix-charges/:id/sync`. Em timeout de criacao a cobranca fica
-  `incerto`; nunca crie outra cobranca com o mesmo `external_id`.
-- Alertas opcionais: configure `ALERT_WEBHOOK_URL`; o worker envia:
-  - job falhou;
-  - sweep manual/falhou;
-  - pagamento duplicado;
-  - reorg;
-  - conversao manual/falhou ou payout retido/falhou;
-  - cobranca PIX incerta/manual;
-  - ledger desbalanceado na reconciliacao.
-- Reconciliacao diaria: job `reconciliation`, com historico em
-  `reconciliation_runs` e consulta em `GET /admin/api/reconciliation/runs`.
-- Guia de metricas: [observability.md](observability.md).
+- `GET /metrics` (Bearer `METRICS_TOKEN`): contagens de cobranças, PIX e
+  webhooks. Guia em [observability.md](observability.md).
+- PIX: `GET /admin/api/pix-charges`; para forçar sincronização use
+  `POST /admin/api/pix-charges/:id/sync`. Em timeout de criação a cobrança fica
+  `incerto`; nunca crie outra cobrança com o mesmo `external_id`.
+- Alertas opcionais em `ALERT_WEBHOOK_URL`: job falhou, pagamento duplicado,
+  reorg, valor Lightning divergente, cobrança PIX incerta/manual.
 
-Consultas uteis:
+Consultas úteis:
 
 ```sql
 select status, count(*) from payment_intents group by status;
 select status, count(*) from webhook_events group by status;
-select status, count(*) from onchain_sweeps group by status;
 select status, count(*) from pix_charges group by status;
-select id, external_id, status, settlement_status, provider_charge_id
-  from pix_charges where status in ('incerto','manual') order by updated_at limit 20;
 select id, external_id, status, expires_at from payment_intents
  where status = 'pendente' order by expires_at limit 20;
 select id, event_type, attempts, next_attempt_at, last_error
   from webhook_events where status = 'pendente' order by next_attempt_at limit 20;
 ```
 
-## Backup
+## Backup e restore
 
 ```bash
 cd services/btc-payments
-BACKUP_KEYSTORE=1 npm run backup
-```
-
-O backup gera `.sql.gz` + `.sha256` e valida o gzip. Para testar em banco
-descartavel:
-
-```bash
+npm run backup
 RESTORE_DATABASE_URL=postgres://btc:btc_dev_password@localhost:5434/btc_payments_restore \
   npm run backup:verify -- backups/btc-payments-....sql.gz
-```
-
-Em desenvolvimento, use o compose local:
-
-```bash
-COMPOSE_FILE=docker-compose.yml POSTGRES_USER=btc POSTGRES_DB=btc_payments \
-  npm run backup
-```
-
-Guarde fora do servidor:
-
-- dump do Postgres;
-- `data/keystore.json` (se local);
-- `BTC_XPUB`;
-- mnemonic (offline);
-- endereco da carteira fria.
-
-## Restore
-
-1. Pare API e worker.
-2. Restaure o banco:
-
-```bash
 npm run restore -- backups/btc-payments-....sql.gz
 ```
 
-3. Rode migrations pendentes:
+Guarde fora do servidor: o dump do Postgres e a `DATA_ENCRYPTION_KEY` (ou o
+`KEYRING`). Sem a chave, as Invoice keys do LNbits e os segredos das lojas
+gravados no banco não abrem. Não há seed, keystore nem carteira da plataforma.
 
-```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml run --rm migrate
-```
-
-4. Restaure o keystore e o `BTC_XPUB` originais. O boot verifica o fingerprint
-   do xpub; se nao bater, a API/worker recusam.
-5. Suba API e worker e confira `/ready` e `/admin/api/status`.
+Restore: pare API e worker, restaure o banco, rode as migrations pendentes
+(`docker compose ... run --rm migrate`) e suba de novo.
 
 ## Incidentes
 
-### LNbits indisponivel
+### Wallet LNbits de um lojista fora do ar
 
-- `/ready` fica 503.
-- Criacao de cobranca retorna 502/falha_criacao.
-- Webhooks e conciliacao voltam quando o LNbits retornar.
-- Nao marque intents como pagas manualmente sem confirmar no LNbits.
+- A criação de cobrança desse lojista responde 502 e a cobrança fica
+  `falha_criacao` (use outro `external_id`). As outras lojas não são afetadas.
+- Invoices já emitidas são conferidas pelo `lightning-reconcile` quando a wallet
+  voltar. Não marque nada como pago sem a confirmação dela.
+- Se o lojista trocou a Invoice key, ele recadastra a carteira no portal.
 
-### Esplora indisponivel
+### Esplora indisponível
 
-- O job `onchain-watch` e `sweep` falham e geram alerta.
-- Pagamentos Lightning continuam.
-- Nao reinicie o banco para "resolver"; apenas aguarde/ajuste o Esplora.
+- `/ready` fica 503 e `onchain-watch` falha e alerta. Lightning e PIX continuam.
+- Não reinicie o banco para "resolver"; ajuste o Esplora.
 
 ### Webhook atrasado ou falhando
 
@@ -156,57 +105,37 @@ curl -X POST https://$DOMAIN/admin/api/webhooks/<id>/replay \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-### Sweep manual/falhou
-
-- Veja `GET /admin/api/sweeps`.
-- Se a tx nao existe mais na rede:
-
-```bash
-curl -X POST https://$DOMAIN/admin/api/sweeps/<id>/retry \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-- Se a tx esta presa, o RBF automatico tenta ate `SWEEP_MAX_ATTEMPTS`.
-- Nunca reenvie um sweep manualmente se a tx antiga ainda estiver na mempool.
-
 ### Pagamento duplicado / reorg
 
-- O status fica registrado e um alerta e enviado.
-- Pagamento duplicado: revisar estorno manual; nao creditar duas vezes.
-- Reorg: aguardar reconfirmacao; o watcher reavalia.
+- O status fica registrado e um alerta é enviado.
+- Pagamento duplicado (Lightning + on-chain): o dinheiro está nas carteiras do
+  lojista; o estorno ao cliente é com ele.
+- Reorg: aguarde reconfirmação; o watcher reavalia. O lojista gastar o BTC da
+  própria carteira não é reorg: o depósito continua confirmado.
 
-### Rotacao de chaves
+### Rotação de chaves
 
-- API key/request secret: criar novo cliente/rotacionar no admin (TODO de
-  rotacao automatica; por enquanto crie um cliente novo e desative o antigo).
+- API key/request secret: o lojista rotaciona no portal
+  (`.../api-key/rotate`).
 - `DATA_ENCRYPTION_KEY`: use `KEYRING` com a chave antiga e a nova;
-  `DATA_ACTIVE_KID` aponta para a nova. Re-cifre os registros antes de remover
-  a antiga.
-- Keystore: gerar nova carteira exige migrar o `BTC_XPUB` e mover os fundos
-  antes de trocar; o fingerprint do banco impede troca silenciosa.
+  `DATA_ACTIVE_KID` aponta para a nova. Re-cifre os registros antes de remover a
+  antiga.
 
 ## Drills de falha
-
-Rode apenas em ambiente descartavel:
 
 ```bash
 npm run drills plan
 ```
 
-Cenarios cobertos: LNbits down, Esplora down, webhook falhando, payout revertido,
-divergencia de ledger e restart no meio do sweep. Detalhes em
-[failure-drills.md](failure-drills.md).
+Detalhes em [failure-drills.md](failure-drills.md).
 
 ## Smoke em regtest
 
-Validado em 2026-10-29 com Nigiri (bitcoind + electrs + Chopsticks/Esplora):
-pagamento on-chain confirmado, sweep para carteira fria, pagamento tardio depois
-da expiracao e reorg (`confirmado -> mempool -> confirmado`).
-
-1. Suba `bitcoind`, Esplora/Electrum e LNbits FakeWallet.
-2. `npm run migrate && npm run client:create` (ou admin).
-3. `npm run dev` e `npm run worker`.
-4. `npm run intent:create`.
-5. Pague a invoice no LNbits FakeWallet.
-6. Confira `status=pago`, o webhook do cliente e o sweep para a carteira fria.
-7. Teste expiracao, pagamento tardio e reorg com `bitcoin-cli invalidateblock`.
+1. Suba `bitcoind`, Esplora/Electrum e o LNbits FakeWallet (`docker compose up -d`).
+2. `npm run migrate`, `npm run dev` e `npm run worker`.
+3. No portal: crie a conta, cadastre a wallet LNbits (FakeWallet, Invoice key)
+   e um tpub de teste.
+4. Gere um checkout, pague a invoice no LNbits e confira `status=pago` e o
+   webhook do cliente.
+5. Teste on-chain, expiração, pagamento tardio e reorg com
+   `bitcoin-cli invalidateblock`.

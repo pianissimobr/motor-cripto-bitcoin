@@ -29,8 +29,8 @@ ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 
 ENGINES = {
-    "lightning": "Lightning (LNbits)",
-    "onchain": "On-chain Bitcoin (xpub + Esplora)",
+    "lightning": "Lightning (wallet LNbits de cada lojista)",
+    "onchain": "On-chain Bitcoin (xpub de cada lojista + Esplora)",
     "pix": "PIX (Lunium)",
 }
 
@@ -121,27 +121,19 @@ def validate(engines: list[str], env: dict[str, str]) -> None:
         missing += require_values(
             "lightning",
             env,
-            ["LNBITS_URL", "LNBITS_API_KEY", "LNBITS_WEBHOOK_TOKEN"],
+            ["LNBITS_WEBHOOK_TOKEN"],
         )
     if "onchain" in engines:
-        missing += require_values("onchain", env, ["BTC_XPUB", "ESPLORA_URL"])
-        if env.get("SWEEP_ENABLED", "true").strip().lower() not in ("false", "0", "no"):
-            missing += require_values(
-                "onchain",
-                env,
-                ["COLD_WALLET_ADDRESS"],
-            ) if not env.get("TREASURY_BTC_ADDRESS", "").strip() else []
+        missing += require_values("onchain", env, ["ESPLORA_URL"])
+
     if "pix" in engines:
         missing += require_values(
             "pix",
             env,
             ["LUNIUM_API_KEY", "LUNIUM_WEBHOOK_SECRET"],
         )
-        if not (
-            env.get("TREASURY_USDC_ADDRESS", "").strip()
-            or env.get("PAYOUT_HOT_ADDRESS", "").strip()
-        ):
-            missing.append("pix: TREASURY_USDC_ADDRESS ou PAYOUT_HOT_ADDRESS")
+        # O USDC do PIX vai direto para a carteira usdc_settlement de cada
+        # lojista (cadastrada no portal); nao ha carteira da plataforma.
     if missing:
         say("\nFaltam variáveis para os motores escolhidos:")
         for item in missing:
@@ -187,8 +179,9 @@ def main() -> None:
 
     say("\nMotores habilitados: " + ", ".join(engines))
     say(f"Flags gravados em {ENV_PATH}.")
-    say("O checkout /pay/:id mostra apenas os trilhos Bitcoin habilitados")
-    say("(Lightning e/ou on-chain). O PIX continua no fluxo próprio da Lunium.")
+    say("Cada lojista cadastra as próprias carteiras no portal: wallet LNbits")
+    say("(Lightning), xpub (on-chain) e endereço USDC na Base (PIX). O dinheiro")
+    say("vai direto para elas; o motor não guarda nem converte nada.")
 
     if args.up:
         maybe_up()

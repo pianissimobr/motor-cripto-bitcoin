@@ -79,3 +79,42 @@ export class ServiceUnavailableError extends AppError {
     this.name = 'ServiceUnavailableError';
   }
 }
+
+/**
+ * A loja precisa de uma carteira USDC (Base) cadastrada antes de cobrar:
+ * e nela que o dolar digital e entregue.
+ */
+export class SettlementWalletRequiredError extends AppError {
+  constructor() {
+    super(
+      'cadastre uma carteira usdc_settlement (endereco 0x na Base) antes de criar cobrancas',
+      { code: 'settlement_wallet_required', statusCode: 409 },
+    );
+  }
+}
+
+/**
+ * Cobranca em Bitcoin sem carteira do lojista para receber: ele precisa
+ * cadastrar a wallet LNbits (Lightning) e/ou o xpub (on-chain).
+ */
+export class BitcoinWalletRequiredError extends AppError {
+  constructor() {
+    super(
+      'cadastre uma carteira Lightning (LNbits) ou um xpub BTC antes de criar cobrancas em Bitcoin',
+      { code: 'bitcoin_wallet_required', statusCode: 409 },
+    );
+  }
+}
+
+/**
+ * O xpub do lojista chegou ao gap limit: ha enderecos seguidos demais sem
+ * deposito e a carteira dele deixaria de enxergar os proximos.
+ */
+export class GapLimitReachedError extends AppError {
+  constructor(gapLimit: number) {
+    super(
+      `o xpub da loja tem ${gapLimit} enderecos seguidos sem uso (gap limit). Aumente o gap limit na sua carteira e no motor, ou cadastre um novo xpub`,
+      { code: 'gap_limit_reached', statusCode: 409 },
+    );
+  }
+}

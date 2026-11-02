@@ -8,9 +8,10 @@ import { createDb, type DbClient } from '../src/db/client.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
 import { silentLogger } from '../src/logger.js';
 import { buildApp } from '../src/http/app.js';
+import { lnbitsWalletWebhookToken } from '../src/domain/bip21.js';
 import { ClientService } from '../src/services/client-service.js';
 import { PaymentIntentService } from '../src/services/payment-intent-service.js';
-import { testConfig, truncateAll } from './helpers.js';
+import { addBitcoinWallets, testConfig, testTpub, truncateAll } from './helpers.js';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
@@ -61,7 +62,7 @@ maybeDescribe('API (integration)', () => {
     }
     await truncateAll(db);
     config = testConfig();
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     await repos.initHdWalletState({
       gapLimit: config.btc.gapLimit,
       xpubFingerprint: xpub.fingerprint,
@@ -69,9 +70,8 @@ maybeDescribe('API (integration)', () => {
     lnbits = new FakeLnbits();
     paymentIntents = new PaymentIntentService({
       repos,
-      lnbits: lnbits as unknown as LnbitsClient,
+      lnbitsFor: () => lnbits as unknown as LnbitsClient,
       config,
-      xpub,
       logger: silentLogger,
     });
     clients = new ClientService({ repos, config, logger: silentLogger });
@@ -123,11 +123,14 @@ maybeDescribe('API (integration)', () => {
       payload: { name: 'api test', webhook_url: 'http://localhost:9999/webhook' },
     });
     expect(response.statusCode).toBe(201);
-    return response.json() as {
+    const created = response.json() as {
+      id: string;
       apiKey: string;
       requestSecret: string;
       webhookSecret: string;
     };
+    await addBitcoinWallets(db, config, created.id);
+    return created;
   }
 
   it('exige admin token e cria cliente', async () => {
@@ -260,9 +263,31 @@ maybeDescribe('API (integration)', () => {
         status: 'success',
       }),
     );
+    const stored = await repos.findIntentById(intent.id);
+    const walletId = stored!.lightningWalletId!;
+
+    // O token global do servidor nao vale mais: cada wallet tem o seu.
+    const global = await app.inject({
+      method: 'POST',
+      url: `/webhooks/lnbits?w=${walletId}&token=${config.lightning.webhookToken}`,
+      headers: { 'content-type': 'application/json' },
+      payload: webhookBody,
+    });
+    expect(global.statusCode).toBe(401);
+
+    // O token de outra wallet nao confere invoices desta.
+    const otherWallet = '00000000-0000-4000-8000-000000000000';
+    const foreign = await app.inject({
+      method: 'POST',
+      url: `/webhooks/lnbits?w=${otherWallet}&token=${lnbitsWalletWebhookToken(config.lightning.webhookToken!, otherWallet)}`,
+      headers: { 'content-type': 'application/json' },
+      payload: webhookBody,
+    });
+    expect(foreign.json()).toMatchObject({ status: 'desconhecido' });
+
     const webhook = await app.inject({
       method: 'POST',
-      url: `/webhooks/lnbits?token=${config.lightning.webhookToken}`,
+      url: `/webhooks/lnbits?w=${walletId}&token=${lnbitsWalletWebhookToken(config.lightning.webhookToken!, walletId)}`,
       headers: { 'content-type': 'application/json' },
       payload: webhookBody,
     });

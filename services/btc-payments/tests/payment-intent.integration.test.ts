@@ -13,8 +13,10 @@ import { silentLogger } from '../src/logger.js';
 import { OnchainWatcher } from '../src/services/onchain-watcher.js';
 import { PaymentIntentService } from '../src/services/payment-intent-service.js';
 import {
+  addBitcoinWallets,
   createTestClient,
   testConfig,
+  testTpub,
   truncateAll,
   type TestClient,
 } from './helpers.js';
@@ -87,6 +89,8 @@ class FakeEsplora {
   >();
 
   txs = new Set<string>();
+  /** Altura do bloco de cada tx; sem registro, a tx esta no bloco do tip. */
+  txHeights = new Map<string, number>();
 
   async getTipHeight(): Promise<number> {
     return this.tip;
@@ -102,7 +106,11 @@ class FakeEsplora {
     }
     return {
       txid,
-      status: { confirmed: true, block_height: this.tip, block_hash: 'b'.repeat(64) },
+      status: {
+        confirmed: true,
+        block_height: this.txHeights.get(txid) ?? this.tip,
+        block_hash: 'b'.repeat(64),
+      },
       vin: [],
       vout: [],
     };
@@ -125,7 +133,7 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     }
     await truncateAll(db);
     config = testConfig();
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     await repos.initHdWalletState({
       gapLimit: config.btc.gapLimit,
       xpubFingerprint: xpub.fingerprint,
@@ -134,13 +142,13 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     now = new Date('2026-01-01T00:00:00.000Z');
     service = new PaymentIntentService({
       repos,
-      lnbits: lnbits as unknown as LnbitsClient,
+      lnbitsFor: () => lnbits as unknown as LnbitsClient,
       config,
-      xpub,
       logger: silentLogger,
       now: () => now,
     });
     client = await createTestClient(repos, config);
+    await addBitcoinWallets(db, config, client.client.id);
   });
 
   afterAll(async () => {
@@ -181,8 +189,11 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     expect(again.id).toBe(dto.id);
 
     await expect(createIntent('t1', 2000n)).rejects.toThrow(/outro valor/);
-    const state = await repos.getHdWalletState();
-    expect(state?.nextReceiveIndex).toBe(1);
+    // O indice e da carteira (xpub) do lojista, nao da plataforma.
+    const intent = await loadIntent(dto.id);
+    const wallet = await repos.findActiveBtcDepositWalletForClient(client.client.id);
+    expect(intent?.merchantWalletId).toBe(wallet?.id);
+    expect(intent?.lightningWalletId).toBeTruthy();
   });
 
   it('confirma Lightning na fonte oficial e enfileira webhook', async () => {
@@ -472,7 +483,7 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     expect(events.filter((event) => event.eventType === 'payment_intent.paid')).toHaveLength(2);
   });
 
-  it('nao reorga quando o UTXO foi gasto pelo nosso sweep', async () => {
+  it('nao reorga quando o UTXO foi gasto (sweep legado)', async () => {
     const dto = await createIntent('t13');
     const funding = 'a1'.repeat(32);
     const sweepTx = 'b1'.repeat(32);
@@ -515,6 +526,73 @@ maybeDescribe('payment intent + onchain (integration)', () => {
     expect((await loadIntent(dto.id))?.status).toBe('pago');
     const payments = await repos.listOnchainPaymentsForIntent(dto.id);
     expect(payments[0]?.status).toBe('gasto');
+  });
+
+  it('nao reorga quando o lojista gasta o BTC da propria carteira', async () => {
+    const dto = await createIntent('t13b');
+    const funding = 'a2'.repeat(32);
+    const esplora = new FakeEsplora();
+    esplora.utxos.set(dto.onchain!.address, [
+      {
+        txid: funding,
+        vout: 0,
+        value: 1000,
+        status: { confirmed: true, block_height: 100, block_hash: 'c2'.repeat(32) },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    expect((await watcher.runCycle(10)).paid).toBe(1);
+
+    // O endereco e do lojista: ele move o BTC (sem nenhum sweep da plataforma).
+    esplora.txs.add(funding);
+    esplora.utxos.clear();
+    const cycle = await watcher.runCycle(10);
+    expect(cycle.reorged).toBe(0);
+    expect((await loadIntent(dto.id))?.status).toBe('pago');
+    const payments = await repos.listOnchainPaymentsForIntent(dto.id);
+    expect(payments[0]?.status).toBe('gasto');
+    expect((await eventsFor(dto.id)).some((e) => e.eventType === 'payment_intent.reorged')).toBe(
+      false,
+    );
+  });
+
+  it('conta como pago o deposito que o lojista gastou antes das confirmacoes exigidas', async () => {
+    const big = await createIntent('t13c', 2_000_000n);
+    const funding = 'a3'.repeat(32);
+    const esplora = new FakeEsplora();
+    // 1 confirmacao; acima de ONCHAIN_HIGH_VALUE_SATS sao exigidas 3.
+    esplora.utxos.set(big.onchain!.address, [
+      {
+        txid: funding,
+        vout: 0,
+        value: 2_000_000,
+        status: { confirmed: true, block_height: 100, block_hash: 'c3'.repeat(32) },
+      },
+    ]);
+    const watcher = new OnchainWatcher({
+      repos,
+      esplora: esplora as unknown as EsploraClient,
+      config,
+      logger: silentLogger,
+      now: () => now,
+    });
+    expect((await watcher.runCycle(10)).paid).toBe(0);
+
+    // O lojista gasta; o deposito segue confirmado e ganha confirmacoes.
+    esplora.utxos.clear();
+    esplora.txs.add(funding);
+    esplora.txHeights.set(funding, 100);
+    esplora.tip = 102;
+    expect((await watcher.runCycle(10)).reorged).toBe(0);
+    const paid = await loadIntent(big.id);
+    expect(paid?.status).toBe('pago');
+    expect(paid?.paidAmountSats).toBe(2_000_000n);
   });
 
   it('reorga quando o deposito some depois do gasto', async () => {

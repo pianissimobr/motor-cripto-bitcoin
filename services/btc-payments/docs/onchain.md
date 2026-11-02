@@ -1,52 +1,48 @@
-# On-chain: derivacao, confirmacoes e sweep
+# On-chain: endereços do lojista e confirmações
 
 ## Carteira
 
-- xpub de conta BIP84: `m/84'/0'/0'` (depth 3).
-- Enderecos: `m/84'/0'/0'/0/{index}` (P2WPKH).
-- O servidor de enderecos usa **somente** o xpub.
-- O xprv fica no worker (keystore cifrado) ou em signer remoto.
-- O indice e alocado atomicamente no Postgres e nunca reutilizado.
-- `BTC_GAP_LIMIT` e o indice sequencial gravado no banco. O restore varre `0..next_receive_index` a partir desse estado. Isso nao recupera um gap de carteira externa.
+- O lojista cadastra o xpub de **conta** BIP84 (`m/84'/0'/0'`, depth 3) dele no
+  portal ou em `POST /v1/wallets` (`kind: btc_deposit`). Nunca xprv/seed.
+- Cada cobrança usa um endereço novo derivado desse xpub:
+  `m/84'/0'/0'/{BTC_DERIVATION_PREFIX}/{index}` (P2WPKH).
+- O índice é por carteira, alocado atomicamente no Postgres e nunca reusado.
+- Os endereços são do lojista: o BTC já cai na carteira dele. A plataforma não
+  tem a chave privada, então **não há sweep, carteira fria nem conversão**.
+- Cadastrar outro xpub substitui o anterior para as próximas cobranças. As
+  cobranças antigas continuam observadas nos endereços em que foram criadas.
+- Cada cobrança tem endereço próprio e valor próprio. Cobranças que expiram
+  sem pagamento também consomem endereço.
 
-Fingerprint: o banco guarda um fingerprint do xpub. Se o `BTC_XPUB` mudar, o
-boot recusa para evitar derivar enderecos de outra carteira.
+## Gap limit (1000)
+
+Carteiras como Sparrow e Electrum só procuram pagamentos até N endereços
+seguidos sem uso (o "gap limit", 20 por padrão). O motor usa
+`BTC_GAP_LIMIT=1000`:
+
+- **O lojista configura 1000 na carteira dele.** Sparrow: Settings → Advanced
+  → Gap limit. Electrum: no console, `wallet.change_gap_limit(1000)`.
+- O motor nunca passa disso: quando o xpub tem 1000 endereços seguidos sem
+  depósito, a cobrança sai **sem on-chain** (só Lightning, se houver) e o
+  operador recebe um alerta. Sem Lightning, a resposta é
+  `409 gap_limit_reached`. Um pagamento em qualquer endereço desse trecho
+  libera de novo.
 
 ## Pagamento
 
-- UTXOs sao lidos via Esplora (`/address/:addr/utxo`).
-- O valor e somado; o status do pagamento usa confirmacoes:
-  - `ONCHAIN_CONFIRMATIONS` (padrao 1);
-  - `ONCHAIN_HIGH_VALUE_CONFIRMATIONS` (padrao 3) acima de
+- UTXOs são lidos via Esplora (`/address/:addr/utxo`).
+- O status usa confirmações:
+  - `ONCHAIN_CONFIRMATIONS` (padrão 1);
+  - `ONCHAIN_HIGH_VALUE_CONFIRMATIONS` (padrão 3) a partir de
     `ONCHAIN_HIGH_VALUE_SATS`.
-- Parcial: pagamento menor que o esperado; vira `parcial` na expiracao.
-- Overpay: pagamento maior; `paid_amount_sats` e `overpaid_sats` registram o
-  excesso.
-- Reorg: sumir da lista de UTXOs nao basta. Gasto pelo nosso sweep permanece
-  pago. So o tx de deposito ausente, ou um UTXO confirmado que voltou a
-  mempool, reabre a intent, e apenas se Lightning mais o on-chain ainda em
-  custodia ficarem abaixo do pedido.
-- Pagamento tardio: depois dos 10 min, o endereco continua observado por
-  `INTENT_GRACE_SECONDS` (padrao 24h). Se cair, vira `pago_tardio`.
-
-## Sweep
-
-- Agrupa UTXOs confirmados por endereco.
-- Destino: `COLD_WALLET_ADDRESS` (global allowlisted).
-- Taxa: `GET /fee-estimates` do Esplora, alvo `SWEEP_FEE_TARGET_BLOCKS`,
-  multiplicador `SWEEP_FEE_MULTIPLIER`.
-- Limites: `SWEEP_MIN_SATS`, poeira de 546 sats e `SWEEP_MAX_FEE_PCT`.
-- Assinatura:
-  - `local`: keystore cifrado no worker;
-  - `remote`: POST `/sign` para um signer externo;
-  - `psbt`: PSBT manual.
-- O sweep usa `sequence` RBF e reenvia depois de `SWEEP_RBF_AFTER_SECONDS`,
-  ate `SWEEP_MAX_ATTEMPTS`.
-- Cada tentativa grava `onchain_sweeps` (inputs, PSBT, rawTx, txid, taxa).
-- Depois do broadcast, os UTXOs viram `gasto`; o watcher nao os reabre
-  enquanto o sweep estiver ativo.
-- Se o sweep virar `manual`, use:
-  `POST /admin/api/sweeps/:id/retry` para restaurar os UTXOs e tentar de novo.
+- Parcial: valor confirmado abaixo do pedido vira `parcial` na expiração.
+- Overpay: `paid_amount_sats` e `overpaid_sats` registram o excesso.
+- Reorg: sumir da lista de UTXOs não basta; só o tx de depósito ausente, ou um
+  UTXO confirmado que voltou à mempool, reabre a cobrança.
+- Pagamento tardio: o endereço continua observado por `INTENT_GRACE_SECONDS`
+  (padrão 24 h) depois de `expires_at`; se completar, vira `pago_tardio`.
+- Se o lojista gastar o UTXO da carteira dele, a saída some da lista de UTXO.
+  Isso não é reorg: o depósito continua existindo e a cobrança continua paga.
 
 ## Esplora
 
@@ -54,10 +50,7 @@ Endpoints usados:
 
 - `GET /blocks/tip/height`
 - `GET /address/:address/utxo`
-- `GET /address/:address`
 - `GET /tx/:txid`
-- `GET /fee-estimates`
-- `POST /tx`
 
-Em producao, use Esplora/Electrum self-hosted e privado. Nao use uma API
-publica para enderecos de clientes.
+Em produção, use Esplora/Electrum self-hosted e privado. Não use uma API
+pública para endereços de clientes.

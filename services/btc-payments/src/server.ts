@@ -5,32 +5,31 @@ import { createRepositories } from './db/repositories.js';
 import { buildApp } from './http/app.js';
 import { createLogger } from './logger.js';
 import { loadEnv } from './load-env.js';
-import { createReadiness, parseConfiguredXpub } from './readiness.js';
-import { LnbitsClient } from './adapters/lnbits/client.js';
+import { createReadiness } from './readiness.js';
 import { EsploraClient } from './adapters/chain/esplora.js';
-import { assertAddress } from './adapters/hd/derivation.js';
 import { ClientService } from './services/client-service.js';
 import { AlertService } from './services/alert-service.js';
 import { AuthService } from './services/auth-service.js';
 import { NoopEmailSender } from './services/email-sender.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
-import { ensureDefaultWallets } from './services/merchant-wallet-service.js';
 import { FxService } from './services/fx-service.js';
 import { HttpFxPriceProvider } from './adapters/fx/http.js';
 import { LedgerService } from './ledger/ledger-service.js';
 import { MerchantWalletService } from './services/merchant-wallet-service.js';
-import { ConversionService } from './services/conversion-service.js';
-import { PayoutService } from './services/payout-service.js';
-import { ThorchainClient } from './adapters/conversion/thorchain.js';
-import { createTreasuryBtcSender } from './adapters/conversion/btc-treasury.js';
-import { createUsdcPayoutAdapter } from './adapters/payout/base-usdc.js';
+import { createLnbitsFactory } from './services/merchant-lightning.js';
 import { MetricsService } from './services/metrics-service.js';
 import { LuniumClient } from './adapters/lunium/client.js';
 import { PixChargeService } from './services/pix-charge-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { ReportService } from './services/report-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
+import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
 
+/**
+ * API do motor. O dinheiro nao passa pela plataforma: Lightning cai na
+ * wallet LNbits do lojista, on-chain nos enderecos do xpub dele e PIX vira
+ * USDC na carteira Base dele. A API cria cobrancas, prova pagamentos e avisa.
+ */
 export async function main(): Promise<void> {
   loadEnv();
   const config = loadConfig();
@@ -39,68 +38,10 @@ export async function main(): Promise<void> {
     pretty: !config.service.isProduction,
   });
 
-  const xpub =
-    config.onchain.enabled && config.btc.xpub
-      ? parseConfiguredXpub(config.btc.xpub, config.btc.network)
-      : null;
-  const treasuryBtcAddress =
-    config.treasury.btcAddress ?? config.sweep.coldWalletAddress;
-  if (config.sweep.enabled) {
-    assertAddress(treasuryBtcAddress!, config.btc.network);
-  }
-
   const db = createDb(config.database);
   const repos = createRepositories(db.db);
 
   try {
-    if (xpub) {
-      await repos.initHdWalletState({
-        gapLimit: config.btc.gapLimit,
-        xpubFingerprint: xpub.fingerprint,
-      });
-      const state = await repos.getHdWalletState();
-      if (state && state.xpubFingerprint !== xpub.fingerprint) {
-        throw new Error(
-          'BTC_XPUB nao corresponde ao fingerprint gravado no banco. ' +
-            'Restaure o xpub original ou faça uma migracao consciente.',
-        );
-      }
-    }
-    await ensureDefaultWallets(db.db, {
-      ...(xpub && config.btc.xpub
-        ? { xpub: config.btc.xpub, xpubFingerprint: xpub.fingerprint }
-        : {}),
-      derivationPrefix: config.btc.derivationPrefix,
-      network: config.btc.network,
-      gapLimit: config.btc.gapLimit,
-      ...(config.treasury.btcAddress ?? config.sweep.coldWalletAddress
-        ? {
-            coldWalletAddress:
-              config.treasury.btcAddress ?? config.sweep.coldWalletAddress,
-          }
-        : {}),
-      ...(config.treasury.btcAddress
-        ? { treasuryBtcAddress: config.treasury.btcAddress }
-        : {}),
-      ...(config.treasury.usdcBaseAddress
-        ? { treasuryUsdcAddress: config.treasury.usdcBaseAddress }
-        : {}),
-      ...(config.treasury.gasBaseAddress
-        ? { gasBaseAddress: config.treasury.gasBaseAddress }
-        : {}),
-    });
-
-    const lnbits =
-      config.lightning.enabled &&
-      config.lightning.url &&
-      config.lightning.apiKey
-        ? new LnbitsClient({
-            url: config.lightning.url,
-            apiKey: config.lightning.apiKey,
-            timeoutMs: 10_000,
-            logger,
-          })
-        : null;
     const esplora =
       config.onchain.enabled && config.esplora.url
         ? new EsploraClient({
@@ -123,32 +64,23 @@ export async function main(): Promise<void> {
         : null;
 
     const readiness = createReadiness({
-      network: config.btc.network,
-      ...(xpub ? { xpub } : {}),
-      ...(config.treasury.btcAddress ?? config.sweep.coldWalletAddress
-        ? {
-            coldWalletAddress:
-              config.treasury.btcAddress ?? config.sweep.coldWalletAddress,
-          }
-        : {}),
-      sweepEnabled: config.sweep.enabled,
-      lightningEnabled: config.lightning.enabled,
       onchainEnabled: config.onchain.enabled,
       repos,
-      ...(lnbits ? { lnbits } : {}),
       ...(esplora ? { esplora } : {}),
       ...(lunium ? { lunium } : {}),
     });
 
     const clients = new ClientService({ repos, config, logger });
     const alerts = new AlertService({ ...config.alerts, logger });
+    const emailSender = new NoopEmailSender(logger);
     const auth = new AuthService({
       repos,
       clients,
       config,
       logger,
-      emailSender: new NoopEmailSender(logger),
+      emailSender,
     });
+    const walletNotifier = new WalletChangeNotifier({ repos, logger, alerts, emailSender });
     const fx = new FxService(
       db.db,
       new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
@@ -157,37 +89,13 @@ export async function main(): Promise<void> {
     const wallets = new MerchantWalletService(db.db);
     const metrics = new MetricsService({ repos, ledger });
     const reports = new ReportService({ db: db.db });
-    const conversions = config.conversion.enabled && config.onchain.enabled
-      ? new ConversionService({
-          repos,
-          ledger,
-          swap: new ThorchainClient({
-            urls: config.conversion.thorchainUrls,
-            usdcAddress: config.payout.usdcAddress,
-            timeoutMs: config.conversion.timeoutMs,
-            quoteToleranceBps: config.conversion.quoteToleranceBps,
-          }),
-          sender: createTreasuryBtcSender(config),
-          config,
-          logger,
-          alerts,
-        })
-      : null;
-    const payouts = config.payout.enabled
-      ? new PayoutService({
-          repos,
-          ledger,
-          adapter: createUsdcPayoutAdapter(config),
-          config,
-          logger,
-          alerts,
-        })
+    const lnbitsFor = config.lightning.enabled
+      ? createLnbitsFactory(config, logger)
       : null;
     const paymentIntents = new PaymentIntentService({
       repos,
-      lnbits,
+      lnbitsFor,
       config,
-      xpub,
       logger,
       alerts,
     });
@@ -198,14 +106,7 @@ export async function main(): Promise<void> {
       alerts,
     });
     const pixCharges = lunium
-      ? new PixChargeService({
-          repos,
-          ledger,
-          lunium,
-          config,
-          logger,
-          alerts,
-        })
+      ? new PixChargeService({ repos, lunium, config, logger, alerts })
       : null;
     const luniumWebhook = pixCharges && lunium
       ? new LuniumWebhookService({
@@ -235,26 +136,25 @@ export async function main(): Promise<void> {
         metrics,
         reports,
         subscriptions,
-        ...(conversions ? { conversions } : {}),
-        ...(payouts ? { payouts } : {}),
+        ...(lnbitsFor ? { lnbitsFor } : {}),
+        walletNotifier,
         ...(pixCharges ? { pixCharges } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
-        ...(esplora ? { esplora } : {}),
         getStatus: async () => {
-          const [counts, lnbitsHealth, esploraHealth] = await Promise.all([
+          const [counts, esploraHealth] = await Promise.all([
             repos.getStatusCounts(),
-            lnbits ? lnbits.health() : Promise.resolve(null),
             esplora ? esplora.health() : Promise.resolve(null),
           ]);
           return {
             ok: true,
             ...counts,
-            lnbits: lnbitsHealth,
             esplora: esploraHealth,
             network: config.btc.network,
-            xpubFingerprint: xpub?.fingerprint ?? null,
-            signerMode: config.signer.mode,
-            sweepEnabled: config.sweep.enabled,
+            rails: {
+              lightning: config.lightning.enabled,
+              onchain: config.onchain.enabled,
+              pix: config.pix.enabled,
+            },
             uptimeSeconds: Math.round(process.uptime()),
           };
         },
@@ -267,8 +167,9 @@ export async function main(): Promise<void> {
         port: config.server.port,
         host: config.server.host,
         network: config.btc.network,
-        xpubFingerprint: xpub?.fingerprint ?? null,
-        sweepEnabled: config.sweep.enabled,
+        lightning: config.lightning.enabled,
+        onchain: config.onchain.enabled,
+        pix: config.pix.enabled,
       },
       'btc-payments API no ar',
     );

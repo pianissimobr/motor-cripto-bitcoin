@@ -1,6 +1,5 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { isEsploraNotFound, type EsploraClient } from '../adapters/chain/esplora.js';
 import type { AppConfig } from '../config.js';
 import { timingSafeEqualString } from '../crypto/hmac.js';
 import type { Repositories } from '../db/repositories.js';
@@ -12,18 +11,22 @@ import {
   UnauthorizedError,
   ValidationError,
 } from '../domain/errors.js';
+import { lnbitsWalletWebhookToken } from '../domain/bip21.js';
 import { parseFiatToCents } from '../domain/fx.js';
 import { parseSats } from '../domain/money.js';
 import type { ApiScope, ConversionLeg, ConversionOrder, MerchantWallet, Payout } from '../domain/types.js';
 import type { LedgerService } from '../ledger/ledger-service.js';
 import type { Logger } from '../logger.js';
 import type { ClientService } from '../services/client-service.js';
-import type { ConversionService } from '../services/conversion-service.js';
 import type { FxService } from '../services/fx-service.js';
+import {
+  createLightningWallet,
+  type LnbitsFactory,
+} from '../services/merchant-lightning.js';
 import type { MerchantWalletService } from '../services/merchant-wallet-service.js';
 import type { MetricsService } from '../services/metrics-service.js';
+import type { WalletChangeNotifier } from '../services/wallet-change-notifier.js';
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
-import type { PayoutService } from '../services/payout-service.js';
 import type { PixChargeService } from '../services/pix-charge-service.js';
 import type { LuniumWebhookService } from '../services/lunium-webhook-service.js';
 import { LuniumError } from '../adapters/lunium/client.js';
@@ -46,12 +49,11 @@ export type ApiServices = {
   fx?: FxService;
   wallets?: MerchantWalletService;
   ledger?: LedgerService;
-  conversions?: ConversionService;
-  payouts?: PayoutService;
+  lnbitsFor?: LnbitsFactory;
+  walletNotifier?: WalletChangeNotifier;
   pixCharges?: PixChargeService;
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
-  esplora?: Pick<EsploraClient, 'getTx'>;
   reports?: ReportService;
   subscriptions?: SubscriptionService;
 };
@@ -137,7 +139,10 @@ const idParamsSchema = z.object({ id: z.string().uuid() });
 const externalIdQuerySchema = z.object({
   external_id: z.string().trim().min(1).max(128),
 });
-const webhookQuerySchema = z.object({ token: z.string().min(1) });
+const webhookQuerySchema = z.object({
+  token: z.string().min(1),
+  w: z.string().uuid(),
+});
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -156,6 +161,13 @@ const createWalletSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('usdc_settlement'),
       address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('lightning_lnbits'),
+      lnbits_url: z.string().trim().min(1).max(300),
+      invoice_key: z.string().trim().min(8).max(200),
     })
     .strict(),
 ]);
@@ -252,6 +264,7 @@ function serializeWallet(wallet: MerchantWallet): Record<string, unknown> {
     address: wallet.address,
     xpub: wallet.xpub,
     derivation_prefix: wallet.derivationPrefix,
+    lnbits_url: wallet.lnbitsUrl,
     status: wallet.status,
     created_at: wallet.createdAt.toISOString(),
     updated_at: wallet.updatedAt.toISOString(),
@@ -304,6 +317,8 @@ export function registerApiRoutes(
         paymentIntents: services.paymentIntents,
         ...(services.reports ? { reports: services.reports } : {}),
         ...(services.subscriptions ? { subscriptions: services.subscriptions } : {}),
+        ...(services.lnbitsFor ? { lnbitsFor: services.lnbitsFor } : {}),
+        ...(services.walletNotifier ? { walletNotifier: services.walletNotifier } : {}),
       });
     }
   }
@@ -595,6 +610,12 @@ export function registerApiRoutes(
         });
         const created = await services.repos.findMerchantWalletById(wallet.id);
         if (!created) throw new NotFoundError('carteira nao encontrada');
+        await services.walletNotifier?.notify({ merchantId: client.id, wallet: created, action: 'cadastrada', actor: 'api' });
+        return reply.status(201).send(serializeWallet(created));
+      }
+      if (body.kind === 'lightning_lnbits') {
+        const created = await createLightningWallet(services, client.id, body);
+        await services.walletNotifier?.notify({ merchantId: client.id, wallet: created, action: 'cadastrada', actor: 'api' });
         return reply.status(201).send(serializeWallet(created));
       }
       const wallet = await services.wallets.createBtcDeposit({
@@ -605,6 +626,10 @@ export function registerApiRoutes(
         network: services.config.btc.network,
         gapLimit: services.config.btc.gapLimit,
       });
+      const btcWallet = await services.repos.findMerchantWalletById(wallet.id);
+      if (btcWallet) {
+        await services.walletNotifier?.notify({ merchantId: client.id, wallet: btcWallet, action: 'cadastrada', actor: 'api' });
+      }
       return reply.status(201).send({
         id: wallet.id,
         kind: 'btc_deposit',
@@ -663,7 +688,9 @@ export function registerApiRoutes(
       throw new ServiceUnavailableError('Lightning desabilitado');
     }
     const query = parse(webhookQuerySchema, request.query, 'token');
-    if (!timingSafeEqualString(query.token, token)) {
+    // Cada wallet de lojista tem o proprio token (derivado do segredo do
+    // servidor), e o webhook so pode conferir invoices daquela wallet.
+    if (!timingSafeEqualString(query.token, lnbitsWalletWebhookToken(token, query.w))) {
       throw new UnauthorizedError('token de webhook invalido');
     }
 
@@ -693,8 +720,10 @@ export function registerApiRoutes(
       throw new ValidationError('payment_hash ausente no webhook do LNbits');
     }
 
-    const result =
-      await services.paymentIntents.applyLightningPayment(paymentHash);
+    const result = await services.paymentIntents.applyLightningPayment(
+      paymentHash,
+      query.w,
+    );
     services.logger.info(
       { paymentHash, status: result.status, idTransacao: result.id_transacao },
       'webhook do LNbits processado',
@@ -791,49 +820,6 @@ export function registerApiRoutes(
     },
   );
 
-  app.post(
-    '/admin/api/sweeps/:id/retry',
-    { preHandler: adminAuth },
-    async (request) => {
-      const params = parse(idParamsSchema, request.params, 'id');
-      const sweep = await services.repos.findSweepById(params.id);
-      if (!sweep) throw new NotFoundError('sweep nao encontrado');
-      if (sweep.status === 'sweepado') {
-        throw new ConflictError('sweep ja confirmado; nao ha o que reenviar');
-      }
-      if (sweep.txid) {
-        if (!services.esplora) {
-          throw new ConflictError(
-            'tx do sweep nao pode ser conferido agora; retry recusado',
-          );
-        }
-        try {
-          const tx = await services.esplora.getTx(sweep.txid);
-          if (tx.status.confirmed) {
-            throw new ConflictError(
-              'tx do sweep ja esta confirmado; nao reenvie',
-            );
-          }
-          throw new ConflictError(
-            'tx do sweep ainda esta na mempool; espere o RBF em vez de montar outro gasto',
-          );
-        } catch (err) {
-          if (err instanceof ConflictError) throw err;
-          if (!isEsploraNotFound(err)) throw err;
-        }
-      }
-      await services.repos.restoreOnchainPayments(sweep.inputs);
-      const updated = await services.repos.updateSweep({
-        id: sweep.id,
-        status: 'falhou',
-        lastError: 'retry manual solicitado pelo admin',
-        attempts: 0,
-        lastCheckedAt: new Date(),
-      });
-      services.logger.info({ sweepId: sweep.id }, 'retry de sweep solicitado');
-      return updated;
-    },
-  );
   app.get(
     '/admin/api/merchants',
     { preHandler: adminAuth },
@@ -870,36 +856,12 @@ export function registerApiRoutes(
   );
 
   app.get(
-    '/admin/api/treasury',
-    { preHandler: adminAuth },
-    async () => ({ data: await services.repos.listTreasuryWallets() }),
-  );
-
-  app.get(
     '/admin/api/conversions',
     { preHandler: adminAuth },
     async (request) => {
       const query = parse(listQuerySchema, request.query, 'query string');
       const orders = await services.repos.listConversionOrders(query.limit);
       return { data: orders.map((order) => serializeConversion(order)) };
-    },
-  );
-
-  app.post(
-    '/admin/api/conversions/:id/retry',
-    { preHandler: adminAuth },
-    async (request) => {
-      const params = parse(idParamsSchema, request.params, 'id');
-      if (!services.conversions) {
-        throw new ServiceUnavailableError('conversao desabilitada');
-      }
-      const order = await services.repos.findConversionOrderById(params.id);
-      if (!order) throw new NotFoundError('conversao nao encontrada');
-      try {
-        return serializeConversion(await services.conversions.retry(params.id));
-      } catch (err) {
-        throw new ConflictError(err instanceof Error ? err.message : String(err));
-      }
     },
   );
 
@@ -910,42 +872,6 @@ export function registerApiRoutes(
       const query = parse(listQuerySchema, request.query, 'query string');
       const payouts = await services.repos.listPayouts(query.limit);
       return { data: payouts.map(serializePayout) };
-    },
-  );
-
-  app.post(
-    '/admin/api/payouts/:id/approve',
-    { preHandler: adminAuth },
-    async (request) => {
-      const params = parse(idParamsSchema, request.params, 'id');
-      if (!services.payouts) {
-        throw new ServiceUnavailableError('payout desabilitado');
-      }
-      const payout = await services.repos.findPayoutById(params.id);
-      if (!payout) throw new NotFoundError('payout nao encontrado');
-      try {
-        return serializePayout(await services.payouts.approve(params.id, 'admin'));
-      } catch (err) {
-        throw new ConflictError(err instanceof Error ? err.message : String(err));
-      }
-    },
-  );
-
-  app.post(
-    '/admin/api/payouts/:id/retry',
-    { preHandler: adminAuth },
-    async (request) => {
-      const params = parse(idParamsSchema, request.params, 'id');
-      if (!services.payouts) {
-        throw new ServiceUnavailableError('payout desabilitado');
-      }
-      const payout = await services.repos.findPayoutById(params.id);
-      if (!payout) throw new NotFoundError('payout nao encontrado');
-      try {
-        return serializePayout(await services.payouts.retry(params.id, 'admin'));
-      } catch (err) {
-        throw new ConflictError(err instanceof Error ? err.message : String(err));
-      }
     },
   );
 

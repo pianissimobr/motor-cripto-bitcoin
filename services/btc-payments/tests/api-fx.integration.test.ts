@@ -11,7 +11,7 @@ import { silentLogger } from '../src/logger.js';
 import { ClientService } from '../src/services/client-service.js';
 import { FixedFxPriceProvider, FxService } from '../src/services/fx-service.js';
 import { PaymentIntentService } from '../src/services/payment-intent-service.js';
-import { testConfig, truncateAll } from './helpers.js';
+import { addBitcoinWallets, testConfig, testTpub, truncateAll } from './helpers.js';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
@@ -37,7 +37,7 @@ maybeDescribe('API com cambio (integration)', () => {
     }
     await truncateAll(db);
     config = testConfig();
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     await repos.initHdWalletState({
       gapLimit: config.btc.gapLimit,
       xpubFingerprint: xpub.fingerprint,
@@ -49,12 +49,11 @@ maybeDescribe('API com cambio (integration)', () => {
   });
 
   it('cria intent por valor fiat e devolve cotacao', async () => {
-    const xpub = parseAccountXpub(config.btc.xpub, config.btc.network);
+    const xpub = parseAccountXpub(testTpub(), config.btc.network);
     const paymentIntents = new PaymentIntentService({
       repos,
-      lnbits: new FakeLnbits() as unknown as LnbitsClient,
+      lnbitsFor: () => new FakeLnbits() as unknown as LnbitsClient,
       config,
-      xpub,
       logger: silentLogger,
     });
     const fx = new FxService(
@@ -77,9 +76,11 @@ maybeDescribe('API com cambio (integration)', () => {
     });
     expect(createResponse.statusCode).toBe(201);
     const created = createResponse.json() as {
+      id: string;
       apiKey: string;
       requestSecret: string;
     };
+    await addBitcoinWallets(db, config, created.id);
 
     const body = JSON.stringify({
       external_id: 'pedido-fx-1',

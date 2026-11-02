@@ -10,23 +10,20 @@ Eventos:
 - `payment_intent.expired`
 - `payment_intent.canceled`
 - `payment_intent.reorged`
-- `payment_intent.converted`
-- `payment_intent.conversion_failed`
-- `payment_intent.conversion_refunded`
-- `payment_intent.payout_pending`
-- `payment_intent.payout_sent`
-- `payment_intent.payout_confirmed`
-- `payment_intent.payout_failed`
 - `pix_charge.created`
 - `pix_charge.paid`
 - `pix_charge.settled`
 - `pix_charge.expired`
 - `pix_charge.refunded`
 - `pix_charge.failed`
-- `pix_charge.payout_pending`
-- `pix_charge.payout_sent`
-- `pix_charge.payout_confirmed`
-- `pix_charge.payout_failed`
+
+## Evento da loja
+
+- `merchant.wallet_changed`: uma carteira de recebimento foi cadastrada ou
+  removida (portal ou API). `data` traz `kind`, `action` (`cadastrada` |
+  `removida`), `destination` (URL do LNbits, início/fim do xpub ou o 0x) e
+  `actor`. Se não foi você, troque a senha e revise as carteiras: os próximos
+  pagamentos vão para a carteira nova.
 
 Headers:
 
@@ -63,8 +60,9 @@ Payload:
 }
 ```
 
-Eventos de liquidacao incluem `settlement_status`, `conversion_id`, `payout_id`,
-`target_amount_minor` e `txid` quando aplicavel.
+O dinheiro vai direto para as carteiras do lojista (LNbits, xpub, USDC Base):
+`payment_intent.paid` e `pix_charge.settled` sao o fim do fluxo. Nao ha eventos
+de conversao nem de payout.
 
 Verificacao em Node:
 
@@ -89,9 +87,11 @@ Entrega:
 
 ## Entrada do LNbits
 
-`POST /webhooks/lnbits?token=<LNBITS_WEBHOOK_TOKEN>`
+`POST /webhooks/lnbits?w=<wallet_id>&token=<token da wallet>`
 
-- O token e comparado em tempo constante.
+- Cada wallet LNbits de lojista tem o proprio token, derivado de
+  `LNBITS_WEBHOOK_TOKEN` (que nunca sai do servidor). O webhook de uma wallet
+  so confere invoices dela. Comparacao em tempo constante.
 - O payload nao e confiavel: o status e confirmado em
   `GET /api/v1/payments/{payment_hash}`.
 - A versao 1.6 do LNbits envia `payment.json()`, que chega como string JSON;

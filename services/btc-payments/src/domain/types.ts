@@ -45,11 +45,15 @@ export type ApiScope =
   | 'conversions:read'
   | 'payouts:read';
 
+/**
+ * Escopos de um cliente novo. `wallets:write` fica de fora: trocar a carteira
+ * desvia os proximos pagamentos, entao uma API key vazada nao pode fazer isso
+ * sem o escopo pedido explicitamente. O portal (sessao + CSRF) continua podendo.
+ */
 export const DEFAULT_API_SCOPES: readonly ApiScope[] = [
   'payments:write',
   'payments:read',
   'wallets:read',
-  'wallets:write',
   'balances:read',
   'conversions:read',
   'payouts:read',
@@ -71,7 +75,8 @@ export type SettlementStatus =
 export type MerchantWalletKind =
   | 'btc_deposit'
   | 'usdc_settlement'
-  | 'btc_cold';
+  | 'btc_cold'
+  | 'lightning_lnbits';
 
 export type PixChargeStatus =
   | 'criando'
@@ -172,6 +177,7 @@ export type PaymentIntent = {
   paidAmountSats: bigint | null;
   overpaidSats: bigint | null;
   lightningPaymentHash: string | null;
+  lightningWalletId: string | null;
   lightningInvoice: string | null;
   lightningExpiresAt: Date | null;
   onchainAddressId: string | null;
@@ -291,6 +297,8 @@ export type MerchantWallet = {
   address: string;
   xpub: string | null;
   derivationPrefix: string | null;
+  lnbitsUrl: string | null;
+  secretEnc: string | null;
   status: 'ativo' | 'inativo';
   createdAt: Date;
   updatedAt: Date;

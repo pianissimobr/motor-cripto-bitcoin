@@ -9,6 +9,7 @@ import {
   ConflictError,
   NotFoundError,
   ServiceUnavailableError,
+  SettlementWalletRequiredError,
   UpstreamError,
   ValidationError,
 } from '../domain/errors.js';
@@ -23,7 +24,6 @@ import {
   type PixCharge,
   type SettlementStatus,
 } from '../domain/types.js';
-import { merchantAccountCode, PLATFORM_ACCOUNTS } from '../domain/ledger.js';
 import type { LedgerService } from '../ledger/ledger-service.js';
 import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
@@ -63,7 +63,8 @@ export type PixChargeDto = {
 
 export type PixChargeServiceDeps = {
   repos: Repositories;
-  ledger: LedgerService;
+  /** Nao usado na liquidacao direta; mantido por compatibilidade. */
+  ledger?: LedgerService;
   lunium: LuniumClient;
   config: AppConfig;
   logger: Logger;
@@ -98,7 +99,7 @@ function isUncertainProviderError(err: unknown): boolean {
 
 function settlementStatusFor(mapped: PixCharge['status']): SettlementStatus {
   if (mapped === 'pago') return 'aguardando_confirmacao';
-  if (mapped === 'liquidado') return 'convertido';
+  if (mapped === 'liquidado') return 'pago';
   if (mapped === 'manual') return 'manual';
   if (mapped === 'falhou' || mapped === 'incerto') return 'falhou';
   return 'nao_iniciado';
@@ -156,10 +157,6 @@ export class PixChargeService {
     if (!this.deps.config.pix.enabled) {
       throw new ServiceUnavailableError('PIX desabilitado');
     }
-    const destination = this.deps.config.pix.destinationAddress;
-    if (!destination) {
-      throw new ServiceUnavailableError('carteira treasury USDC nao configurada');
-    }
     if (input.amountBrlCents < this.deps.config.pix.minBrlCents) {
       throw new ValidationError(
         `valor abaixo do minimo (${this.deps.config.pix.minBrlCents.toString()} centavos)`,
@@ -191,6 +188,14 @@ export class PixChargeService {
       }
       return { dto: await this.toDto(existing), reused: true };
     }
+
+    // A Lunium entrega o USDC direto na carteira do lojista. Sem ela nao ha
+    // para onde liquidar, entao a cobranca nem e criada.
+    const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(
+      input.clientId,
+    );
+    if (!wallet) throw new SettlementWalletRequiredError();
+    const destination = wallet.address;
 
     try {
       const limits = await this.deps.lunium.getLimits(payerTax);
@@ -490,9 +495,9 @@ export class PixChargeService {
     if (!update.settlementTxHash) return 'pending';
     if (!local.destinationAddress) return 'invalid';
     const result = await verifyUsdcSettlement({
-      rpcUrls: this.deps.config.payout.baseRpcUrls,
-      chainId: this.deps.config.payout.baseChainId,
-      usdcAddress: this.deps.config.payout.usdcAddress,
+      rpcUrls: this.deps.config.base.rpcUrls,
+      chainId: this.deps.config.base.chainId,
+      usdcAddress: this.deps.config.base.usdcAddress,
       txHash: update.settlementTxHash,
       recipient: local.destinationAddress,
       minAmountMinor: update.assetAmountMinor ?? 0n,
@@ -537,12 +542,12 @@ export class PixChargeService {
         ...update,
         status: 'manual',
         settlementStatus: 'manual',
-        error: 'liquidacao PIX nao confere on-chain com a treasury',
+        error: 'liquidacao PIX nao confere on-chain com a carteira do lojista',
       });
       if (!manual) throw new Error('falha ao atualizar cobranca PIX');
       await this.deps.alerts?.send({
         level: 'error',
-        title: 'liquidacao PIX nao confere on-chain com a treasury',
+        title: 'liquidacao PIX nao confere on-chain com a carteira do lojista',
         metadata: {
           pixChargeId: local.id,
           txHash: update.settlementTxHash,
@@ -563,32 +568,15 @@ export class PixChargeService {
       return deferred ?? local;
     }
 
-    await this.deps.ledger.postTransaction({
-      kind: 'pix_settlement',
-      referenceType: 'pix_charge',
-      referenceId: local.id,
-      entries: [
-        {
-          accountCode: PLATFORM_ACCOUNTS.treasuryUsdc,
-          asset: 'USDC',
-          debitMinor: update.assetAmountMinor,
-        },
-        {
-          accountCode: merchantAccountCode(local.clientId, 'usdc_available'),
-          merchantId: local.clientId,
-          asset: 'USDC',
-          creditMinor: update.assetAmountMinor,
-        },
-      ],
-    });
-
+    // O USDC foi direto da Lunium para a carteira do lojista: a plataforma
+    // nao custodia esse valor, entao nao ha lancamento no ledger nem payout.
     if (local.status !== 'liquidado') {
       assertPixChargeTransition(local.status, 'liquidado');
     }
     const updated = await this.deps.repos.updatePixCharge({
       ...update,
       status: 'liquidado',
-      settlementStatus: 'convertido',
+      settlementStatus: 'pago',
       settledAt: update.settledAt ?? this.now(),
       error: null,
     });

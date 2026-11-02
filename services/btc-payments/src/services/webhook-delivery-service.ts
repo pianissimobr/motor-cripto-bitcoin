@@ -7,6 +7,8 @@ import type { Logger } from '../logger.js';
 
 const BACKOFF_SECONDS = [60, 300, 1_800, 7_200, 21_600, 86_400];
 
+import { createSafeFetch } from '../net/safe-fetch.js';
+
 export type WebhookDeliveryDeps = {
   repos: Repositories;
   config: AppConfig;
@@ -23,7 +25,14 @@ export type WebhookDeliveryResult = {
 };
 
 export class WebhookDeliveryService {
-  constructor(private readonly deps: WebhookDeliveryDeps) {}
+  /** A URL do webhook vem da loja: a entrega tambem bloqueia a rede interna. */
+  private readonly safeFetch: typeof fetch;
+
+  constructor(private readonly deps: WebhookDeliveryDeps) {
+    this.safeFetch = createSafeFetch({
+      allowLoopback: !deps.config.service.isProduction,
+    });
+  }
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
@@ -96,7 +105,7 @@ export class WebhookDeliveryService {
     const body = JSON.stringify(event.payload);
     const timestamp = Math.floor(now.getTime() / 1000);
     const signature = signWebhook(secret, timestamp, body);
-    const fetchImpl = this.deps.fetchImpl ?? fetch;
+    const fetchImpl = this.deps.fetchImpl ?? this.safeFetch;
 
     let statusCode = 0;
     let errorMessage: string | null = null;

@@ -1,91 +1,82 @@
 # btc-payments
 
-Serviço separado de pagamentos Bitcoin: **Lightning via LNbits** + **on-chain
-watch-only** (xpub BIP84 + Esplora/Electrum). Não altera o motor Polygon.
+Motor de cobranças em **Bitcoin** (Lightning e on-chain) e **PIX** em que o
+dinheiro cai **direto nas carteiras do lojista**. A plataforma não guarda,
+não varre e não converte nada: cria a cobrança, mostra o QR, prova o
+pagamento na fonte e avisa a loja por webhook.
 
-> Status: Fases 0-8 implementadas e validadas em regtest (Nigiri): on-chain,
-> pagamento tardio, reorg e sweep. Inclui API, worker, Lightning, outbox,
-> deploy com Caddy, runbook, backup, alertas, **portal do lojista** (login,
-> dashboard, carteiras, relatórios), **checkout público** `/pay/:id` e
-> **assinaturas recorrentes**.
+## As carteiras do lojista
+
+| Trilho | O lojista cadastra | O dinheiro cai em | Prova |
+| --- | --- | --- | --- |
+| Lightning | URL + **Invoice key** da wallet LNbits dele | wallet LNbits dele | `GET /api/v1/payments/{hash}` na wallet dele |
+| On-chain | **xpub** BIP84 (`m/84'/0'/0'`) | endereço derivado do xpub dele, um por cobrança | UTXOs e confirmações no Esplora |
+| PIX | endereço **USDC (0x) na Base** | carteira Base dele (a Lunium entrega) | status canônico da Lunium + tx na Base |
+
+- A cobrança Bitcoin oferece só os trilhos cadastrados pela loja. Sem wallet
+  LNbits nem xpub: `409 bitcoin_wallet_required`.
+- O PIX exige o endereço USDC: `409 settlement_wallet_required` sem ele.
+- Uma carteira ativa por tipo: cadastrar outra substitui a anterior. Invoices
+  antigas continuam conferidas na wallet onde foram criadas.
+- A Invoice key é conferida (o motor chama a wallet antes de gravar) e fica
+  cifrada com AES-256-GCM. A Admin key é recusada.
+- Gap limit 1000 (`BTC_GAP_LIMIT`): o lojista configura o mesmo na carteira
+  dele. No limite, a cobrança sai sem on-chain. Detalhes em `docs/onchain.md`.
+- Toda troca de carteira dispara o webhook `merchant.wallet_changed`, alerta o
+  operador e fica na auditoria.
 
 ## Requisitos
 
 - Node.js >= 22
 - Docker + Docker Compose
-- Uma instância LNbits (em dev, o compose sobe com FakeWallet)
-- Um Esplora/Electrum self-hosted (em dev, Nigiri ou equivalente)
+- Esplora/Electrum self-hosted para o on-chain (em dev, Nigiri ou equivalente)
+- Para testar Lightning em dev: o compose sobe um LNbits com FakeWallet, que
+  faz o papel da wallet de um lojista
 
 ## Subida local
 
 ```bash
 cd services/btc-payments
-cp .env.example .env
+python3 start.py          # escolhe os trilhos e cria/valida o .env
 docker compose up -d
 npm install
 npm run migrate
-npm run dev
+npm run dev               # API em :4580
+npm run worker            # outro terminal
 ```
 
-Em outro terminal:
+`python3 start.py --engines lightning,onchain,pix --up` faz tudo de uma vez.
+Abra `http://localhost:4580/portal`, crie a conta e cadastre as carteiras.
+
+### Trilhos
+
+| Flag | Liga | Precisa |
+| --- | --- | --- |
+| `LIGHTNING_ENABLED=true` | invoices na wallet LNbits do lojista | `LNBITS_WEBHOOK_TOKEN` |
+| `ONCHAIN_ENABLED=true` | endereços do xpub do lojista | `ESPLORA_URL` |
+| `PIX_ENABLED=true` | cobrança PIX via Lunium | `LUNIUM_API_KEY`, `LUNIUM_WEBHOOK_SECRET` |
+
+O checkout `/pay/:id` mostra só os trilhos Bitcoin daquela cobrança. O PIX
+tem fluxo próprio (QR da Lunium).
+
+### LNbits em dev
+
+1. Abra `http://localhost:5001`, crie uma wallet (FakeWallet) e copie a
+   **Invoice/read key**.
+2. No portal, em Carteiras → Lightning, informe a URL (`http://localhost:5001`)
+   e essa key.
+3. Para o webhook do LNbits chegar à API, `LNBITS_WEBHOOK_BASE_URL` precisa ser
+   alcançável por ele. Em dev com Docker, habilite IPs privados no admin do
+   LNbits (`Security -> callback allow private IPs`):
 
 ```bash
-npm run worker
+docker compose exec lnbits sh -lc 'cd /app && uv run python -c "import sqlite3; c=sqlite3.connect(\"/data/database.sqlite3\"); c.execute(\"update system_settings set value=? where id=?\", (\"true\",\"lnbits_callback_allow_private_ips\")); c.commit()"'
+docker compose restart lnbits
 ```
 
-Abra `http://localhost:4580/health` e `http://localhost:4580/ready`.
-
-O portal do lojista fica em `http://localhost:4580/portal` (cadastro e login).
-
-### Motores (trilhos)
-
-Você escolhe o que instalar no `.env`:
-
-| Flag | Liga/desliga |
-| --- | --- |
-| `LIGHTNING_ENABLED=true` | invoice Lightning via LNbits |
-| `ONCHAIN_ENABLED=true` | endereço BIP84 + Esplora + sweep |
-| `PIX_ENABLED=true` | cobrança PIX via Lunium |
-
-Com um motor `false`, as variáveis dele podem ficar vazias. O checkout público
-`/pay/:id` mostra **só os trilhos Bitcoin habilitados** (Lightning e/ou
-on-chain). O PIX continua no fluxo próprio (QR da Lunium).
-
-Para configurar de forma guiada:
-
-```bash
-python3 start.py                 # pergunta os motores e grava no .env
-python3 start.py --engines lightning,onchain --up
-```
-
-### Carteira e sweep
-
-Para ativar o sweep automatico, gere a carteira BIP84 e o keystore cifrado:
-
-```bash
-npm run wallet:init
-```
-
-O script mostra o **mnemonic uma unica vez** e o `BTC_XPUB`. Guarde o mnemonic
-offline, copie o `BTC_XPUB` para o `.env` e reinicie API/worker. O `xprv` fica
-somente no keystore (`SIGNER_KEYSTORE_PATH`, modo 0600). O worker valida que o
-keystore corresponde ao `BTC_XPUB`; se nao corresponder, o job de sweep nao
-inicia.
-
-O sweep:
-
-- agrupa UTXOs confirmados por endereco;
-- estima taxa pelo Esplora (`SWEEP_FEE_TARGET_BLOCKS`, `SWEEP_FEE_MULTIPLIER`);
-- respeita `SWEEP_MIN_SATS`/poeira e `SWEEP_MAX_FEE_PCT`;
-- assina no worker (`local`/`remote`) ou gera PSBT para assinatura manual (`psbt`);
-- transmite, marca os UTXOs como `gasto` e monitora confirmacoes;
-- faz RBF depois de `SWEEP_RBF_AFTER_SECONDS`, ate `SWEEP_MAX_ATTEMPTS`;
-- se a taxa/poeira tornar o sweep inviavel, cria um sweep `manual` para revisao;
-- `POST /admin/api/sweeps/:id/retry` restaura os UTXOs marcados como `gasto` e
-  libera uma nova tentativa.
-
-Sem keystore valido, o worker continua rodando os outros jobs e apenas desabilita
-o sweep.
+Em produção, `LNBITS_WEBHOOK_BASE_URL` é a URL pública HTTPS do motor: as
+wallets LNbits dos lojistas chamam `POST /webhooks/lnbits?w=<wallet>&token=...` (token próprio de cada wallet). Se o
+webhook não chegar, o job `lightning-reconcile` confere a invoice mesmo assim.
 
 ### Carteira Base de teste
 
@@ -93,173 +84,77 @@ o sweep.
 npm run wallet:base:init
 ```
 
-Gera uma treasury quente e uma carteira de loja descartaveis para testar PIX e
-payout USDC na Base. Nao commit as chaves.
+Gera uma carteira descartável para cadastrar como `usdc_settlement` e testar o
+PIX. Não commite a chave.
 
-### LNbits
-
-1. Abra `http://localhost:5001` e conclua o primeiro acesso.
-2. Crie uma wallet (FakeWallet em dev) e copie a **Invoice/read key**.
-3. Coloque a key em `LNBITS_API_KEY` no `.env`.
-4. Para o webhook chegar em `host.docker.internal`, habilite IPs privados no
-   admin (`Security -> callback allow private IPs`). Em dev, o valor também
-   pode ser ajustado no SQLite:
-
-```bash
-docker compose exec lnbits sh -lc 'cd /app && uv run python -c "import sqlite3; c=sqlite3.connect(\"/data/database.sqlite3\"); c.execute(\"update system_settings set value=? where id=?\", (\"true\",\"lnbits_callback_allow_private_ips\")); c.commit()"'
-docker compose restart lnbits
-```
-
-Em produção, mantenha isso desabilitado e use uma URL pública/HTTPS.
-
-### Esplora
-
-O compose sobe apenas `bitcoind` em regtest. Para on-chain, suba um
-Esplora/Electrum apontando para esse `bitcoind` e ajuste `ESPLORA_URL`.
-Sugestão para desenvolvimento: Nigiri (`nigiri start`) ou um Esplora próprio.
-
-## Producao (Docker + Caddy)
+## Produção (Docker + Caddy)
 
 ```bash
 cp .env.production.example .env.production
-# edite DOMAIN, POSTGRES_*, ADMIN_TOKEN, DATA_ENCRYPTION_KEY, BTC_XPUB,
-# COLD_WALLET_ADDRESS, LNBITS_*, ESPLORA_URL e SIGNER_*
+# edite DOMAIN, POSTGRES_*, ADMIN_TOKEN, DATA_ENCRYPTION_KEY, METRICS_TOKEN,
+# LNBITS_WEBHOOK_TOKEN, LNBITS_WEBHOOK_BASE_URL, ESPLORA_URL e LUNIUM_*
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-- O servico `migrate` aplica as migrations antes de API/worker.
-- O Caddy faz HTTPS automatico para `DOMAIN` (portas 80/443 abertas e DNS
-  apontando para o host).
-- O worker monta `./data:/app/data:ro` para ler o keystore; ajuste o dono para
-  UID 1000 e mantenha o arquivo em `0600`.
-- Em producao, prefira `SIGNER_MODE=remote`; use `local` apenas com o keystore
-  no worker.
-- Alertas opcionais: `ALERT_WEBHOOK_URL` recebe falhas de job, sweep manual,
-  pagamento duplicado e reorg.
+- O serviço `migrate` aplica as migrations antes de API e worker.
+- O Caddy faz HTTPS para `DOMAIN` (80/443 abertas, DNS apontando para o host).
+- Não há keystore, seed nem chave de carteira para guardar no servidor.
+- Guarde a `DATA_ENCRYPTION_KEY`: sem ela as Invoice keys e os segredos das
+  lojas gravados no banco não abrem.
 
-## Documentacao
+## API
 
-- [Manual do lojista (integração no seu site)](docs/manual.md)
-- [FAQ (exibido dentro do portal)](../public/app.html)
-- [API](docs/api.md)
-- [Checkout one-time + snippet](docs/checkout.md)
-- [Webhooks](docs/webhooks.md)
-- [PIX -> USDC](docs/pix.md)
-- [On-chain e sweep](docs/onchain.md)
-- [Deployment, endpoints e topologia](docs/deployment.md)
-- [Runbook operacional](docs/runbook.md)
-- [Observabilidade e reconciliacao](docs/observability.md)
-- [Drills de falha](docs/failure-drills.md)
-- [Diario de drills](docs/drills-log.md)
-
-## Criar cliente da API
-
-```bash
-npm run client:create -- --name "Minha loja" --webhook-url "http://localhost:9999/webhook"
-```
-
-Ou via admin:
-
-```bash
-curl -X POST http://localhost:4580/admin/api/clients \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Minha loja","webhook_url":"http://localhost:9999/webhook"}'
-```
-
-A resposta traz `apiKey`, `requestSecret` e `webhookSecret` **uma unica vez**.
-Guarde os tres. Para testar localmente, coloque `CLIENT_API_KEY` e
-`CLIENT_REQUEST_SECRET` no `.env`.
-
-## Criar cobranca
-
-```bash
-npm run intent:create
-# opcional: EXTERNAL_ID=pedido-1 AMOUNT_SATS=10000 DESCRIPTION="Pedido 1"
-```
-
-A resposta inclui:
-
-- `lightning.invoice` e `lightning.payment_hash`
-- `onchain.address`, `onchain.bip21` e `onchain.amount_btc`
-- `payment_uri` unificado (BIP21 + `lightning=`)
-- `qr_svg` pronto para renderizar
-
-### Autenticacao HMAC
-
-Toda rota `/v1/*` exige:
+Toda rota `/v1/*` (exceto `/v1/portal/*`) exige API key + HMAC:
 
 ```http
 Authorization: Bearer mk_btc_live_...
 X-Timestamp: 1792700000
 X-Nonce: um-valor-unico-com-8-a-128-chars
 X-Signature: v1=<hex>
-Content-Type: application/json
 ```
 
-String canonica:
+String canônica `METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(rawBody)`, assinada com
+`HMAC-SHA256(request_secret, canonica)`; janela de 300 s, nonce de uso único.
 
-```text
-METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(rawBody)
-```
-
-Assinatura: `HMAC-SHA256(request_secret, canonica)`. A janela de timestamp e
-de 300s e cada nonce so pode ser usado uma vez.
-
-## API
-
-| Metodo | Rota | Funcao |
+| Método | Rota | Função |
 |---|---|---|
-| `POST` | `/v1/payment-intents` | Cria cobranca Lightning + on-chain |
+| `POST` | `/v1/payment-intents` | Cria cobrança (trilhos conforme as carteiras da loja) |
 | `GET` | `/v1/payment-intents/:id` | Consulta status |
-| `GET` | `/v1/payment-intents?external_id=` | Busca por idempotencia |
+| `GET` | `/v1/payment-intents?external_id=` | Busca por idempotência |
 | `POST` | `/v1/payment-intents/:id/cancel` | Cancela se pendente |
-| `GET` | `/v1/balances` | Saldos do ledger da loja |
-| `GET` | `/v1/conversions` | Lista conversoes da loja |
-| `GET` | `/v1/conversions/:id` | Detalhe e pernas da conversao |
-| `GET` | `/v1/payouts` | Lista payouts da loja |
-| `GET` | `/v1/payouts/:id` | Detalhe do payout |
 | `GET` | `/v1/wallets` | Lista carteiras da loja |
-| `POST` | `/v1/wallets` | Cria carteira BTC ou USDC |
-| `GET` | `/v1/fx/rates` | Cotacoes BTC/BRL e BTC/USD |
-| `POST` | `/v1/pix-charges` | Cria cobranca PIX (Lunium) |
-| `GET` | `/v1/pix-charges/:id` | Consulta cobranca PIX |
-| `GET` | `/v1/pix-charges?external_id=` | Busca cobranca PIX por idempotencia |
+| `POST` | `/v1/wallets` | Cadastra `lightning_lnbits`, `btc_deposit` ou `usdc_settlement` |
+| `GET` | `/v1/fx/rates` | Cotações BTC/BRL e BTC/USD (para cobrar em reais) |
+| `POST` | `/v1/pix-charges` | Cria cobrança PIX (Lunium) |
+| `GET` | `/v1/pix-charges/:id` | Consulta cobrança PIX |
+| `GET` | `/v1/pix-charges?external_id=` | Busca PIX por idempotência |
+| `POST` | `/webhooks/lnbits?w=&token=` | Webhook de entrada das wallets LNbits (token por wallet) |
 | `POST` | `/webhooks/lunium` | Webhook de entrada da Lunium |
-| `POST` | `/webhooks/lnbits?token=` | Webhook de entrada do LNbits |
-| `POST` | `/admin/api/clients` | Cria cliente (admin) |
-| `GET` | `/admin/api/clients` | Lista clientes (admin) |
-| `GET` | `/admin/api/sweeps` | Lista sweeps (admin) |
-| `POST` | `/admin/api/sweeps/:id/retry` | Restaura UTXOs e tenta o sweep de novo |
-| `GET` | `/admin/api/status` | Contagens e saude operacional (admin) |
+| `POST/GET` | `/admin/api/clients` | Cria/lista clientes (admin) |
+| `GET` | `/admin/api/status` | Contagens e saúde (admin) |
 | `GET` | `/admin/api/webhooks` | Lista outbox (admin) |
 | `POST` | `/admin/api/webhooks/:id/replay` | Reenfileira webhook (admin) |
+| `GET` | `/admin/api/pix-charges` | Lista PIX (admin) |
+| `POST` | `/admin/api/pix-charges/:id/sync` | Força conciliação com a Lunium (admin) |
 | `GET` | `/health` | Liveness |
-| `GET` | `/ready` | DB, xpub, carteira fria, LNbits e Esplora |
+| `GET` | `/ready` | DB, Esplora (se on-chain) e Lunium (se PIX) |
 
-Rotas do portal (cookie de sessão, não HMAC):
+Cadastro de carteira via API:
 
-| Metodo | Rota | Funcao |
-|---|---|---|
-| `POST` | `/auth/register` | Cadastro (cria conta + loja default) |
-| `POST` | `/auth/login` | Login (define cookie de sessão) |
-| `POST` | `/auth/verify-email` | Confirma o e-mail |
-| `GET` | `/auth/me` | Dados do usuário + lojas |
-| `GET` | `/v1/portal/merchants` | Lista lojas do usuário |
-| `POST` | `/v1/portal/merchants` | Cria nova loja (revela credenciais 1x) |
-| `GET/PATCH` | `/v1/portal/merchants/:id` | Detalhe/atualiza loja |
-| `GET/POST/DELETE` | `/v1/portal/merchants/:id/wallets` | Carteiras da loja |
-| `POST` | `/v1/portal/merchants/:id/api-key/rotate` | Rotaciona API key |
-| `POST` | `/v1/portal/merchants/:id/checkout` | Cria checkout one-time |
-| `GET` | `/v1/portal/merchants/:id/intents` | Lista checkouts |
-| `GET` | `/v1/portal/merchants/:id/reports/*` | Relatórios (summary/by-rail/series) |
-| `POST/GET` | `/v1/portal/merchants/:id/subscriptions` | Assinaturas recorrentes |
-| `GET` | `/pay/:id` | Página pública de checkout |
-| `GET` | `/pay/:id/status` | Status público em JSON |
+```json
+{ "kind": "lightning_lnbits", "lnbits_url": "https://seu-lnbits.com", "invoice_key": "..." }
+{ "kind": "btc_deposit", "xpub": "xpub..." }
+{ "kind": "usdc_settlement", "address": "0x..." }
+```
 
-## Webhook de saida
+As rotas `/v1/balances`, `/v1/conversions` e `/v1/payouts` continuam só como
+histórico de versões anteriores; não há conversão nem payout novos.
 
-O payload e assinado com o `webhookSecret` do cliente:
+Rotas do portal (cookie de sessão + `X-CSRF-Token`): `/auth/*`,
+`/v1/portal/merchants/...` (lojas, carteiras, webhook, checkout, relatórios e
+assinaturas). Página pública: `/pay/:id` e `/pay/:id/status`.
+
+## Webhook de saída
 
 ```http
 X-Webhook-Signature: t=<unix>,v1=<hex>
@@ -268,47 +163,33 @@ X-Webhook-Delivery: <event_id>
 ```
 
 Assinatura: `HMAC-SHA256(webhook_secret, "${timestamp}.${body}")`.
-
-Eventos: `payment_intent.paid`, `payment_intent.paid_late`,
-`payment_intent.partial`, `payment_intent.expired`,
-`payment_intent.canceled`, `payment_intent.reorged`.
-
-O outbox grava o evento antes da primeira tentativa, tenta novamente com
-backoff e usa `event_id`/`dedupe_key` para idempotencia.
+Eventos: `payment_intent.paid`, `.paid_late`, `.partial`, `.expired`,
+`.canceled`, `.reorged` e, no PIX, `pix_charge.created`, `.paid`, `.settled`,
+`.expired`, `.refunded`, `.failed`.
 
 ## Worker
 
-O worker roda em processo separado:
-
-| Job | Padrao | Funcao |
+| Job | Padrão | Função |
 |---|---|---|
-| `lightning-reconcile` | 15s | Confirma invoices pagas quando o webhook se perde |
-| `expiry` | 10s | Expira/parcializa intents vencidas |
-| `onchain-watch` | 15s | Le UTXOs, confirmacoes e reorg no Esplora |
-| `webhook-delivery` | 10s | Entrega o outbox com assinatura e retry |
-| `sweep` | 30s | Cria/monitora sweeps e faz RBF |
-
-> O sweep marca os UTXOs varridos como `gasto` em `onchain_payments`; assim o
-> watcher nao interpreta a varredura como reorg.
+| `lightning-reconcile` | 15 s | Confere na wallet LNbits do lojista as invoices pendentes |
+| `expiry` | 10 s | Expira/parcializa cobranças vencidas |
+| `onchain-watch` | 15 s | Lê UTXOs, confirmações e reorg no Esplora |
+| `pix-reconcile` / `lunium-inbox` | 30 s | Concilia o PIX com a Lunium |
+| `subscription-charge` | 60 s | Gera a cobrança de cada ciclo de assinatura |
+| `webhook-delivery` | 10 s | Entrega o outbox com assinatura e retry |
+| `reconciliation` | 24 h | Registra a conciliação diária |
 
 ## Testes
 
 ```bash
-npm test                 # testes unitarios (vitest)
+npm test                 # unitários
 TEST_DATABASE_URL=postgres://btc:btc_dev_password@localhost:5434/btc_payments_test \
-  npm run test:integration # testes de integracao (requer banco de teste)
+  npm run test:integration
 ```
 
-A suite de integracao espera as migrations aplicadas no banco de teste.
+## Segurança
 
-## Seguranca
-
-- `BTC_XPUB` e chave **publica** de conta BIP84 (`m/84'/0'/0'`). Nunca use
-  `xprv`/seed na API.
-- O `xprv` do sweep fica apenas no worker (keystore cifrado) ou em um signer
-  remoto.
-- `COLD_WALLET_ADDRESS` e validado contra a rede no boot.
-- Segredos sao cifrados com AES-256-GCM.
-- Logs tem redaction para API keys, xpub/xprv, invoices e PSBT.
-- O webhook do LNbits nao e confiavel: o status e sempre confirmado em
-  `GET /api/v1/payments/{payment_hash}`.
+- O servidor não tem seed, xprv nem chave de carteira. O xpub do lojista só
+  deriva endereços; a Invoice key do LNbits só cria e lê invoices.
+- Segredos são cifrados com AES-256-GCM; logs têm redaction de chaves e CPF.
+- Webhooks de entrada (LNbits, Lunium) nunca são prova: o motor confere na fonte.

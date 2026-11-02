@@ -1,9 +1,9 @@
 # Manual do lojista
 
 Guia prático para você, lojista que programa o próprio site, integrar o Motor
-Cripto sozinho. O motor **não guarda** os seus dólares: ele gera o *caminho* do
-pagamento (QR/invoice) e confirma a chegada; a liquidação (USDC) cai na carteira
-que você cadastrar.
+Cripto sozinho. O motor **não guarda nem converte** o seu dinheiro: ele gera o
+*caminho* do pagamento (QR/invoice) e confirma a chegada; o valor cai direto nas
+carteiras que você cadastrar.
 
 Índice:
 
@@ -27,8 +27,9 @@ que você cadastrar.
 - Você cria uma **cobrança** e mostra o **QR** (Bitcoin on-chain + Lightning) ou
   um **PIX** para o seu cliente.
 - O motor **prova** o pagamento e te avisa por **webhook**.
-- O valor é convertido e entregue em **USDC na Base** na carteira que você
-  cadastrou. Você não precisa saber nada de Bitcoin para vender.
+- O dinheiro cai **direto nas suas carteiras**, na moeda em que foi pago:
+  Lightning na sua wallet LNbits, on-chain no seu xpub e PIX como USDC na sua
+  carteira Base. Nada é convertido.
 
 ---
 
@@ -49,13 +50,15 @@ loja, carteiras, criar QR, relatórios e assinaturas.
 
 ## Lojas e carteiras
 
-Uma conta pode ter **várias lojas** (workspaces). Cada loja tem dois tipos de
-carteira:
+Uma conta pode ter **várias lojas** (workspaces). Cada loja tem três tipos de
+carteira, um por trilho. O dinheiro cai direto nelas; o motor não guarda nem
+converte nada:
 
 | Tipo | Para quê | O que informar |
 | --- | --- | --- |
-| `btc_deposit` | derivar endereços de depósito on-chain | `xpub` de **conta** BIP84 (`m/84'/0'/0'`), **nunca** `xprv`/seed |
-| `usdc_settlement` | receber o USDC liquidado | endereço `0x...` na Base |
+| `lightning_lnbits` | receber Lightning direto na sua wallet LNbits | URL do seu LNbits + **Invoice key** (nunca a Admin key) |
+| `btc_deposit` | receber on-chain em endereços derivados do seu xpub | `xpub` de **conta** BIP84 (`m/84'/0'/0'`), **nunca** `xprv`/seed |
+| `usdc_settlement` | receber o PIX, já em USDC (a Lunium entrega direto) | endereço `0x...` na Base |
 
 No dashboard: **Carteiras → Adicionar**. O endereço USDC é único por loja; o
 mesmo endereço em outra loja é recusado (409).
@@ -63,15 +66,27 @@ mesmo endereço em outra loja é recusado (409).
 > O `xpub` é a sua **chave pública** de conta. Com ele o motor deriva endereços,
 > mas **não** pode gastar. Nunca cole um `xprv`, uma seed ou um mnemonic aqui.
 
+> **Configure o gap limit da sua carteira em 1000** (Sparrow: Settings →
+> Advanced → Gap limit; Electrum: `wallet.change_gap_limit(1000)`). Cada
+> cobrança usa um endereço novo, inclusive as que expiram sem pagamento.
+
+> **Lightning:** use a **Invoice key** da sua wallet LNbits. A Admin key (que
+> gasta o saldo) é recusada no cadastro.
+
+> Toda troca de carteira gera o webhook `merchant.wallet_changed` (e e-mail,
+> quando o operador ligar um provedor). Se não foi você, troque a senha.
+
 ---
 
 ## Credenciais da API
 
 Criar uma loja mostra **uma única vez**:
 
-- `api_key` (`mk_btc_live_...`) → cabeçalho `Authorization`.
-- `request_secret` → chave do **HMAC** das suas requisições ao motor.
-- `webhook_secret` → chave do HMAC dos webhooks **enviados para você**.
+- `apiKey` (`mk_btc_live_...`) → cabeçalho `Authorization`.
+- `requestSecret` → chave do **HMAC** das suas requisições ao motor (o
+  `request_secret` deste manual).
+- `webhookSecret` → chave do HMAC dos webhooks **enviados para você** (o
+  `webhook_secret` deste manual).
 
 Depois, no dashboard você só vê o **prefixo**. Perdeu a chave? Rotacione em
 `.../api-key/rotate` (a antiga para de valer na hora).
@@ -244,7 +259,7 @@ function ok(secret, header, rawBody) {
 - Guarde `event_id` / `X-Webhook-Delivery` para deduplicar: o mesmo evento pode
   chegar duas vezes se a sua resposta demorar.
 - Eventos: `payment_intent.paid`, `.paid_late`, `.partial`, `.expired`,
-  `.canceled`, `.reorged`, e os de liquidação (`converted`, `payout_*`).
+  `.canceled`, `.reorged`, e, no PIX, `pix_charge.paid` / `pix_charge.settled`.
 
 ---
 

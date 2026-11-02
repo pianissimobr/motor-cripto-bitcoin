@@ -127,12 +127,16 @@ export const merchantWallets = pgTable(
       onDelete: 'cascade',
     }),
     kind: text('kind')
-      .$type<'btc_deposit' | 'usdc_settlement' | 'btc_cold'>()
+      .$type<'btc_deposit' | 'usdc_settlement' | 'btc_cold' | 'lightning_lnbits'>()
       .notNull(),
     chain: text('chain').notNull(),
     network: text('network').notNull(),
     address: text('address').notNull(),
     xpub: text('xpub'),
+    /** URL da instancia LNbits do lojista (so `lightning_lnbits`). */
+    lnbitsUrl: text('lnbits_url'),
+    /** Invoice key da wallet LNbits do lojista, cifrada (so `lightning_lnbits`). */
+    secretEnc: text('secret_enc'),
     derivationPrefix: text('derivation_prefix'),
     status: text('status').$type<'ativo' | 'inativo'>().notNull().default('ativo'),
     createdAt: createdAt(),
@@ -147,7 +151,7 @@ export const merchantWallets = pgTable(
     ),
     check(
       'merchant_wallets_kind_chk',
-      sql`${table.kind} in ('btc_deposit', 'usdc_settlement', 'btc_cold')`,
+      sql`${table.kind} in ('btc_deposit', 'usdc_settlement', 'btc_cold', 'lightning_lnbits')`,
     ),
     check(
       'merchant_wallets_status_chk',
@@ -247,6 +251,8 @@ export const paymentIntents = pgTable(
     paidAmountSats: bigint('paid_amount_sats', { mode: 'bigint' }),
     overpaidSats: bigint('overpaid_sats', { mode: 'bigint' }),
     lightningPaymentHash: text('lightning_payment_hash'),
+    /** Wallet LNbits do lojista onde a invoice foi criada (e onde se confere). */
+    lightningWalletId: uuid('lightning_wallet_id'),
     lightningInvoice: text('lightning_invoice'),
     lightningExpiresAt: timestamp('lightning_expires_at', {
       withTimezone: true,
@@ -481,7 +487,9 @@ export const webhookEvents = pgTable(
     index('webhook_events_pix_charge_idx').on(table.pixChargeId),
     check(
       'webhook_events_source_chk',
-      sql`((${table.intentId} is not null)::int + (${table.pixChargeId} is not null)::int) = 1`,
+      // No maximo uma cobranca de origem; eventos da propria loja (ex.:
+      // merchant.wallet_changed) nao tem cobranca.
+      sql`((${table.intentId} is not null)::int + (${table.pixChargeId} is not null)::int) <= 1`,
     ),
     check(
       'webhook_events_status_chk',

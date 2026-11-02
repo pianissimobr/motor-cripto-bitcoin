@@ -95,7 +95,7 @@ export class AuthService {
   }): Promise<{
     user: SafeUser;
     merchant: { id: string; name: string; apiKey: string; requestSecret: string; webhookSecret: string };
-    verificationToken: string;
+    verificationToken?: string;
   }> {
     const email = this.normalizeEmail(input.email);
     if (!isStrongEnoughPassword(input.password)) {
@@ -153,7 +153,9 @@ export class AuthService {
         requestSecret: merchant.requestSecret,
         webhookSecret: merchant.webhookSecret,
       },
-      verificationToken,
+      // Fora de producao o token volta para facilitar o teste; em producao so
+      // sai pelo EmailSender.
+      ...(this.deps.config.service.isProduction ? {} : { verificationToken }),
     };
   }
 
@@ -280,9 +282,10 @@ export class AuthService {
         expiresAt: new Date(this.now().getTime() + RESET_TOKEN_TTL_MS),
       });
       await this.deps.emailSender.sendPasswordResetEmail({ to: user.email, token: resetToken });
-      // MVP: sem SMTP, o token volta na resposta. Reforçar com provedor real
-      // antes de ir a produção (ver decisão "EmailSender plugável").
-      return { ok: true, resetToken };
+      // Sem provedor de e-mail, o token so volta na resposta fora de producao.
+      // Em producao isso entregaria a conta de qualquer lojista a quem souber o
+      // e-mail dele: o token so sai pelo EmailSender.
+      return this.deps.config.service.isProduction ? { ok: true } : { ok: true, resetToken };
     }
     return { ok: true };
   }

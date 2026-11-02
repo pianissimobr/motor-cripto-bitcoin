@@ -14,6 +14,11 @@ import type { Logger } from '../logger.js';
 import type { AuthService } from '../services/auth-service.js';
 import type { ClientService } from '../services/client-service.js';
 import type { MerchantWalletService } from '../services/merchant-wallet-service.js';
+import type { WalletChangeNotifier } from '../services/wallet-change-notifier.js';
+import {
+  createLightningWallet,
+  type LnbitsFactory,
+} from '../services/merchant-lightning.js';
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
 import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
@@ -29,6 +34,8 @@ export type PortalRoutesDeps = {
   paymentIntents: PaymentIntentService;
   reports?: ReportService;
   subscriptions?: SubscriptionService;
+  lnbitsFor?: LnbitsFactory;
+  walletNotifier?: WalletChangeNotifier;
 };
 
 const createMerchantSchema = z
@@ -54,6 +61,13 @@ const createWalletSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('usdc_settlement'),
       address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('lightning_lnbits'),
+      lnbits_url: z.string().trim().min(1).max(300),
+      invoice_key: z.string().trim().min(8).max(200),
     })
     .strict(),
 ]);
@@ -131,6 +145,7 @@ function serializeWallet(wallet: MerchantWallet): Record<string, unknown> {
     address: wallet.address,
     xpub: wallet.xpub,
     derivation_prefix: wallet.derivationPrefix,
+    lnbits_url: wallet.lnbitsUrl,
     status: wallet.status,
     created_at: wallet.createdAt.toISOString(),
     updated_at: wallet.updatedAt.toISOString(),
@@ -264,7 +279,7 @@ export function registerPortalRoutes(
 
   app.post('/v1/portal/merchants/:id/wallets', async (request, reply) => {
     const { id } = parse(idParamsSchema, request.params, 'params');
-    await memberOrThrow(request, id, true);
+    const userId = await memberOrThrow(request, id, true);
     const body = parse(createWalletSchema, request.body ?? {}, 'corpo');
     if (body.kind === 'usdc_settlement') {
       const existing = await deps.repos.findMerchantWalletByChainAddress(
@@ -285,6 +300,12 @@ export function registerPortalRoutes(
       });
       const created = await deps.repos.findMerchantWalletById(wallet.id);
       if (!created) throw new NotFoundError('carteira nao encontrada');
+      await deps.walletNotifier?.notify({ merchantId: id, wallet: created, action: 'cadastrada', actor: `portal:${userId}` });
+      return reply.status(201).send(serializeWallet(created));
+    }
+    if (body.kind === 'lightning_lnbits') {
+      const created = await createLightningWallet(deps, id, body);
+      await deps.walletNotifier?.notify({ merchantId: id, wallet: created, action: 'cadastrada', actor: `portal:${userId}` });
       return reply.status(201).send(serializeWallet(created));
     }
     const wallet = await deps.wallets.createBtcDeposit({
@@ -294,6 +315,10 @@ export function registerPortalRoutes(
       network: deps.config.btc.network,
       gapLimit: deps.config.btc.gapLimit,
     });
+    const btcWallet = await deps.repos.findMerchantWalletById(wallet.id);
+    if (btcWallet) {
+      await deps.walletNotifier?.notify({ merchantId: id, wallet: btcWallet, action: 'cadastrada', actor: `portal:${userId}` });
+    }
     return reply.status(201).send({
       id: wallet.id,
       kind: 'btc_deposit',
@@ -306,12 +331,13 @@ export function registerPortalRoutes(
 
   app.delete('/v1/portal/merchants/:id/wallets/:walletId', async (request) => {
     const { id, walletId } = parse(walletParamsSchema, request.params, 'params');
-    await memberOrThrow(request, id, true);
+    const userId = await memberOrThrow(request, id, true);
     const wallet = await deps.repos.findMerchantWalletById(walletId);
     if (!wallet || wallet.merchantId !== id) {
       throw new NotFoundError('carteira nao encontrada');
     }
     await deps.repos.deactivateMerchantWallet(walletId);
+    await deps.walletNotifier?.notify({ merchantId: id, wallet, action: 'removida', actor: `portal:${userId}` });
     return { ok: true };
   });
 

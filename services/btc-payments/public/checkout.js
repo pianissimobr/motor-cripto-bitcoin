@@ -11,9 +11,14 @@
  *   MotorCheckout.open('<payment_id>');
  */
 (function (global) {
+  // O snippet roda no site do lojista: a pagina de pagamento fica no dominio
+  // de onde o proprio script foi carregado, nao no dominio do lojista.
+  var current = document.currentScript && document.currentScript.src;
+  var origin = current ? new URL(current).origin : window.location.origin;
+
   function open(paymentId) {
     if (!paymentId) throw new Error('MotorCheckout: payment_id ausente');
-    const url = '/pay/' + encodeURIComponent(paymentId);
+    const url = origin + '/pay/' + encodeURIComponent(paymentId);
     const name = 'motor-checkout';
     const width = 480;
     const height = 760;

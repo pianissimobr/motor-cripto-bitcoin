@@ -1,54 +1,44 @@
 # PIX -> USDC na Base (Lunium)
 
-Fluxo paralelo ao Bitcoin: o cliente paga uma cobrança PIX e a loja recebe
-USDC nativo na Base, via treasury intermediaria.
+Fluxo paralelo ao Bitcoin: quem paga faz um PIX e a Lunium entrega USDC
+nativo na Base **direto na carteira `usdc_settlement` do lojista**. A
+plataforma nao custodia o USDC, nao usa carteira quente e nao paga gas.
 
 ## Fluxo
 
 ```text
 Checkout
-  -> POST /v1/pix-charges
+  -> POST /v1/pix-charges (exige carteira usdc_settlement ativa na loja)
   -> Lunium POST /cashin/charge
        destino=cripto, asset=usdc, chain=base,
-       payout_address=<TREASURY_USDC_ADDRESS>
+       payout_address=<carteira usdc_settlement do lojista>
   <- qr_copypaste + qr_image_url + expires_at
 
 Lunium
   -> POST /webhooks/lunium
   -> inbox durável (provider_events)
   -> worker consulta GET /cashin/{cashin_id}/status
-  -> ledger: débito treasury:usdc / crédito merchant:<id>:usdc_available
-  -> PayoutService envia USDC na Base para a carteira allowlisted da loja
+  -> paid           -> pix_charge.paid (a loja pode liberar o pedido)
+  -> paid + sent    -> confere na Base que o USDC chegou ao lojista
+                    -> status liquidado, settlement_status pago
+                    -> pix_charge.settled
 ```
 
+- O CPF/CNPJ informado tem de ser o de quem paga; divergencia faz a Lunium
+  devolver o PIX (`PAYER_MISMATCH`).
+- Taxa Lunium: 3,3% + R$ 1,00 por cobranca (mais a comissao de parceiro, se
+  houver). O valor em USDC que chega e o `asset_amount` da Lunium.
 
-## Carteiras Base de teste
-
-Gere duas carteiras EVM descartaveis: uma treasury quente (recebe USDC da
-Lunium e paga a loja) e uma carteira de loja (recebe o payout).
+## Carteira Base de teste
 
 ```bash
 cd services/btc-payments
-npm run wallet:base:init
-# ou para automacao:
-npm run wallet:base:init -- --json
+npm run wallet:base:init          # ou: -- --json
 ```
 
-O script imprime:
-
-```env
-PAYOUT_HOT_ADDRESS=0x...
-TREASURY_USDC_ADDRESS=0x...
-BASE_PAYOUT_PRIVATE_KEY=0x...
-MERCHANT_USDC_ADDRESS=0x...
-MERCHANT_PRIVATE_KEY=0x...
-```
-
-- `TREASURY_USDC_ADDRESS` e `PAYOUT_HOT_ADDRESS` devem ser o mesmo endereco.
-- A treasury precisa de ETH na Base para gas.
-- A carteira da loja nao precisa de ETH para receber USDC.
-- Cadastre `MERCHANT_USDC_ADDRESS` como `usdc_settlement` da loja.
-- Nunca commite as chaves. Use apenas em ambiente de teste.
+O script imprime `MERCHANT_USDC_ADDRESS` e `MERCHANT_PRIVATE_KEY`. Cadastre o
+endereco como `usdc_settlement` da loja de teste. Nao precisa de ETH para
+receber USDC. Nunca commite a chave.
 
 ## Configuração
 
@@ -149,10 +139,6 @@ pix_charge.settled
 pix_charge.expired
 pix_charge.refunded
 pix_charge.failed
-pix_charge.payout_pending
-pix_charge.payout_sent
-pix_charge.payout_confirmed
-pix_charge.payout_failed
 ```
 
 A assinatura e a mesma do webhook BTC:
@@ -176,6 +162,7 @@ HMAC-SHA256(webhook_secret, "${timestamp}.${rawBody}")
 - Sem cancelamento na Lunium: cancelamento local so antes de `paid`.
 - Timeout/5xx na criacao vira `incerto`; reconciliar por `external_id`.
 - Nao criar segunda cobranca apos timeout.
-- Sem carteira USDC da loja, a cobranca fica `manual` e gera alerta.
-- `PAYOUT_ENABLED=false` mantem a cobranca `liquidado`; o job de payout pega
-  quando habilitado.
+- Sem carteira USDC da loja, a cobranca nem e criada: `409
+  settlement_wallet_required`.
+- `liquidado` ja significa USDC entregue ao lojista; nao ha payout depois.
+- Status posterior a `liquidado` (ex.: refund) vira `manual` com alerta.

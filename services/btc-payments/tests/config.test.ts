@@ -7,16 +7,8 @@ const BASE_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgres://btc:btc@localhost:5433/btc_payments',
   DATA_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   BTC_NETWORK: 'bitcoin',
-  BTC_XPUB:
-    'xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V',
-  LNBITS_URL: 'http://localhost:5001',
-  LNBITS_API_KEY: 'invoice-key',
   LNBITS_WEBHOOK_TOKEN: 'webhook-token',
   ESPLORA_URL: 'http://localhost:3000',
-  SWEEP_ENABLED: 'true',
-  COLD_WALLET_ADDRESS: 'bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g',
-  SIGNER_MODE: 'local',
-  SIGNER_PASSPHRASE: 'passphrase-de-teste',
 };
 
 describe('config', () => {
@@ -28,37 +20,35 @@ describe('config', () => {
     expect(config.lightning.ttlSeconds).toBe(600);
     expect(config.lightning.webhookBaseUrl).toBe('http://localhost:4580');
     expect(config.crypto.activeKid).toBe('k1');
-    expect(config.sweep.coldWalletAddress).toBe(
-      'bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g',
-    );
   });
 
-  it('falha sem BTC_XPUB', () => {
+  it('nao exige carteira da plataforma: o Bitcoin vai para as carteiras dos lojistas', () => {
+    const config = loadConfig(BASE_ENV);
+    expect(config.lightning.enabled).toBe(true);
+    expect(config.onchain.enabled).toBe(true);
+  });
+
+  it('on-chain exige ESPLORA_URL para provar os depositos', () => {
     const env = { ...BASE_ENV };
-    delete env.BTC_XPUB;
-    expect(() => loadConfig(env)).toThrow();
+    delete env.ESPLORA_URL;
+    expect(() => loadConfig(env)).toThrow(/ESPLORA_URL/);
   });
 
-  it('falha com sweep habilitado sem carteira fria', () => {
+  it('Lightning exige o token do webhook de entrada', () => {
     const env = { ...BASE_ENV };
-    delete env.COLD_WALLET_ADDRESS;
-    expect(() => loadConfig(env)).toThrow(/COLD_WALLET_ADDRESS/);
+    delete env.LNBITS_WEBHOOK_TOKEN;
+    expect(() => loadConfig(env)).toThrow(/LNBITS_WEBHOOK_TOKEN/);
   });
 
-  it('falha com signer remoto sem URL', () => {
-    const env = { ...BASE_ENV, SIGNER_MODE: 'remote' };
-    expect(() => loadConfig(env)).toThrow(/SIGNER_REMOTE_URL/);
-  });
-
-  it('em producao exige token do signer remoto', () => {
-    const env = {
+  it('PIX exige credenciais da Lunium, mas nenhuma carteira da plataforma', () => {
+    expect(() => loadConfig({ ...BASE_ENV, PIX_ENABLED: 'true' })).toThrow(/LUNIUM_API_KEY/);
+    const config = loadConfig({
       ...BASE_ENV,
-      NODE_ENV: 'production',
-      ADMIN_TOKEN: 'a'.repeat(32),
-      SIGNER_MODE: 'remote',
-      SIGNER_REMOTE_URL: 'https://signer.example',
-    };
-    expect(() => loadConfig(env)).toThrow(/SIGNER_REMOTE_TOKEN/);
+      PIX_ENABLED: 'true',
+      LUNIUM_API_KEY: 'lun_test_x',
+      LUNIUM_WEBHOOK_SECRET: 'segredo-123',
+    });
+    expect(config.pix.enabled).toBe(true);
   });
 
   it('rejeita prefixo hardened', () => {

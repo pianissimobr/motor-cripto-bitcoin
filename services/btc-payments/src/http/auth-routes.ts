@@ -133,7 +133,7 @@ export function registerAuthRoutes(
     return reply.status(201).send({
       user: result.user,
       merchant: result.merchant,
-      verification_token: result.verificationToken,
+      ...(result.verificationToken ? { verification_token: result.verificationToken } : {}),
     });
   });
 

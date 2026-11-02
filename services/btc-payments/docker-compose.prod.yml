@@ -52,9 +52,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    volumes:
-      # Apenas o worker le o keystore. Ajuste o dono para UID 1000.
-      - ./data:/app/data:ro
     restart: unless-stopped
 
   caddy:

@@ -1,16 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Address } from 'viem';
 import { LuniumClient, type LuniumCharge } from '../src/adapters/lunium/client.js';
 import { signWebhook } from '../src/crypto/hmac.js';
-import type { UsdcPayoutAdapter } from '../src/adapters/payout/base-usdc.js';
 import type { AppConfig } from '../src/config.js';
 import { createDb, type DbClient } from '../src/db/client.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
-import { merchantAccountCode } from '../src/domain/ledger.js';
+import { merchantAccountCode, PLATFORM_ACCOUNTS } from '../src/domain/ledger.js';
 import { LedgerService } from '../src/ledger/ledger-service.js';
 import { silentLogger } from '../src/logger.js';
 import { MerchantWalletService } from '../src/services/merchant-wallet-service.js';
-import { PayoutService } from '../src/services/payout-service.js';
 import { PixChargeService } from '../src/services/pix-charge-service.js';
 import { LuniumWebhookService } from '../src/services/lunium-webhook-service.js';
 import { testConfig, truncateAll } from './helpers.js';
@@ -18,35 +15,13 @@ import { testConfig, truncateAll } from './helpers.js';
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
 const USDC_WALLET = '0x1111111111111111111111111111111111111111';
-const USDC_HOT = '0x2222222222222222222222222222222222222222';
 const BASE_TXID = `0x${'b'.repeat(64)}`;
-
-function fakePayoutAdapter(options: { reverted?: boolean } = {}): UsdcPayoutAdapter {
-  return {
-    getAddress: () => USDC_HOT as Address,
-    async getGasBalanceWei() {
-      return 1_000_000_000_000_000_000n;
-    },
-    async transfer() {
-      return { kind: 'sent', txid: BASE_TXID };
-    },
-    async getConfirmation() {
-      return {
-        confirmed: !options.reverted,
-        reverted: options.reverted ?? false,
-        blockNumber: 1n,
-      };
-    },
-    describe() {
-      return 'fake';
-    },
-  };
-}
 
 class FakeLunium {
   counter = 0;
   createCalls = 0;
   failCreate = false;
+  payoutAddresses: string[] = [];
   charge: LuniumCharge = {
     cashin_id: 'ci_test_1',
     status: 'pending',
@@ -63,8 +38,9 @@ class FakeLunium {
     return { max_amount_cents: 250_000 };
   }
 
-  async createCharge() {
+  async createCharge(input: { payoutAddress: string }) {
     this.createCalls++;
+    this.payoutAddresses.push(input.payoutAddress);
     if (this.failCreate) {
       throw new Error('timeout simulado');
     }
@@ -92,7 +68,6 @@ maybeDescribe('PIX -> USDC (integration)', () => {
   let ledger: LedgerService;
   let wallets: MerchantWalletService;
   let pixCharges: PixChargeService;
-  let payouts: PayoutService;
 
   beforeEach(async () => {
     if (!db) {
@@ -104,9 +79,8 @@ maybeDescribe('PIX -> USDC (integration)', () => {
       PIX_ENABLED: 'true',
       LUNIUM_API_KEY: 'lun_test_key',
       LUNIUM_WEBHOOK_SECRET: 'lunium-webhook-secret',
-      TREASURY_USDC_ADDRESS: USDC_WALLET,
-      PAYOUT_ENABLED: 'true',
-      PAYOUT_NEW_WALLET_CARE_SECONDS: '0',
+      // Sem RPC da Base nos testes; a verificacao on-chain tem teste proprio.
+      PIX_VERIFY_SETTLEMENT_TX: 'false',
     });
     ledger = new LedgerService(db.db);
     wallets = new MerchantWalletService(db.db);
@@ -115,13 +89,6 @@ maybeDescribe('PIX -> USDC (integration)', () => {
       repos,
       ledger,
       lunium: fake as unknown as LuniumClient,
-      config,
-      logger: silentLogger,
-    });
-    payouts = new PayoutService({
-      repos,
-      ledger,
-      adapter: fakePayoutAdapter(),
       config,
       logger: silentLogger,
     });
@@ -169,6 +136,12 @@ maybeDescribe('PIX -> USDC (integration)', () => {
       webhookUrl: 'http://localhost:9999/webhook',
       webhookSecretEnc: 'secret',
     })).id;
+    await wallets.createUsdcSettlement({
+      merchantId: clientId,
+      address: USDC_WALLET,
+      chain: 'base',
+      network: 'base',
+    });
     const fake = new FakeLunium();
     const lunium = new LuniumClient({
       apiUrl: 'https://lunium.test',
@@ -325,29 +298,20 @@ maybeDescribe('PIX -> USDC (integration)', () => {
     );
   });
 
-  it('marca manual quando a loja nao tem carteira USDC', async () => {
+  it('recusa criar a cobranca quando a loja nao tem carteira USDC', async () => {
     const clientId = await createMerchant('loja sem carteira pix', false);
-    const created = await pixCharges.create({
-      clientId,
-      externalId: 'pix-sem-carteira',
-      amountBrlCents: 2_500n,
-      payerTaxNumber: '00000000191',
-    });
-    fakeLunium().charge = {
-      ...fakeLunium().charge,
-      status: 'paid',
-      settlement_status: 'sent',
-      asset_amount: '2.45',
-    };
-    await pixCharges.sync(created.dto.id);
-
-    expect(await payouts.createPixPayouts(10)).toMatchObject({
-      created: 0,
-      errors: 1,
-    });
-    const current = await pixCharges.getById(clientId, created.dto.id);
-    expect(current.settlement_status).toBe('manual');
-    expect(current.payout_id).toBeNull();
+    await expect(
+      pixCharges.create({
+        clientId,
+        externalId: 'pix-sem-carteira',
+        amountBrlCents: 2_500n,
+        payerTaxNumber: '00000000191',
+      }),
+    ).rejects.toMatchObject({ code: 'settlement_wallet_required', statusCode: 409 });
+    expect(fakeLunium().createCalls).toBe(0);
+    expect(
+      await repos.findPixChargeByClientAndExternalId(clientId, 'pix-sem-carteira'),
+    ).toBeNull();
   });
 
   it('timeout nao cria cobranca duplicada no retry', async () => {
@@ -397,39 +361,7 @@ maybeDescribe('PIX -> USDC (integration)', () => {
     expect(created.dto.pix.qr_svg).toContain('<svg');
   });
 
-  it('payout revertido de PIX vai para revisao manual', async () => {
-    const clientId = await createMerchant('loja reversao pix');
-    const created = await pixCharges.create({
-      clientId,
-      externalId: 'pix-revert',
-      amountBrlCents: 2_500n,
-      payerTaxNumber: '00000000191',
-    });
-    fakeLunium().charge = {
-      ...fakeLunium().charge,
-      status: 'paid',
-      settlement_status: 'sent',
-      asset_amount: '2.45',
-    };
-    await pixCharges.sync(created.dto.id);
-    await payouts.createPixPayouts(10);
-    await payouts.sendApproved(10);
-
-    const reverting = new PayoutService({
-      repos,
-      ledger,
-      adapter: fakePayoutAdapter({ reverted: true }),
-      config,
-      logger: silentLogger,
-    });
-    expect(await reverting.monitor(10)).toMatchObject({ failed: 1 });
-
-    const current = await pixCharges.getById(clientId, created.dto.id);
-    expect(current.status).toBe('manual');
-    expect(current.settlement_status).toBe('manual');
-  });
-
-  it('cria cobranca PIX idempotente, liquida em ledger e cria payout USDC', async () => {
+  it('cria cobranca PIX idempotente e liquida direto na carteira do lojista', async () => {
     const clientId = (await repos.createClient({
       id: crypto.randomUUID(),
       name: 'loja pix',
@@ -477,23 +409,22 @@ maybeDescribe('PIX -> USDC (integration)', () => {
 
     const settled = await pixCharges.sync(created.dto.id);
     expect(settled.status).toBe('liquidado');
-    expect(settled.settlement_status).toBe('convertido');
+    // A Lunium entregou na carteira do lojista: liquidado ja e pago.
+    expect(settled.settlement_status).toBe('pago');
+    expect(settled.payout_id).toBeNull();
+    expect(fake.payoutAddresses).toEqual([USDC_WALLET]);
 
-    const balances = await ledger.getMerchantBalances(clientId);
-    const usdc = balances.find(
-      (item) => item.accountCode === merchantAccountCode(clientId, 'usdc_available'),
+    // Sem custodia de USDC: nada no ledger da plataforma nem da loja.
+    const treasury = await ledger.getAccountTotals(PLATFORM_ACCOUNTS.treasuryUsdc, 'USDC');
+    expect(treasury.debit).toBe(0n);
+    const merchant = await ledger.getAccountTotals(
+      merchantAccountCode(clientId, 'usdc_available'),
+      'USDC',
     );
-    expect(usdc?.balance).toBe(2_450_000n);
+    expect(merchant.credit).toBe(0n);
 
-    expect(await payouts.createPixPayouts(10)).toMatchObject({
-      created: 1,
-      automatic: 1,
-    });
-    expect(await payouts.sendApproved(10)).toMatchObject({ sent: 1 });
-    expect(await payouts.monitor(10)).toMatchObject({ confirmed: 1 });
-
-    const final = await pixCharges.getById(clientId, created.dto.id);
-    expect(final.settlement_status).toBe('pago');
-    expect(final.payout_id).toBeTruthy();
+    const events = await repos.listWebhookEvents(50);
+    expect(events.some((event) => event.eventType === 'pix_charge.settled')).toBe(true);
+    expect(events.some((event) => event.eventType.startsWith('pix_charge.payout'))).toBe(false);
   });
 });

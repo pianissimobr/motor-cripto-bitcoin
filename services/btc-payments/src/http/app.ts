@@ -5,8 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
-import { AppError } from '../domain/errors.js';
-import { sha256Hex } from '../crypto/hmac.js';
+import { AppError, ValidationError } from '../domain/errors.js';
 import type { Logger } from '../logger.js';
 import type { Readiness } from './readiness.js';
 import { registerRoutes } from './routes.js';
@@ -42,11 +41,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     'application/json',
     { parseAs: 'string' },
     (request, body, done) => {
-      request.rawBody = body as string;
+      const raw = body as string;
+      request.rawBody = raw;
+      // POST/DELETE sem corpo (cancelar, pausar, remover carteira) chegam com
+      // Content-Type JSON e corpo vazio: isso e "sem corpo", nao erro.
+      if (raw.trim().length === 0) {
+        done(null, undefined);
+        return;
+      }
       try {
-        done(null, JSON.parse(body as string));
-      } catch (err) {
-        done(err as Error, undefined);
+        done(null, JSON.parse(raw));
+      } catch {
+        done(new ValidationError('corpo nao e JSON valido'), undefined);
       }
     },
   );
@@ -60,6 +66,15 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     prefix: '/',
     wildcard: false,
     index: false,
+  });
+
+  // O snippet /checkout.js e carregado por sites de lojistas em outro
+  // dominio; o Helmet manda CORP same-origin por padrao, o que o bloqueia.
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (request.url.split('?')[0] === '/checkout.js') {
+      reply.header('cross-origin-resource-policy', 'cross-origin');
+    }
+    return payload;
   });
 
   app.get('/login', async (_request, reply) => reply.redirect('/login.html'));
@@ -83,13 +98,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     max: deps.config.server.rateLimitMax,
     timeWindow: deps.config.server.rateLimitWindowMs,
     allowList: (request) => request.url === '/health',
+    // A chave e o IP. Usar o cabecalho Authorization (antes de autenticar)
+    // deixava qualquer um ganhar um balde novo a cada requisicao trocando o
+    // valor do cabecalho. Atras de proxy, ligue TRUST_PROXY.
     keyGenerator: (request) => {
       const path = request.url.split('?')[0] ?? request.url;
       if (path.startsWith('/webhooks/lnbits')) return `lnbits:${request.ip}`;
-      const authorization = request.headers.authorization;
-      if (typeof authorization === 'string' && authorization.length > 0) {
-        return `auth:${sha256Hex(authorization)}`;
-      }
       return request.ip;
     },
   });

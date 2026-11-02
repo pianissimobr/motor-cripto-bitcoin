@@ -46,19 +46,35 @@
     </div>
     <div class="col card">
       <h2>Carteiras</h2>
+      <p class="muted">O dinheiro vai direto para as suas carteiras, sem passar pela plataforma e sem conversão:
+        <strong>Lightning</strong> cai na sua wallet LNbits, <strong>on-chain</strong> nos endereços do seu xpub e
+        <strong>PIX</strong> vira USDC na sua carteira Base. Cadastre ao menos uma carteira Bitcoin para cobrar em BTC.</p>
       <form id="wallet-form">
         <label>Tipo
           <select id="wallet-kind">
-            <option value="btc_deposit">BTC (xpub de depósito)</option>
-            <option value="usdc_settlement">USDC Base (liquidação)</option>
+            <option value="lightning_lnbits">Lightning (sua wallet LNbits)</option>
+            <option value="btc_deposit">BTC on-chain (xpub)</option>
+            <option value="usdc_settlement">USDC Base (recebe o PIX)</option>
           </select>
         </label>
-        <label id="wallet-xpub-label">xpub<input id="wallet-xpub" placeholder="tpub.../xpub..."></label>
+        <label id="wallet-lnbits-url-label">URL do LNbits<input id="wallet-lnbits-url" type="url" placeholder="https://seu-lnbits.com"></label>
+        <label id="wallet-lnbits-key-label">Invoice key<input id="wallet-lnbits-key" autocomplete="off" placeholder="Invoice/read key (nunca a Admin key)"></label>
+        <label id="wallet-xpub-label" class="hidden">xpub<input id="wallet-xpub" placeholder="tpub.../xpub..."></label>
         <label id="wallet-addr-label" class="hidden">Endereço USDC<input id="wallet-addr" placeholder="0x..."></label>
         <button type="submit">Adicionar</button>
       </form>
       <div id="wallets"></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Webhook da loja</h2>
+    <p class="muted">URL que recebe os avisos de pagamento e de liquidação (<code>payment_intent.*</code>, <code>pix_charge.*</code>). Sem ela, os eventos são descartados.</p>
+    <form id="webhook-form" class="row">
+      <div class="col"><label>URL do webhook<input id="webhook-url" type="url" maxlength="500" placeholder="https://sualoja.com/webhooks/motor"></label></div>
+      <div class="col" style="display:flex;align-items:flex-end"><button type="submit">Salvar</button></div>
+    </form>
+    <p id="webhook-status" class="muted"></p>
   </div>
 
   <div class="card">
@@ -87,11 +103,11 @@
     <h2>Perguntas frequentes</h2>
     <details>
       <summary>O motor guarda o meu dinheiro?</summary>
-      <p class="muted">Não. Ele só cria o caminho (QR/invoice) e confirma a chegada. A liquidação (USDC) vai para a carteira que você cadastrar.</p>
+      <p class="muted">Não. Ele cria a cobrança (QR/invoice) e confirma a chegada. O dinheiro cai direto nas suas carteiras: Lightning na sua wallet LNbits, on-chain no seu xpub e PIX como USDC na sua carteira Base. Não há conversão.</p>
     </details>
     <details>
       <summary>Como recebo o valor das vendas?</summary>
-      <p class="muted">Cadastre uma carteira <code>usdc_settlement</code> (endereço 0x na Base) em "Carteiras". O valor recebido é convertido e enviado para ela.</p>
+      <p class="muted">Em "Carteiras": a sua wallet LNbits (URL + Invoice key) para Lightning, o seu xpub para BTC on-chain e um endereço 0x na Base para receber o PIX em USDC. Cada pagamento vai direto para a carteira do trilho usado.</p>
     </details>
     <details>
       <summary>Onde estão a API key e os secrets?</summary>

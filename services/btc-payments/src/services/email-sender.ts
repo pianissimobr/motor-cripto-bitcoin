@@ -5,9 +5,17 @@ export type OutboundEmail = {
   token: string;
 };
 
+export type SecurityNotice = {
+  to: string;
+  subject: string;
+  text: string;
+};
+
 export interface EmailSender {
   sendVerificationEmail(input: OutboundEmail): Promise<void>;
   sendPasswordResetEmail(input: OutboundEmail): Promise<void>;
+  /** Aviso de seguranca (ex.: carteira de recebimento trocada). */
+  sendSecurityNotice(input: SecurityNotice): Promise<void>;
 }
 
 /**
@@ -29,6 +37,13 @@ export class NoopEmailSender implements EmailSender {
     this.logger?.info(
       { to: input.to, token: input.token },
       'email de redefinicao de senha (noop, token devolvido por outro canal)',
+    );
+  }
+
+  async sendSecurityNotice(input: SecurityNotice): Promise<void> {
+    this.logger?.warn(
+      { to: input.to, subject: input.subject },
+      'aviso de seguranca por e-mail (noop: configure um provedor de e-mail)',
     );
   }
 }

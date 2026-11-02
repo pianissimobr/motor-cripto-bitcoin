@@ -1,0 +1,2 @@
+ALTER TABLE "webhook_events" DROP CONSTRAINT "webhook_events_source_chk";--> statement-breakpoint
+ALTER TABLE "webhook_events" ADD CONSTRAINT "webhook_events_source_chk" CHECK ((("webhook_events"."intent_id" is not null)::int + ("webhook_events"."pix_charge_id" is not null)::int) <= 1);
