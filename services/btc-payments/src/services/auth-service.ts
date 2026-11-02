@@ -1,4 +1,5 @@
-import { timingSafeEqual } from 'node:crypto';
+import type { AuthoIssuerClient } from '../adapters/autho/client.js';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import {
   hashPassword,
@@ -28,6 +29,8 @@ export type AuthServiceDeps = {
   config: AppConfig;
   logger: Logger;
   emailSender: EmailSender;
+  /** authO issuer: codigos por e-mail e anti-robo. Sem ele, usa tokens locais (dev). */
+  autho?: AuthoIssuerClient;
   now?: () => Date;
 };
 
@@ -88,14 +91,31 @@ export class AuthService {
     return value;
   }
 
+  /** Id estavel da conta para o authO (o e-mail nao muda neste motor). */
+  private subjectFor(email: string): string {
+    return `user:${createHash('sha256').update(email).digest('hex')}`;
+  }
+
+  /** O authO exige anti-robo; sem ele, recusa antes de chamar o issuer. */
+  private requireAltcha(altcha: string | undefined): string {
+    if (!altcha) throw new ValidationError('verificacao anti-robo ausente');
+    return altcha;
+  }
+
+  get usesAutho(): boolean {
+    return this.deps.autho !== undefined;
+  }
+
   async register(input: {
     email: string;
     password: string;
     merchantName?: string;
+    altcha?: string;
   }): Promise<{
     user: SafeUser;
     merchant: { id: string; name: string; apiKey: string; requestSecret: string; webhookSecret: string };
     verificationToken?: string;
+    verificationRequestId?: string;
   }> {
     const email = this.normalizeEmail(input.email);
     if (!isStrongEnoughPassword(input.password)) {
@@ -105,6 +125,23 @@ export class AuthService {
     const existing = await this.deps.repos.findUserByEmail(email);
     if (existing) throw new ConflictError('email ja cadastrado');
 
+    // Com o authO, o codigo sai antes da conta: se o anti-robo ou o envio
+    // falharem, nada e criado.
+    let verificationRequestId: string | undefined;
+    if (this.deps.autho) {
+      const issued = await this.deps.autho.issueCode({
+        subject: this.subjectFor(email),
+        email,
+        purpose: 'email_verification',
+        altcha: this.requireAltcha(input.altcha),
+      });
+      verificationRequestId = issued.requestId;
+      // Corrida entre dois cadastros com o mesmo e-mail.
+      if (await this.deps.repos.findUserByEmail(email)) {
+        throw new ConflictError('email ja cadastrado');
+      }
+    }
+
     const passwordHash = hashPassword(input.password);
     const user = await this.deps.repos.createUser({
       email,
@@ -112,16 +149,19 @@ export class AuthService {
       status: 'pendente_email',
     });
 
-    const verificationToken = generateOpaqueToken();
-    await this.deps.repos.createEmailVerificationToken({
-      userId: user.id,
-      tokenHash: hashOpaqueToken(verificationToken),
-      expiresAt: new Date(this.now().getTime() + VERIFY_TOKEN_TTL_MS),
-    });
-    await this.deps.emailSender.sendVerificationEmail({
-      to: email,
-      token: verificationToken,
-    });
+    let verificationToken: string | undefined;
+    if (!this.deps.autho) {
+      verificationToken = generateOpaqueToken();
+      await this.deps.repos.createEmailVerificationToken({
+        userId: user.id,
+        tokenHash: hashOpaqueToken(verificationToken),
+        expiresAt: new Date(this.now().getTime() + VERIFY_TOKEN_TTL_MS),
+      });
+      await this.deps.emailSender.sendVerificationEmail({
+        to: email,
+        token: verificationToken,
+      });
+    }
 
     const merchantName =
       input.merchantName?.trim() ||
@@ -154,8 +194,11 @@ export class AuthService {
         webhookSecret: merchant.webhookSecret,
       },
       // Fora de producao o token volta para facilitar o teste; em producao so
-      // sai pelo EmailSender.
-      ...(this.deps.config.service.isProduction ? {} : { verificationToken }),
+      // sai pelo EmailSender. Com o authO, o codigo vai por e-mail.
+      ...(verificationToken && !this.deps.config.service.isProduction
+        ? { verificationToken }
+        : {}),
+      ...(verificationRequestId ? { verificationRequestId } : {}),
     };
   }
 
@@ -177,6 +220,37 @@ export class AuthService {
     await this.deps.repos.consumeEmailVerificationToken(record.id);
     this.deps.logger.info({ userId: user.id }, 'email verificado');
     return { ok: true };
+  }
+
+  /** Confirma o e-mail com o codigo de 6 digitos enviado pelo authO. */
+  async verifyEmailCode(input: {
+    email: string;
+    requestId: string;
+    code: string;
+  }): Promise<{ ok: true }> {
+    if (!this.deps.autho) throw new ValidationError('verificacao por codigo indisponivel');
+    const email = this.normalizeEmail(input.email);
+    const user = await this.deps.repos.findUserByEmail(email);
+    if (!user) throw new ValidationError('codigo invalido');
+    const verified = await this.deps.autho.verifyCode({
+      requestId: input.requestId,
+      subject: this.subjectFor(email),
+      code: input.code,
+    });
+    if (verified.email !== user.email || verified.purpose !== 'email_verification') {
+      throw new ValidationError('codigo invalido');
+    }
+    if (user.status !== 'bloqueado') {
+      await this.deps.repos.updateUser(user.id, { status: 'ativo', emailVerifiedAt: this.now() });
+    }
+    this.deps.logger.info({ userId: user.id }, 'email verificado (authO)');
+    return { ok: true };
+  }
+
+  /** Anti-robo do login, quando o authO esta ligado. */
+  async assertHuman(altcha: string | undefined): Promise<void> {
+    if (!this.deps.autho) return;
+    await this.deps.autho.verifyHuman(this.requireAltcha(altcha));
   }
 
   async login(email: string, password: string): Promise<{
@@ -269,11 +343,30 @@ export class AuthService {
     return { ok: true };
   }
 
-  async forgotPassword(email: string): Promise<{
+  async forgotPassword(
+    email: string,
+    altcha?: string,
+  ): Promise<{
     ok: true;
     resetToken?: string;
+    requestId?: string;
   }> {
-    const user = await this.deps.repos.findUserByEmail(this.normalizeEmail(email));
+    const normalized = this.normalizeEmail(email);
+    const user = await this.deps.repos.findUserByEmail(normalized);
+    if (this.deps.autho) {
+      // Mesma resposta exista ou nao a conta (nao revela quem e cliente).
+      if (!user) {
+        await this.deps.autho.verifyHuman(this.requireAltcha(altcha));
+        return { ok: true, requestId: randomUUID() };
+      }
+      const issued = await this.deps.autho.issueCode({
+        subject: this.subjectFor(normalized),
+        email: normalized,
+        purpose: 'password_reset',
+        altcha: this.requireAltcha(altcha),
+      });
+      return { ok: true, requestId: issued.requestId };
+    }
     if (user) {
       const resetToken = generateOpaqueToken();
       await this.deps.repos.createPasswordResetToken({
@@ -305,6 +398,39 @@ export class AuthService {
 
     await this.deps.repos.updateUser(user.id, { passwordHash: hashPassword(newPassword) });
     await this.deps.repos.consumePasswordResetToken(record.id);
+    await this.deps.repos.revokeUserSessions(user.id);
+    await this.deps.repos.insertAuditEvent({
+      actor: 'portal',
+      action: 'user.password_reset',
+      entity: 'user',
+      entityId: user.id,
+    });
+    return { ok: true };
+  }
+
+  /** Troca a senha com o codigo de 6 digitos enviado pelo authO. */
+  async resetPasswordWithCode(input: {
+    email: string;
+    requestId: string;
+    code: string;
+    password: string;
+  }): Promise<{ ok: true }> {
+    if (!this.deps.autho) throw new ValidationError('recuperacao por codigo indisponivel');
+    if (!isStrongEnoughPassword(input.password)) {
+      throw new ValidationError('senha deve ter entre 8 e 200 caracteres');
+    }
+    const email = this.normalizeEmail(input.email);
+    const user = await this.deps.repos.findUserByEmail(email);
+    if (!user) throw new ValidationError('codigo invalido');
+    const verified = await this.deps.autho.verifyCode({
+      requestId: input.requestId,
+      subject: this.subjectFor(email),
+      code: input.code,
+    });
+    if (verified.email !== user.email || verified.purpose !== 'password_reset') {
+      throw new ValidationError('codigo invalido');
+    }
+    await this.deps.repos.updateUser(user.id, { passwordHash: hashPassword(input.password) });
     await this.deps.repos.revokeUserSessions(user.id);
     await this.deps.repos.insertAuditEvent({
       actor: 'portal',

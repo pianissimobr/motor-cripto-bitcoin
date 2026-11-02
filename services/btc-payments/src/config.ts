@@ -151,6 +151,17 @@ const EnvSchema = z
 
     SESSION_TTL_SECONDS: intFromEnv(604_800, 600, 31_536_000),
 
+    // authO (perfil issuer): codigos por e-mail e anti-robo ALTCHA do portal.
+    AUTHO_ISSUER_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('AUTHO_ISSUER_URL invalida').optional(),
+    ),
+    AUTHO_TENANT: z.string().trim().min(1).default('motor'),
+    AUTHO_ISSUER_SECRET: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(32, 'AUTHO_ISSUER_SECRET precisa ter ao menos 32 caracteres').optional(),
+    ),
+
     JOBS_LIGHTNING_RECONCILE_MS: intFromEnv(15_000, 1_000),
     JOBS_EXPIRY_POLL_MS: intFromEnv(10_000, 1_000),
     JOBS_ONCHAIN_POLL_MS: intFromEnv(15_000, 1_000),
@@ -192,6 +203,13 @@ const EnvSchema = z
       if (!env.ESPLORA_URL) {
         ctx.addIssue({ code: 'custom', path: ['ESPLORA_URL'], message: 'obrigatorio quando ONCHAIN_ENABLED=true' });
       }
+    }
+    if (env.AUTHO_ISSUER_URL && !env.AUTHO_ISSUER_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTHO_ISSUER_SECRET'],
+        message: 'obrigatorio quando AUTHO_ISSUER_URL esta definido',
+      });
     }
     if (env.PIX_ENABLED && !env.LUNIUM_API_KEY) {
       ctx.addIssue({
@@ -314,6 +332,11 @@ export type AppConfig = {
   };
   metrics: {
     token?: string;
+  };
+  autho?: {
+    url: string;
+    tenant: string;
+    secret: string;
   };
   alerts: {
     webhookUrl?: string;
@@ -506,6 +529,15 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
     metrics: {
       ...(env.METRICS_TOKEN ? { token: env.METRICS_TOKEN } : {}),
     },
+    ...(env.AUTHO_ISSUER_URL && env.AUTHO_ISSUER_SECRET
+      ? {
+          autho: {
+            url: env.AUTHO_ISSUER_URL.replace(/\/+$/, ''),
+            tenant: env.AUTHO_TENANT,
+            secret: env.AUTHO_ISSUER_SECRET,
+          },
+        }
+      : {}),
     alerts: {
       ...(env.ALERT_WEBHOOK_URL ? { webhookUrl: env.ALERT_WEBHOOK_URL } : {}),
       ...(env.ALERT_WEBHOOK_TOKEN ? { token: env.ALERT_WEBHOOK_TOKEN } : {}),

@@ -4,6 +4,7 @@ import type { AppConfig } from '../config.js';
 import { ValidationError, UnauthorizedError, AppError } from '../domain/errors.js';
 import type { Logger } from '../logger.js';
 import type { AuthService } from '../services/auth-service.js';
+import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export const SESSION_COOKIE = 'portal_sid';
 export const CSRF_COOKIE = 'portal_csrf';
@@ -12,6 +13,8 @@ export type AuthRoutesDeps = {
   config: AppConfig;
   logger: Logger;
   auth: AuthService;
+  /** Fonte do desafio anti-robo servido em GET /auth/altcha. */
+  autho?: AuthoIssuerClient;
 };
 
 const registerSchema = z
@@ -19,20 +22,33 @@ const registerSchema = z
     email: z.string().trim().min(3).max(254),
     password: z.string().min(8).max(200),
     merchant_name: z.string().trim().min(1).max(80).optional(),
+    altcha: z.string().max(4000).optional(),
   })
   .strict();
 
-const emailSchema = z.object({ email: z.string().trim().min(3).max(254) }).strict();
+const emailSchema = z
+  .object({ email: z.string().trim().min(3).max(254), altcha: z.string().max(4000).optional() })
+  .strict();
 const loginSchema = z
   .object({
     email: z.string().trim().min(3).max(254),
     password: z.string().min(1).max(200),
+    altcha: z.string().max(4000).optional(),
   })
   .strict();
-const tokenSchema = z.object({ token: z.string().min(1) }).strict();
-const resetSchema = z
-  .object({ token: z.string().min(1), password: z.string().min(8).max(200) })
-  .strict();
+const codeFields = {
+  email: z.string().trim().min(3).max(254),
+  request_id: z.string().trim().min(1).max(128),
+  code: z.string().regex(/^\d{6}$/, 'codigo de 6 digitos'),
+};
+const verifySchema = z.union([
+  z.object({ token: z.string().min(1) }).strict(),
+  z.object(codeFields).strict(),
+]);
+const resetSchema = z.union([
+  z.object({ token: z.string().min(1), password: z.string().min(8).max(200) }).strict(),
+  z.object({ ...codeFields, password: z.string().min(8).max(200) }).strict(),
+]);
 const changePasswordSchema = z
   .object({
     current_password: z.string().min(1).max(200),
@@ -123,23 +139,44 @@ export function registerAuthRoutes(
 ): void {
   const throttle = createLoginThrottle();
 
+  // Desafio anti-robo (ALTCHA) que o navegador resolve antes de cadastrar,
+  // entrar ou pedir troca de senha. 404 quando o authO nao esta configurado.
+  app.get('/auth/altcha', async (_request, reply) => {
+    const challenge = deps.autho ? await deps.autho.challenge() : null;
+    if (!challenge) {
+      return reply.status(404).send({
+        error: { code: 'not_found', message: 'anti-robo desligado' },
+      });
+    }
+    return reply.header('cache-control', 'no-store').send(challenge);
+  });
+
   app.post('/auth/register', async (request, reply) => {
     const body = parse(registerSchema, request.body ?? {}, 'corpo');
     const result = await deps.auth.register({
       email: body.email,
       password: body.password,
       ...(body.merchant_name ? { merchantName: body.merchant_name } : {}),
+      ...(body.altcha ? { altcha: body.altcha } : {}),
     });
     return reply.status(201).send({
       user: result.user,
       merchant: result.merchant,
       ...(result.verificationToken ? { verification_token: result.verificationToken } : {}),
+      ...(result.verificationRequestId
+        ? { verification_request_id: result.verificationRequestId }
+        : {}),
     });
   });
 
   app.post('/auth/verify-email', async (request) => {
-    const body = parse(tokenSchema, request.body ?? {}, 'corpo');
-    return deps.auth.verifyEmail(body.token);
+    const body = parse(verifySchema, request.body ?? {}, 'corpo');
+    if ('token' in body) return deps.auth.verifyEmail(body.token);
+    return deps.auth.verifyEmailCode({
+      email: body.email,
+      requestId: body.request_id,
+      code: body.code,
+    });
   });
 
   app.post('/auth/login', async (request, reply) => {
@@ -151,6 +188,7 @@ export function registerAuthRoutes(
         statusCode: 429,
       });
     }
+    await deps.auth.assertHuman(body.altcha);
     try {
       const result = await deps.auth.login(body.email, body.password);
       throttle.reset(key);
@@ -180,12 +218,23 @@ export function registerAuthRoutes(
 
   app.post('/auth/forgot-password', async (request) => {
     const body = parse(emailSchema, request.body ?? {}, 'corpo');
-    return deps.auth.forgotPassword(body.email);
+    const result = await deps.auth.forgotPassword(body.email, body.altcha);
+    return {
+      ok: true,
+      ...(result.resetToken ? { resetToken: result.resetToken } : {}),
+      ...(result.requestId ? { request_id: result.requestId } : {}),
+    };
   });
 
   app.post('/auth/reset-password', async (request) => {
     const body = parse(resetSchema, request.body ?? {}, 'corpo');
-    return deps.auth.resetPassword(body.token, body.password);
+    if ('token' in body) return deps.auth.resetPassword(body.token, body.password);
+    return deps.auth.resetPasswordWithCode({
+      email: body.email,
+      requestId: body.request_id,
+      code: body.code,
+      password: body.password,
+    });
   });
 
   app.post('/auth/change-password', async (request) => {

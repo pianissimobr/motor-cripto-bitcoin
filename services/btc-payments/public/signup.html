@@ -23,6 +23,14 @@
     </form>
     <p id="erro" class="erro"></p>
     <p id="resultado" class="muted"></p>
+    <div id="verify-box" class="hidden">
+      <p class="muted">Enviamos um código de 6 dígitos para o seu e-mail.</p>
+      <form id="verify-form">
+        <label>Código<input id="verify-code" inputmode="numeric" maxlength="6" required></label>
+        <button type="submit">Confirmar e-mail</button>
+      </form>
+      <p id="verify-status" class="muted"></p>
+    </div>
     <p class="muted">Já tem conta? <a href="/login.html">Entrar</a></p>
   </section>
 </main>

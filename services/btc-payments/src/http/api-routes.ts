@@ -26,6 +26,7 @@ import {
 import type { MerchantWalletService } from '../services/merchant-wallet-service.js';
 import type { MetricsService } from '../services/metrics-service.js';
 import type { WalletChangeNotifier } from '../services/wallet-change-notifier.js';
+import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
 import type { PixChargeService } from '../services/pix-charge-service.js';
 import type { LuniumWebhookService } from '../services/lunium-webhook-service.js';
@@ -51,6 +52,7 @@ export type ApiServices = {
   ledger?: LedgerService;
   lnbitsFor?: LnbitsFactory;
   walletNotifier?: WalletChangeNotifier;
+  autho?: AuthoIssuerClient;
   pixCharges?: PixChargeService;
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
@@ -305,6 +307,7 @@ export function registerApiRoutes(
       config: services.config,
       logger: services.logger,
       auth: services.auth,
+      ...(services.autho ? { autho: services.autho } : {}),
     });
     if (services.wallets) {
       registerPortalRoutes(app, {

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Recuperar senha — Motor Cripto</title>
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+<header>
+  <strong>Motor Cripto</strong>
+  <span class="muted">Portal do lojista</span>
+</header>
+<main>
+  <section class="card narrow">
+    <h1>Recuperar senha</h1>
+    <form id="ask-form">
+      <label>E-mail<input id="email" type="email" autocomplete="username" required></label>
+      <button type="submit">Enviar código</button>
+    </form>
+    <p id="info" class="muted"></p>
+    <form id="reset-form" class="hidden">
+      <label>Código (6 dígitos)<input id="code" inputmode="numeric" maxlength="6" required></label>
+      <label>Nova senha<input id="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <button type="submit">Trocar senha</button>
+    </form>
+    <p id="erro" class="erro"></p>
+    <p class="muted"><a href="/login.html">Voltar ao login</a></p>
+  </section>
+</main>
+<script type="module" src="/forgot.js"></script>
+</body>
+</html>

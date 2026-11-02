@@ -24,6 +24,7 @@ import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { ReportService } from './services/report-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
+import { AuthoIssuerClient } from './adapters/autho/client.js';
 
 /**
  * API do motor. O dinheiro nao passa pela plataforma: Lightning cai na
@@ -73,12 +74,16 @@ export async function main(): Promise<void> {
     const clients = new ClientService({ repos, config, logger });
     const alerts = new AlertService({ ...config.alerts, logger });
     const emailSender = new NoopEmailSender(logger);
+    // authO issuer: codigos por e-mail e anti-robo. Sem ele, o portal usa
+    // tokens locais (so desenvolvimento).
+    const autho = config.autho ? new AuthoIssuerClient(config.autho) : undefined;
     const auth = new AuthService({
       repos,
       clients,
       config,
       logger,
       emailSender,
+      ...(autho ? { autho } : {}),
     });
     const walletNotifier = new WalletChangeNotifier({ repos, logger, alerts, emailSender });
     const fx = new FxService(
@@ -138,6 +143,7 @@ export async function main(): Promise<void> {
         subscriptions,
         ...(lnbitsFor ? { lnbitsFor } : {}),
         walletNotifier,
+        ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
         getStatus: async () => {
