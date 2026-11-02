@@ -6,7 +6,7 @@ Pagamentos em **Bitcoin** (Lightning e on-chain) e **PIX**, com liquidação em
 O produto é o serviço em [`services/btc-payments`](services/btc-payments): uma
 API HTTP, um worker e um portal do lojista. Ele cria a cobrança, mostra o QR,
 prova o pagamento na fonte (LNbits, Esplora ou Lunium) e avisa a loja por
-webhook. O motor Polygon/Ramp que ainda está na raiz é **legado** e não faz
+webhook. O motor Polygon/Ramp que está em `legacy/` é **legado** e não faz
 parte do contrato atual.
 
 ## O que ele faz
@@ -87,16 +87,15 @@ nginx nessas portas, mantenha o nginx como borda e faça proxy para a API em
 ```text
 motor-cripto-bitcoin/
 ├── services/btc-payments/   # o produto: API, worker, portal, migrations, docs
-├── docs/                    # contrato HTTP (API.md), mapa (guia.md) e livro HTML
+├── docs/                    # contrato, mapa, livro HTML, planejamento e referências
 ├── web/docs/                # livro HTML de integração e operação
-├── src/, db/, web/admin/    # motor Polygon/Ramp (legado)
-└── start.py, PLANO.md, ...  # bootstrap e decisões do motor legado
+└── legacy/                  # motor Polygon/Ramp arquivado (não é o contrato atual)
 ```
 
-O motor **Polygon/Ramp** (`src/`, `db/`, `web/admin/`, `start.py`,
-`docker-compose.yml`, `PLANO.md`, `projetoo.md`, `ENDURECIMENTO.md`) é legado:
-não implementa `/v1/payment-intents` nem o fluxo atual. Ele está na raiz por
-enquanto e será movido para `legacy/` na próxima etapa da repaginada.
+O motor **Polygon/Ramp** (`legacy/src/`, `legacy/db/`, `legacy/web/admin/`,
+`legacy/start.py`, `legacy/docker-compose.yml`, `legacy/PLANO.md`,
+`legacy/projetoo.md`, `legacy/ENDURECIMENTO.md`) é legado: não implementa
+`/v1/payment-intents` nem o fluxo atual.
 
 ## Documentação
 

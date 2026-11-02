@@ -208,10 +208,10 @@ details[open] summary{margin-bottom:10px}
 <thead><tr><th>Motor</th><th>Onde está</th><th>Porta</th><th>Papel</th><th>Situação</th></tr></thead>
 <tbody>
 <tr><td><strong>Bitcoin + PIX</strong></td><td><code>services/btc-payments</code></td><td><code>4580</code></td><td>API e worker de cobrança Bitcoin (Lightning e on-chain), conversão para USDC na Base, payout, PIX via Lunium, ledger e conciliação.</td><td><span class="badge good">Ativo</span></td></tr>
-<tr><td><strong>Polygon / Ramp</strong></td><td><code>src/</code>, <code>web/admin/</code>, <code>web/docs/</code></td><td><code>4578</code></td><td>Motor anterior de stablecoin com página pública de checkout, perfil de on-ramp e sweep para carteira allowlisted.</td><td><span class="badge warn">Legado</span></td></tr>
+<tr><td><strong>Polygon / Ramp</strong></td><td><code>legacy/src/</code>, <code>legacy/web/admin/</code></td><td><code>4578</code></td><td>Motor anterior de stablecoin com página pública de checkout, perfil de on-ramp e sweep para carteira allowlisted.</td><td><span class="badge warn">Legado</span></td></tr>
 </tbody>
 </table>
-<div class="callout good"><strong>Regra de ouro:</strong> para integração nova, use <code>services/btc-payments</code>. O código em <code>src/</code> é histórico e não implementa o contrato atual de <code>/v1/payment-intents</code>.</div>
+<div class="callout good"><strong>Regra de ouro:</strong> para integração nova, use <code>services/btc-payments</code>. O código em <code>legacy/src/</code> é histórico e não implementa o contrato atual de <code>/v1/payment-intents</code>.</div>
 <p>A proposta do motor ativo é receber valor em Bitcoin ou PIX, manter um registro contábil confiável, converter para dólar digital e liquidar a loja em USDC na rede Base. A operação é dividida em API e worker para que a resposta HTTP não dependa de confirmações de rede, filas ou retries.</p>
 <h3>O que o motor entrega</h3>
 <ul>
@@ -292,15 +292,13 @@ details[open] summary{margin-bottom:10px}
 │   ├── migrations/              # SQL versionado do Drizzle
 │   ├── docs/                    # manual, runbook, on-chain, PIX, webhooks, observabilidade, checkout
 │   └── scripts/                 # seed, init de carteira, backup, drills
-├── src/                         # MOTOR LEGADO Polygon/Ramp (porta 4578)
-├── db/migrations/               # schema do motor legado
-├── web/admin/                   # painel do motor legado
-├── web/docs/                    # livro HTML do motor legado
+├── legacy/src/                  # MOTOR LEGADO Polygon/Ramp (porta 4578)
+├── legacy/db/migrations/        # schema do motor legado
+├── legacy/web/admin/            # painel do motor legado
+├── web/docs/                    # livro HTML de integração e operação
 ├── docs/                        # este HTML, API.md, guia.md
-├── test-real.md                 # checklist de testes com dados reais
-├── etapas-pix.md                # checklist da implementação PIX
-├── etapas-portal.md             # checklist da implementação do portal/checkout/recorrente
-└── plano-estrutural.md          # plano original por fases</code></pre>
+├── docs/planejamento/           # test-real, etapas-pix, etapas-portal, plano-estrutural
+└── docs/referencias/            # Receber-Bitcoin.md</code></pre>
 <h3>Onde está cada verdade</h3>
 <table>
 <thead><tr><th>Assunto</th><th>Fonte principal</th></tr></thead>
@@ -316,7 +314,7 @@ details[open] summary{margin-bottom:10px}
 <tr><td>Checkout público</td><td><code>http/checkout-routes.ts</code>, <code>public/checkout.js</code></td></tr>
 <tr><td>Assinaturas</td><td><code>subscription-service.ts</code>, job <code>subscription-charge</code> no worker</td></tr>
 <tr><td>Relatórios</td><td><code>report-service.ts</code></td></tr>
-<tr><td>Contrato legado</td><td><code>src/adapters/http/routes.ts</code></td></tr>
+<tr><td>Contrato legado</td><td><code>legacy/src/adapters/http/routes.ts</code></td></tr>
 </tbody>
 </table>
 </section>
@@ -1029,9 +1027,9 @@ alertado. Ciclos vencidos/cancelados são marcados <code>falhou</code> na concil
 <thead><tr><th>Item</th><th>Valor</th></tr></thead>
 <tbody>
 <tr><td>Porta padrão</td><td><code>4578</code></td></tr>
-<tr><td>Entrada</td><td><code>src/server.ts</code></td></tr>
-<tr><td>Worker</td><td><code>src/worker/index.ts</code></td></tr>
-<tr><td>Schema</td><td><code>db/migrations/</code> e <code>src/core</code></td></tr>
+<tr><td>Entrada</td><td><code>legacy/src/server.ts</code></td></tr>
+<tr><td>Worker</td><td><code>legacy/src/worker/index.ts</code></td></tr>
+<tr><td>Schema</td><td><code>legacy/db/migrations/</code> e <code>legacy/src/core</code></td></tr>
 <tr><td>Auth API</td><td>API key + HMAC, mesmo formato canônico do motor ativo</td></tr>
 <tr><td>Auth admin</td><td>Bearer <code>ADMIN_TOKEN</code></td></tr>
 </tbody>

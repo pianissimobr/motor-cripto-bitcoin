@@ -8,9 +8,9 @@ atual; o Polygon/Ramp é **legado** e serve apenas de referência histórica.
 | Motor | Onde | Porta | Situação | O que faz |
 | --- | --- | --- | --- | --- |
 | Bitcoin + PIX | `services/btc-payments` | 4580 | **Atual** | Cobrança em sats (Lightning + on-chain), PIX, portal do lojista, checkout `/pay/:id`, conversão THORChain e payout USDC na Base |
-| Polygon / Ramp | `src/`, `web/admin/` | 4578 | **Legado** | Motor anterior de stablecoin. Página `/p/:token`, perfil de on-ramp, carteira allowlisted por cliente. Não implementa `/v1/payment-intents` |
+| Polygon / Ramp | `legacy/src/`, `legacy/web/admin/` | 4578 | **Legado** | Motor anterior de stablecoin. Página `/p/:token`, perfil de on-ramp, carteira allowlisted por cliente. Não implementa `/v1/payment-intents` |
 
-`PLANO.md`, `projetoo.md` e `ENDURECIMENTO.md` registram decisões daquele motor antigo. O banner no topo de cada um avisa isso. Não use esses arquivos para integrar a API atual.
+`legacy/PLANO.md`, `legacy/projetoo.md` e `legacy/ENDURECIMENTO.md` registram decisões daquele motor antigo. O banner no topo de cada um avisa isso. Não use esses arquivos para integrar a API atual.
 
 ---
 
@@ -28,10 +28,10 @@ motor-cripto-bitcoin/
 │   └── docker-compose.yml     Postgres, LNbits e bitcoind locais
 ├── web/docs/                  livro HTML de integração e operação
 ├── docs/                      este guia e a referência de API
-├── web/admin/                 painel do motor Polygon (legado)
-├── src/                       motor Polygon (legado; não é a API 4580)
-├── db/                        schema do motor Polygon (legado)
-└── start.py                   sobe o processo da porta 4578 (legado)
+├── legacy/web/admin/          painel do motor Polygon (legado)
+├── legacy/src/                motor Polygon (legado; não é a API 4580)
+├── legacy/db/                 schema do motor Polygon (legado)
+└── legacy/start.py            sobe o processo da porta 4578 (legado)
 ```
 
 Dentro de `services/btc-payments/src/`:
@@ -344,10 +344,10 @@ Testes: `npm test` não precisa de banco. `npm run test:integration` precisa de 
 
 ## 11. O que este serviço não faz
 
-- Não fala com Ramp/Transak. Isso é do motor Polygon legado (`src/`, porta 4578).
+- Não fala com Ramp/Transak. Isso é do motor Polygon legado (`legacy/src/`, porta 4578).
 - Não guarda os dólares do lojista: o settlement em USDC cai na carteira `usdc_settlement` cadastrada por ele.
 - A carteira fria BTC e a wallet Lightning são globais; o ledger separa `merchant:<id>:*` e o payout USDC é por loja.
 - Não varre um índice que o banco nunca alocou.
 - Não devolve sozinho um Lightning pago depois do cancelamento.
 - Não segue redirect no webhook de saída.
-- O painel em `web/admin/` fala com o motor da porta 4578 (legado), não com este serviço.
+- O painel em `legacy/web/admin/` fala com o motor da porta 4578 (legado), não com este serviço.
