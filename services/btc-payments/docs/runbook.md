@@ -50,11 +50,22 @@ curl -X POST https://$DOMAIN/admin/api/clients \
   - saude do LNbits/Esplora;
   - fingerprint do xpub e modo do signer.
 - Logs do worker: `docker compose -f docker-compose.prod.yml logs -f worker`.
+- `GET /metrics` (Bearer `METRICS_TOKEN` se configurado): contagens de
+  intents, webhooks, sweeps, conversoes, payouts e totais do ledger.
+- PIX: `GET /admin/api/pix-charges`; para forcar sincronizacao use
+  `POST /admin/api/pix-charges/:id/sync`. Em timeout de criacao a cobranca fica
+  `incerto`; nunca crie outra cobranca com o mesmo `external_id`.
 - Alertas opcionais: configure `ALERT_WEBHOOK_URL`; o worker envia:
   - job falhou;
   - sweep manual/falhou;
   - pagamento duplicado;
-  - reorg.
+  - reorg;
+  - conversao manual/falhou ou payout retido/falhou;
+  - cobranca PIX incerta/manual;
+  - ledger desbalanceado na reconciliacao.
+- Reconciliacao diaria: job `reconciliation`, com historico em
+  `reconciliation_runs` e consulta em `GET /admin/api/reconciliation/runs`.
+- Guia de metricas: [observability.md](observability.md).
 
 Consultas uteis:
 
@@ -62,6 +73,9 @@ Consultas uteis:
 select status, count(*) from payment_intents group by status;
 select status, count(*) from webhook_events group by status;
 select status, count(*) from onchain_sweeps group by status;
+select status, count(*) from pix_charges group by status;
+select id, external_id, status, settlement_status, provider_charge_id
+  from pix_charges where status in ('incerto','manual') order by updated_at limit 20;
 select id, external_id, status, expires_at from payment_intents
  where status = 'pendente' order by expires_at limit 20;
 select id, event_type, attempts, next_attempt_at, last_error
@@ -73,6 +87,14 @@ select id, event_type, attempts, next_attempt_at, last_error
 ```bash
 cd services/btc-payments
 BACKUP_KEYSTORE=1 npm run backup
+```
+
+O backup gera `.sql.gz` + `.sha256` e valida o gzip. Para testar em banco
+descartavel:
+
+```bash
+RESTORE_DATABASE_URL=postgres://btc:btc_dev_password@localhost:5434/btc_payments_restore \
+  npm run backup:verify -- backups/btc-payments-....sql.gz
 ```
 
 Em desenvolvimento, use o compose local:
@@ -162,6 +184,18 @@ curl -X POST https://$DOMAIN/admin/api/sweeps/<id>/retry \
   a antiga.
 - Keystore: gerar nova carteira exige migrar o `BTC_XPUB` e mover os fundos
   antes de trocar; o fingerprint do banco impede troca silenciosa.
+
+## Drills de falha
+
+Rode apenas em ambiente descartavel:
+
+```bash
+npm run drills plan
+```
+
+Cenarios cobertos: LNbits down, Esplora down, webhook falhando, payout revertido,
+divergencia de ledger e restart no meio do sweep. Detalhes em
+[failure-drills.md](failure-drills.md).
 
 ## Smoke em regtest
 

@@ -110,6 +110,13 @@ export class SweepService {
     return this.deps.now?.() ?? new Date();
   }
 
+  private treasuryAddress(): string | undefined {
+    return (
+      this.deps.config.treasury.btcAddress ??
+      this.deps.config.sweep.coldWalletAddress
+    );
+  }
+
   private minOutput(): bigint {
     const configured = this.deps.config.sweep.minSats;
     return configured > DUST_SATS ? configured : DUST_SATS;
@@ -160,7 +167,7 @@ export class SweepService {
     };
     if (candidates.length === 0) return result;
 
-    const coldWallet = this.deps.config.sweep.coldWalletAddress;
+    const coldWallet = this.treasuryAddress();
     if (!coldWallet) {
       this.deps.logger.error('SWEEP_ENABLED sem COLD_WALLET_ADDRESS');
       result.errors++;
@@ -499,7 +506,7 @@ export class SweepService {
       return 'manual';
     }
     const address = await this.deps.repos.findHdAddressById(sweep.addressId);
-    const coldWallet = sweep.coldWalletAddress ?? this.deps.config.sweep.coldWalletAddress;
+    const coldWallet = sweep.coldWalletAddress ?? this.treasuryAddress();
     if (!address || !coldWallet) {
       await this.manualSweep(sweep, 'endereco/carteira fria ausente para RBF');
       return 'manual';

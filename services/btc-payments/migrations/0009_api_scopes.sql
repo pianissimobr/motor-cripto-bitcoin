@@ -1,0 +1,1 @@
+ALTER TABLE "api_clients" ADD COLUMN "scopes" jsonb DEFAULT '["payments:write","payments:read","wallets:read","wallets:write","balances:read","conversions:read","payouts:read"]'::jsonb NOT NULL;

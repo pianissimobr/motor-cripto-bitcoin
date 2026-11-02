@@ -5,7 +5,9 @@ watch-only** (xpub BIP84 + Esplora/Electrum). Não altera o motor Polygon.
 
 > Status: Fases 0-8 implementadas e validadas em regtest (Nigiri): on-chain,
 > pagamento tardio, reorg e sweep. Inclui API, worker, Lightning, outbox,
-> deploy com Caddy, runbook, backup e alertas.
+> deploy com Caddy, runbook, backup, alertas, **portal do lojista** (login,
+> dashboard, carteiras, relatórios), **checkout público** `/pay/:id` e
+> **assinaturas recorrentes**.
 
 ## Requisitos
 
@@ -32,6 +34,8 @@ npm run worker
 ```
 
 Abra `http://localhost:4580/health` e `http://localhost:4580/ready`.
+
+O portal do lojista fica em `http://localhost:4580/portal` (cadastro e login).
 
 ### Carteira e sweep
 
@@ -61,6 +65,15 @@ O sweep:
 
 Sem keystore valido, o worker continua rodando os outros jobs e apenas desabilita
 o sweep.
+
+### Carteira Base de teste
+
+```bash
+npm run wallet:base:init
+```
+
+Gera uma treasury quente e uma carteira de loja descartaveis para testar PIX e
+payout USDC na Base. Nao commit as chaves.
 
 ### LNbits
 
@@ -105,10 +118,18 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 
 ## Documentacao
 
+- [Manual do lojista (integração no seu site)](docs/manual.md)
+- [FAQ (exibido dentro do portal)](../public/app.html)
 - [API](docs/api.md)
+- [Checkout one-time + snippet](docs/checkout.md)
 - [Webhooks](docs/webhooks.md)
+- [PIX -> USDC](docs/pix.md)
 - [On-chain e sweep](docs/onchain.md)
+- [Deployment, endpoints e topologia](docs/deployment.md)
 - [Runbook operacional](docs/runbook.md)
+- [Observabilidade e reconciliacao](docs/observability.md)
+- [Drills de falha](docs/failure-drills.md)
+- [Diario de drills](docs/drills-log.md)
 
 ## Criar cliente da API
 
@@ -172,6 +193,18 @@ de 300s e cada nonce so pode ser usado uma vez.
 | `GET` | `/v1/payment-intents/:id` | Consulta status |
 | `GET` | `/v1/payment-intents?external_id=` | Busca por idempotencia |
 | `POST` | `/v1/payment-intents/:id/cancel` | Cancela se pendente |
+| `GET` | `/v1/balances` | Saldos do ledger da loja |
+| `GET` | `/v1/conversions` | Lista conversoes da loja |
+| `GET` | `/v1/conversions/:id` | Detalhe e pernas da conversao |
+| `GET` | `/v1/payouts` | Lista payouts da loja |
+| `GET` | `/v1/payouts/:id` | Detalhe do payout |
+| `GET` | `/v1/wallets` | Lista carteiras da loja |
+| `POST` | `/v1/wallets` | Cria carteira BTC ou USDC |
+| `GET` | `/v1/fx/rates` | Cotacoes BTC/BRL e BTC/USD |
+| `POST` | `/v1/pix-charges` | Cria cobranca PIX (Lunium) |
+| `GET` | `/v1/pix-charges/:id` | Consulta cobranca PIX |
+| `GET` | `/v1/pix-charges?external_id=` | Busca cobranca PIX por idempotencia |
+| `POST` | `/webhooks/lunium` | Webhook de entrada da Lunium |
 | `POST` | `/webhooks/lnbits?token=` | Webhook de entrada do LNbits |
 | `POST` | `/admin/api/clients` | Cria cliente (admin) |
 | `GET` | `/admin/api/clients` | Lista clientes (admin) |
@@ -182,6 +215,26 @@ de 300s e cada nonce so pode ser usado uma vez.
 | `POST` | `/admin/api/webhooks/:id/replay` | Reenfileira webhook (admin) |
 | `GET` | `/health` | Liveness |
 | `GET` | `/ready` | DB, xpub, carteira fria, LNbits e Esplora |
+
+Rotas do portal (cookie de sessão, não HMAC):
+
+| Metodo | Rota | Funcao |
+|---|---|---|
+| `POST` | `/auth/register` | Cadastro (cria conta + loja default) |
+| `POST` | `/auth/login` | Login (define cookie de sessão) |
+| `POST` | `/auth/verify-email` | Confirma o e-mail |
+| `GET` | `/auth/me` | Dados do usuário + lojas |
+| `GET` | `/v1/portal/merchants` | Lista lojas do usuário |
+| `POST` | `/v1/portal/merchants` | Cria nova loja (revela credenciais 1x) |
+| `GET/PATCH` | `/v1/portal/merchants/:id` | Detalhe/atualiza loja |
+| `GET/POST/DELETE` | `/v1/portal/merchants/:id/wallets` | Carteiras da loja |
+| `POST` | `/v1/portal/merchants/:id/api-key/rotate` | Rotaciona API key |
+| `POST` | `/v1/portal/merchants/:id/checkout` | Cria checkout one-time |
+| `GET` | `/v1/portal/merchants/:id/intents` | Lista checkouts |
+| `GET` | `/v1/portal/merchants/:id/reports/*` | Relatórios (summary/by-rail/series) |
+| `POST/GET` | `/v1/portal/merchants/:id/subscriptions` | Assinaturas recorrentes |
+| `GET` | `/pay/:id` | Página pública de checkout |
+| `GET` | `/pay/:id/status` | Status público em JSON |
 
 ## Webhook de saida
 
@@ -220,9 +273,9 @@ O worker roda em processo separado:
 ## Testes
 
 ```bash
-npm test                 # 39 testes unitarios
+npm test                 # testes unitarios (vitest)
 TEST_DATABASE_URL=postgres://btc:btc_dev_password@localhost:5434/btc_payments_test \
-  npm run test:integration # 25 testes de integracao
+  npm run test:integration # testes de integracao (requer banco de teste)
 ```
 
 A suite de integracao espera as migrations aplicadas no banco de teste.

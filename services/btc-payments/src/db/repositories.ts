@@ -1,10 +1,12 @@
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
   isNotNull,
+  isNull,
   lte,
   ne,
   or,
@@ -13,14 +15,26 @@ import {
 import { assertTransition } from '../domain/status.js';
 import type {
   ApiClient,
+  ConversionLeg,
+  ConversionOrder,
+  FxQuote,
   HdAddress,
   LightningPayment,
+  MerchantMember,
+  MerchantWallet,
   OnchainPayment,
   OnchainSweep,
   PaidRail,
   PaymentIntent,
+  PixCharge,
+  Payout,
+  PayoutStatus,
   PaymentIntentStatus,
+  Session,
+  Subscription,
+  SubscriptionCharge,
   SweepInput,
+  User,
   WebhookEvent,
 } from '../domain/types.js';
 import type { Db } from './client.js';
@@ -28,12 +42,29 @@ import {
   apiClients,
   apiNonces,
   auditEvents,
+  conversionLegs,
+  conversionOrders,
+  emailVerificationTokens,
   hdAddresses,
+  fxQuotes,
   hdWalletState,
   lightningPayments,
+  merchantMembers,
+  merchantWalletState,
+  merchantWallets,
   onchainPayments,
   onchainSweeps,
+  passwordResetTokens,
   paymentIntents,
+  payouts,
+  pixCharges,
+  providerEvents,
+  reconciliationRuns,
+  sessions,
+  subscriptionCharges,
+  subscriptions,
+  treasuryWallets,
+  users,
   webhookEvents,
 } from './schema.js';
 
@@ -52,6 +83,9 @@ export type CreateIntentWithAddressInput = {
   expiresAt: Date;
   graceUntil: Date;
   maxIndex: number;
+  currency?: 'BRL' | 'USD';
+  amountFiat?: bigint;
+  fxQuoteId?: string;
   deriveAddress: (index: number) => {
     address: string;
     derivationPath: string;
@@ -62,6 +96,11 @@ export type CreatedIntentWithAddress = {
   intent: PaymentIntent;
   address: HdAddress;
 };
+
+export type CreateIntentWithWalletAddressInput =
+  CreateIntentWithAddressInput & {
+    merchantWalletId: string;
+  };
 
 export type SetLightningInvoiceInput = {
   intentId: string;
@@ -90,6 +129,7 @@ export type CreateClientInput = {
   requestSecretEnc: string;
   webhookUrl: string;
   webhookSecretEnc: string;
+  scopes?: import('../domain/types.js').ApiScope[];
 };
 
 export type UpsertOnchainPaymentInput = {
@@ -154,6 +194,9 @@ export type ClientBalance = {
 
 export type StatusCounts = {
   intents: Record<string, number>;
+  pixCharges: Record<string, number>;
+  pixProviderEvents: Record<string, number>;
+  pixSettlementLatencySeconds: number;
   webhooks: Record<string, number>;
   sweeps: Record<string, number>;
   pendingIntents: number;
@@ -164,10 +207,132 @@ export type StatusCounts = {
 
 export type InsertWebhookEventInput = {
   clientId: string;
-  intentId: string;
+  intentId?: string | null;
+  pixChargeId?: string | null;
   eventType: string;
   dedupeKey: string;
   payload: Record<string, unknown>;
+};
+
+export type CreateConversionOrderInput = {
+  merchantId: string;
+  intentId: string;
+  sourceAmountSats: bigint;
+  provider: string;
+  fxQuoteId?: string | null;
+  targetAmountMinor?: bigint | null;
+  providerOrderId?: string | null;
+  inboundAddress?: string | null;
+  memo?: string | null;
+  quoteExpiresAt?: Date | null;
+  providerPayload?: Record<string, unknown> | null;
+};
+
+export type UpdateConversionOrderInput = {
+  id: string;
+  status?: ConversionOrder['status'];
+  targetAmountMinor?: bigint | null;
+  providerOrderId?: string | null;
+  inboundAddress?: string | null;
+  memo?: string | null;
+  quoteExpiresAt?: Date | null;
+  providerPayload?: Record<string, unknown> | null;
+  feeSats?: bigint | null;
+  feeMinor?: bigint | null;
+  txids?: string[];
+  error?: string | null;
+  attempts?: number;
+};
+
+export type UpsertConversionLegInput = {
+  conversionId: string;
+  leg: ConversionLeg['leg'];
+  provider: string;
+  status?: ConversionLeg['status'];
+  txid?: string | null;
+  providerRef?: string | null;
+  amountIn?: bigint | null;
+  amountOut?: bigint | null;
+  feeMinor?: bigint | null;
+};
+
+export type CreatePayoutInput = {
+  merchantId: string;
+  walletId: string;
+  amountMinor: bigint;
+  idempotencyKey: string;
+  conversionId?: string | null;
+  pixChargeId?: string | null;
+  destinationAddress?: string | null;
+  feeMinor?: bigint | null;
+  status?: PayoutStatus;
+  approvedBy?: string | null;
+  lastError?: string | null;
+};
+
+export type UpdatePayoutInput = {
+  id: string;
+  status?: PayoutStatus;
+  txid?: string | null;
+  feeMinor?: bigint | null;
+  approvedBy?: string | null;
+  lastError?: string | null;
+  sentAt?: Date | null;
+  confirmedAt?: Date | null;
+};
+
+export type InsertProviderEventInput = {
+  provider: string;
+  eventType: string;
+  externalId: string;
+  conversionId?: string | null;
+  pixChargeId?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type CreatePixChargeInput = {
+  id?: string;
+  clientId: string;
+  externalId: string;
+  providerExternalId: string;
+  amountBrlCents: bigint;
+  asset?: 'USDC';
+  chain?: 'base';
+  destinationAddress?: string | null;
+  payerTaxHash?: string | null;
+  payerTaxLast4?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type UpdatePixChargeInput = {
+  id: string;
+  status?: PixCharge['status'];
+  settlementStatus?: PixCharge['settlementStatus'];
+  providerChargeId?: string | null;
+  providerStatus?: PixCharge['providerStatus'];
+  providerSettlementStatus?: PixCharge['providerSettlementStatus'];
+  qrCopypaste?: string | null;
+  qrImageUrl?: string | null;
+  expiresAt?: Date | null;
+  paidAt?: Date | null;
+  settledAt?: Date | null;
+  e2e?: string | null;
+  payerName?: string | null;
+  feeLuniumBps?: number | null;
+  feeLuniumFixedCents?: bigint | null;
+  feePartnerBps?: number | null;
+  feeTotalCents?: bigint | null;
+  netCents?: bigint | null;
+  assetAmountMinor?: bigint | null;
+  withdrawFee?: string | null;
+  settlementTxHash?: string | null;
+  settlementTxUrl?: string | null;
+  providerPayload?: Record<string, unknown> | null;
+  error?: string | null;
+  attempts?: number;
+  lastCheckedAt?: Date | null;
+  payoutId?: string | null;
+  version?: number;
 };
 
 export type Repositories = {
@@ -180,6 +345,137 @@ export type Repositories = {
   listClients: () => Promise<ApiClient[]>;
   consumeNonce: (clientId: string, nonce: string, expiresAt: Date) => Promise<boolean>;
   cleanupExpiredNonces: () => Promise<number>;
+
+  // Usuarios, sessoes e participacao em lojas (portal)
+  findUserByEmail: (email: string) => Promise<User | null>;
+  findUserById: (id: string) => Promise<User | null>;
+  createUser: (input: {
+    email: string;
+    passwordHash: string;
+    status: User['status'];
+  }) => Promise<User>;
+  updateUser: (
+    id: string,
+    input: {
+      passwordHash?: string;
+      status?: User['status'];
+      emailVerifiedAt?: Date | null;
+    },
+  ) => Promise<User | null>;
+  createMerchantMember: (input: {
+    userId: string;
+    merchantId: string;
+    role: MerchantMember['role'];
+  }) => Promise<MerchantMember>;
+  findMerchantMember: (
+    userId: string,
+    merchantId: string,
+  ) => Promise<MerchantMember | null>;
+  listMerchantsForUser: (
+    userId: string,
+  ) => Promise<Array<{ member: MerchantMember; client: ApiClient }>>;
+
+  // Sessoes
+  createSession: (input: {
+    userId: string;
+    tokenHash: string;
+    csrfTokenHash: string;
+    expiresAt: Date;
+  }) => Promise<Session>;
+  findSessionByTokenHash: (tokenHash: string) => Promise<Session | null>;
+  updateSessionSeen: (id: string, lastSeenAt: Date) => Promise<void>;
+  revokeSession: (id: string) => Promise<void>;
+  revokeUserSessions: (userId: string) => Promise<number>;
+  deleteExpiredSessions: (now: Date) => Promise<number>;
+
+  // Tokens de verificacao de e-mail e reset de senha
+  createEmailVerificationToken: (input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }) => Promise<{ id: string }>;
+  findEmailVerificationTokenByHash: (
+    tokenHash: string,
+  ) => Promise<{ id: string; userId: string; expiresAt: Date; consumedAt: Date | null } | null>;
+  consumeEmailVerificationToken: (id: string) => Promise<boolean>;
+  createPasswordResetToken: (input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }) => Promise<{ id: string }>;
+  findPasswordResetTokenByHash: (
+    tokenHash: string,
+  ) => Promise<{ id: string; userId: string; expiresAt: Date; consumedAt: Date | null } | null>;
+  consumePasswordResetToken: (id: string) => Promise<boolean>;
+
+  updateClientProfile: (
+    id: string,
+    input: { name?: string; webhookUrl?: string },
+  ) => Promise<ApiClient | null>;
+
+  rotateClientKey: (
+    id: string,
+    input: { apiKeyHash: string; apiKeyPrefix: string; requestSecretEnc: string },
+  ) => Promise<ApiClient | null>;
+
+  listIntentsForClient: (clientId: string, limit: number) => Promise<PaymentIntent[]>;
+  deactivateMerchantWallet: (id: string) => Promise<void>;
+
+  // Assinaturas (recorrente)
+  createSubscription: (input: {
+    merchantId: string;
+    name: string;
+    amountSats: bigint;
+    description: string | null;
+    interval: Subscription['interval'];
+    status?: Subscription['status'];
+    externalId?: string | null;
+    metadata?: Record<string, unknown> | null;
+    nextChargeAt: Date;
+  }) => Promise<Subscription>;
+  findSubscriptionById: (id: string) => Promise<Subscription | null>;
+  findSubscriptionByIdForClient: (
+    id: string,
+    merchantId: string,
+  ) => Promise<Subscription | null>;
+  listSubscriptionsForClient: (
+    merchantId: string,
+    limit: number,
+  ) => Promise<Subscription[]>;
+  listDueSubscriptions: (now: Date, limit: number) => Promise<Subscription[]>;
+  updateSubscription: (
+    id: string,
+    input: {
+      name?: string;
+      amountSats?: bigint;
+      description?: string | null;
+      interval?: Subscription['interval'];
+      status?: Subscription['status'];
+      nextChargeAt?: Date;
+    },
+  ) => Promise<Subscription | null>;
+  createSubscriptionCharge: (input: {
+    subscriptionId: string;
+    intentId: string | null;
+    periodStart: Date;
+    periodEnd: Date;
+    status?: SubscriptionCharge['status'];
+  }) => Promise<SubscriptionCharge>;
+  listSubscriptionCharges: (
+    subscriptionId: string,
+    limit: number,
+  ) => Promise<SubscriptionCharge[]>;
+  markSubscriptionCharge: (
+    id: string,
+    status: SubscriptionCharge['status'],
+  ) => Promise<void>;
+  listSubscriptionChargesByStatus: (
+    status: SubscriptionCharge['status'],
+    limit: number,
+  ) => Promise<SubscriptionCharge[]>;
+  findSubscriptionChargeByIntentId: (
+    intentId: string,
+  ) => Promise<SubscriptionCharge | null>;
 
   // HD wallet
   getHdWalletState: () => Promise<HdWalletStateRecord | null>;
@@ -194,14 +490,157 @@ export type Repositories = {
     derivationPath: string;
     intentId?: string | null;
   }) => Promise<HdAddress>;
+  findFxQuoteById: (id: string) => Promise<FxQuote | null>;
+  findMerchantWalletById: (id: string) => Promise<MerchantWallet | null>;
+  findMerchantWalletByChainAddress: (
+    chain: string,
+    address: string,
+  ) => Promise<MerchantWallet | null>;
+  findActiveBtcDepositWalletForClient: (
+    clientId: string,
+  ) => Promise<MerchantWallet | null>;
+  findDefaultBtcWallet: () => Promise<MerchantWallet | null>;
   findHdAddressById: (id: string) => Promise<HdAddress | null>;
   findHdAddressByIntentId: (intentId: string) => Promise<HdAddress | null>;
   markHdAddressUsed: (id: string) => Promise<void>;
+
+  // Carteiras de liquidacao / treasury
+  findActiveUsdcSettlementWalletForClient: (
+    clientId: string,
+  ) => Promise<MerchantWallet | null>;
+  findTreasuryWalletByKind: (kind: string) => Promise<{
+    id: string;
+    kind: string;
+    chain: string;
+    network: string;
+    address: string;
+    status: string;
+  } | null>;
+  listTreasuryWallets: () => Promise<Array<{
+    id: string;
+    kind: string;
+    chain: string;
+    network: string;
+    address: string;
+    status: string;
+  }>>;
+
+  // Conversao
+  createConversionOrder: (
+    input: CreateConversionOrderInput,
+  ) => Promise<ConversionOrder>;
+  findConversionOrderById: (id: string) => Promise<ConversionOrder | null>;
+  findConversionOrderByIntentId: (
+    intentId: string,
+  ) => Promise<ConversionOrder | null>;
+  updateConversionOrder: (
+    input: UpdateConversionOrderInput,
+  ) => Promise<ConversionOrder | null>;
+  listIntentsAwaitingConversion: (limit: number) => Promise<PaymentIntent[]>;
+  listConversionOrdersToQuote: (limit: number) => Promise<ConversionOrder[]>;
+  listConversionOrdersToSend: (limit: number) => Promise<ConversionOrder[]>;
+  listConversionOrdersToMonitor: (limit: number) => Promise<ConversionOrder[]>;
+  listConvertedConversionsAwaitingPayout: (
+    limit: number,
+  ) => Promise<ConversionOrder[]>;
+  listConversionOrders: (limit: number) => Promise<ConversionOrder[]>;
+  listConversionOrdersForMerchant: (
+    merchantId: string,
+    limit: number,
+  ) => Promise<ConversionOrder[]>;
+  findConversionOrderByIdForMerchant: (
+    id: string,
+    merchantId: string,
+  ) => Promise<ConversionOrder | null>;
+  listConversionLegs: (conversionId: string) => Promise<ConversionLeg[]>;
+  upsertConversionLeg: (
+    input: UpsertConversionLegInput,
+  ) => Promise<ConversionLeg>;
+  insertProviderEvent: (input: InsertProviderEventInput) => Promise<boolean>;
+  hasProviderEvent: (provider: string, externalId: string) => Promise<boolean>;
+  listUnprocessedProviderEvents: (
+    provider: string,
+    limit: number,
+  ) => Promise<Array<{ id: string; eventType: string; externalId: string; payload: Record<string, unknown> }>>;
+  markProviderEventProcessed: (id: string) => Promise<void>;
+  updateIntentSettlement: (input: {
+    intentId: string;
+    from: PaymentIntent['settlementStatus'][];
+    to: PaymentIntent['settlementStatus'];
+    conversionOrderId?: string | null;
+    payoutId?: string | null;
+  }) => Promise<PaymentIntent | null>;
+
+  // PIX
+  createPixCharge: (input: CreatePixChargeInput) => Promise<PixCharge>;
+  findPixChargeById: (id: string) => Promise<PixCharge | null>;
+  findPixChargeByIdForClient: (
+    id: string,
+    clientId: string,
+  ) => Promise<PixCharge | null>;
+  findPixChargeByClientAndExternalId: (
+    clientId: string,
+    externalId: string,
+  ) => Promise<PixCharge | null>;
+  findPixChargeByProviderChargeId: (
+    provider: string,
+    providerChargeId: string,
+  ) => Promise<PixCharge | null>;
+  updatePixCharge: (input: UpdatePixChargeInput) => Promise<PixCharge | null>;
+  listPixChargesToReconcile: (limit: number) => Promise<PixCharge[]>;
+  listPixChargesAwaitingPayout: (limit: number) => Promise<PixCharge[]>;
+  listPixCharges: (limit: number) => Promise<PixCharge[]>;
+  listPixChargesForMerchant: (
+    merchantId: string,
+    limit: number,
+  ) => Promise<PixCharge[]>;
+
+  // Payout
+  createPayout: (input: CreatePayoutInput) => Promise<Payout>;
+  findPayoutById: (id: string) => Promise<Payout | null>;
+  findPayoutByConversionId: (conversionId: string) => Promise<Payout | null>;
+  findPayoutByPixChargeId: (pixChargeId: string) => Promise<Payout | null>;
+  updatePayout: (input: UpdatePayoutInput) => Promise<Payout | null>;
+  claimPayoutForSending: (id: string) => Promise<Payout | null>;
+  listPayoutsToSend: (limit: number) => Promise<Payout[]>;
+  listPayoutsToMonitor: (limit: number) => Promise<Payout[]>;
+  listPayouts: (limit: number) => Promise<Payout[]>;
+  listPayoutsForMerchant: (
+    merchantId: string,
+    limit: number,
+  ) => Promise<Payout[]>;
+  findPayoutByIdForMerchant: (
+    id: string,
+    merchantId: string,
+  ) => Promise<Payout | null>;
+  getSettlementCounts: () => Promise<{
+    conversions: Record<string, number>;
+    payouts: Record<string, number>;
+  }>;
+  insertReconciliationRun: (job: string) => Promise<{ id: string }>;
+  finishReconciliationRun: (input: {
+    id: string;
+    ok: boolean;
+    details: Record<string, unknown>;
+  }) => Promise<void>;
+  listReconciliationRuns: (limit: number) => Promise<Array<{
+    id: string;
+    job: string;
+    startedAt: Date;
+    finishedAt: Date | null;
+    ok: boolean | null;
+    details: Record<string, unknown> | null;
+  }>>;
+  sumPayoutMinorSince: (merchantId: string, since: Date) => Promise<bigint>;
 
   // Intents
   createIntentWithAddress: (
     input: CreateIntentWithAddressInput,
   ) => Promise<CreatedIntentWithAddress>;
+  createIntentWithWalletAddress: (
+    input: CreateIntentWithWalletAddressInput,
+  ) => Promise<CreatedIntentWithAddress>;
+  findIntentById: (id: string) => Promise<PaymentIntent | null>;
   findIntentByIdForClient: (
     id: string,
     clientId: string,
@@ -214,6 +653,7 @@ export type Repositories = {
     paymentHash: string,
   ) => Promise<PaymentIntent | null>;
   listPendingLightningIntents: (limit: number) => Promise<PaymentIntent[]>;
+  listPaidLightningIntentsForTreasury: (limit: number) => Promise<PaymentIntent[]>;
   listDueIntents: (now: Date, limit: number) => Promise<PaymentIntent[]>;
   listWatchableOnchainIntents: (now: Date, limit: number) => Promise<PaymentIntent[]>;
   setLightningInvoice: (
@@ -383,7 +823,13 @@ export function createRepositories(db: Db): Repositories {
     },
 
     async createClient(input) {
-      const rows = await db.insert(apiClients).values(input).returning();
+      const rows = await db
+        .insert(apiClients)
+        .values({
+          ...input,
+          ...(input.scopes ? { scopes: input.scopes } : {}),
+        })
+        .returning();
       const row = rows[0];
       if (!row) throw new Error('falha ao criar cliente');
       return row;
@@ -408,6 +854,429 @@ export function createRepositories(db: Db): Repositories {
         .where(lte(apiNonces.expiresAt, new Date()))
         .returning({ nonce: apiNonces.nonce });
       return rows.length;
+    },
+
+    async findUserByEmail(email) {
+      const rows = await db
+        .select()
+        .from(users)
+        .where(eq(users.email, email))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findUserById(id) {
+      const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
+      return rows[0] ?? null;
+    },
+
+    async createUser(input) {
+      const rows = await db
+        .insert(users)
+        .values({
+          email: input.email,
+          passwordHash: input.passwordHash,
+          status: input.status,
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar usuario');
+      return row;
+    },
+
+    async updateUser(id, input) {
+      const rows = await db
+        .update(users)
+        .set({
+          ...(input.passwordHash !== undefined
+            ? { passwordHash: input.passwordHash }
+            : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.emailVerifiedAt !== undefined
+            ? { emailVerifiedAt: input.emailVerifiedAt }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async createMerchantMember(input) {
+      const rows = await db
+        .insert(merchantMembers)
+        .values({
+          userId: input.userId,
+          merchantId: input.merchantId,
+          role: input.role,
+        })
+        .onConflictDoNothing()
+        .returning();
+      const row = rows[0];
+      if (row) return row;
+      const existing = await db
+        .select()
+        .from(merchantMembers)
+        .where(
+          and(
+            eq(merchantMembers.userId, input.userId),
+            eq(merchantMembers.merchantId, input.merchantId),
+          ),
+        )
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar participacao na loja');
+      return found;
+    },
+
+    async findMerchantMember(userId, merchantId) {
+      const rows = await db
+        .select()
+        .from(merchantMembers)
+        .where(
+          and(
+            eq(merchantMembers.userId, userId),
+            eq(merchantMembers.merchantId, merchantId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async listMerchantsForUser(userId) {
+      const rows = await db
+        .select()
+        .from(merchantMembers)
+        .innerJoin(apiClients, eq(merchantMembers.merchantId, apiClients.id))
+        .where(eq(merchantMembers.userId, userId))
+        .orderBy(asc(merchantMembers.createdAt));
+      return rows.map((row) => ({
+        member: row.merchant_members,
+        client: row.api_clients,
+      }));
+    },
+
+    async createSession(input) {
+      const rows = await db
+        .insert(sessions)
+        .values({
+          userId: input.userId,
+          tokenHash: input.tokenHash,
+          csrfTokenHash: input.csrfTokenHash,
+          expiresAt: input.expiresAt,
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar sessao');
+      return row;
+    },
+
+    async findSessionByTokenHash(tokenHash) {
+      const rows = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.tokenHash, tokenHash))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updateSessionSeen(id, lastSeenAt) {
+      await db
+        .update(sessions)
+        .set({ lastSeenAt })
+        .where(eq(sessions.id, id));
+    },
+
+    async revokeSession(id) {
+      await db
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(eq(sessions.id, id));
+    },
+
+    async revokeUserSessions(userId) {
+      const rows = await db
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(eq(sessions.userId, userId), isNull(sessions.revokedAt)),
+        )
+        .returning({ id: sessions.id });
+      return rows.length;
+    },
+
+    async deleteExpiredSessions(now) {
+      const rows = await db
+        .delete(sessions)
+        .where(lte(sessions.expiresAt, now))
+        .returning({ id: sessions.id });
+      return rows.length;
+    },
+
+    async createEmailVerificationToken(input) {
+      const rows = await db
+        .insert(emailVerificationTokens)
+        .values({
+          userId: input.userId,
+          tokenHash: input.tokenHash,
+          expiresAt: input.expiresAt,
+        })
+        .returning({ id: emailVerificationTokens.id });
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar token de verificacao');
+      return row;
+    },
+
+    async findEmailVerificationTokenByHash(tokenHash) {
+      const rows = await db
+        .select({
+          id: emailVerificationTokens.id,
+          userId: emailVerificationTokens.userId,
+          expiresAt: emailVerificationTokens.expiresAt,
+          consumedAt: emailVerificationTokens.consumedAt,
+        })
+        .from(emailVerificationTokens)
+        .where(eq(emailVerificationTokens.tokenHash, tokenHash))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async consumeEmailVerificationToken(id) {
+      const rows = await db
+        .update(emailVerificationTokens)
+        .set({ consumedAt: new Date() })
+        .where(
+          and(
+            eq(emailVerificationTokens.id, id),
+            isNull(emailVerificationTokens.consumedAt),
+          ),
+        )
+        .returning({ id: emailVerificationTokens.id });
+      return rows.length > 0;
+    },
+
+    async createPasswordResetToken(input) {
+      const rows = await db
+        .insert(passwordResetTokens)
+        .values({
+          userId: input.userId,
+          tokenHash: input.tokenHash,
+          expiresAt: input.expiresAt,
+        })
+        .returning({ id: passwordResetTokens.id });
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar token de reset');
+      return row;
+    },
+
+    async findPasswordResetTokenByHash(tokenHash) {
+      const rows = await db
+        .select({
+          id: passwordResetTokens.id,
+          userId: passwordResetTokens.userId,
+          expiresAt: passwordResetTokens.expiresAt,
+          consumedAt: passwordResetTokens.consumedAt,
+        })
+        .from(passwordResetTokens)
+        .where(eq(passwordResetTokens.tokenHash, tokenHash))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async consumePasswordResetToken(id) {
+      const rows = await db
+        .update(passwordResetTokens)
+        .set({ consumedAt: new Date() })
+        .where(
+          and(
+            eq(passwordResetTokens.id, id),
+            isNull(passwordResetTokens.consumedAt),
+          ),
+        )
+        .returning({ id: passwordResetTokens.id });
+      return rows.length > 0;
+    },
+
+    async updateClientProfile(id, input) {
+      const rows = await db
+        .update(apiClients)
+        .set({
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.webhookUrl !== undefined
+            ? { webhookUrl: input.webhookUrl }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(apiClients.id, id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async rotateClientKey(id, input) {
+      const rows = await db
+        .update(apiClients)
+        .set({
+          apiKeyHash: input.apiKeyHash,
+          apiKeyPrefix: input.apiKeyPrefix,
+          requestSecretEnc: input.requestSecretEnc,
+          updatedAt: new Date(),
+        })
+        .where(eq(apiClients.id, id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listIntentsForClient(clientId, limit) {
+      return db
+        .select()
+        .from(paymentIntents)
+        .where(eq(paymentIntents.clientId, clientId))
+        .orderBy(desc(paymentIntents.createdAt))
+        .limit(limit);
+    },
+
+    async deactivateMerchantWallet(id) {
+      await db
+        .update(merchantWallets)
+        .set({ status: 'inativo', updatedAt: new Date() })
+        .where(eq(merchantWallets.id, id));
+    },
+
+    async createSubscription(input) {
+      const rows = await db
+        .insert(subscriptions)
+        .values({
+          merchantId: input.merchantId,
+          name: input.name,
+          amountSats: input.amountSats,
+          description: input.description,
+          interval: input.interval,
+          status: input.status ?? 'ativa',
+          externalId: input.externalId ?? null,
+          metadata: input.metadata ?? null,
+          nextChargeAt: input.nextChargeAt,
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar assinatura');
+      return row;
+    },
+
+    async findSubscriptionById(id) {
+      const rows = await db
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findSubscriptionByIdForClient(id, merchantId) {
+      const rows = await db
+        .select()
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.id, id),
+            eq(subscriptions.merchantId, merchantId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async listSubscriptionsForClient(merchantId, limit) {
+      return db
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.merchantId, merchantId))
+        .orderBy(desc(subscriptions.createdAt))
+        .limit(limit);
+    },
+
+    async listDueSubscriptions(now, limit) {
+      return db
+        .select()
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.status, 'ativa'),
+            lte(subscriptions.nextChargeAt, now),
+          ),
+        )
+        .orderBy(asc(subscriptions.nextChargeAt))
+        .limit(limit);
+    },
+
+    async updateSubscription(id, input) {
+      const rows = await db
+        .update(subscriptions)
+        .set({
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.amountSats !== undefined ? { amountSats: input.amountSats } : {}),
+          ...(input.description !== undefined
+            ? { description: input.description }
+            : {}),
+          ...(input.interval !== undefined ? { interval: input.interval } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.nextChargeAt !== undefined
+            ? { nextChargeAt: input.nextChargeAt }
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async createSubscriptionCharge(input) {
+      const rows = await db
+        .insert(subscriptionCharges)
+        .values({
+          subscriptionId: input.subscriptionId,
+          intentId: input.intentId,
+          periodStart: input.periodStart,
+          periodEnd: input.periodEnd,
+          status: input.status ?? 'criada',
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar ciclo da assinatura');
+      return row;
+    },
+
+    async listSubscriptionCharges(subscriptionId, limit) {
+      return db
+        .select()
+        .from(subscriptionCharges)
+        .where(eq(subscriptionCharges.subscriptionId, subscriptionId))
+        .orderBy(desc(subscriptionCharges.createdAt))
+        .limit(limit);
+    },
+
+    async markSubscriptionCharge(id, status) {
+      await db
+        .update(subscriptionCharges)
+        .set({ status })
+        .where(eq(subscriptionCharges.id, id));
+    },
+
+    async listSubscriptionChargesByStatus(status, limit) {
+      return db
+        .select()
+        .from(subscriptionCharges)
+        .where(eq(subscriptionCharges.status, status))
+        .orderBy(asc(subscriptionCharges.createdAt))
+        .limit(limit);
+    },
+
+    async findSubscriptionChargeByIntentId(intentId) {
+      const rows = await db
+        .select()
+        .from(subscriptionCharges)
+        .where(eq(subscriptionCharges.intentId, intentId))
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     async getHdWalletState() {
@@ -495,6 +1364,137 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(hdAddresses.id, id));
     },
 
+    async findFxQuoteById(id) {
+      const rows = await db
+        .select()
+        .from(fxQuotes)
+        .where(eq(fxQuotes.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findMerchantWalletById(id) {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(eq(merchantWallets.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findMerchantWalletByChainAddress(chain, address) {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(
+          and(
+            eq(merchantWallets.chain, chain),
+            eq(merchantWallets.address, address.toLowerCase()),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findActiveBtcDepositWalletForClient(clientId) {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(
+          and(
+            eq(merchantWallets.merchantId, clientId),
+            eq(merchantWallets.kind, 'btc_deposit'),
+            eq(merchantWallets.status, 'ativo'),
+          ),
+        )
+        .orderBy(asc(merchantWallets.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findDefaultBtcWallet() {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(
+          and(
+            isNull(merchantWallets.merchantId),
+            eq(merchantWallets.kind, 'btc_deposit'),
+            eq(merchantWallets.status, 'ativo'),
+          ),
+        )
+        .orderBy(asc(merchantWallets.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async createIntentWithWalletAddress(input) {
+      return db.transaction(async (tx) => {
+        const result = await tx.execute<{ index: number }>(sql`
+          UPDATE merchant_wallet_state
+          SET next_receive_index = next_receive_index + 1,
+              updated_at = now()
+          WHERE wallet_id = ${input.merchantWalletId}
+            AND next_receive_index < ${input.maxIndex}
+          RETURNING next_receive_index - 1 AS index
+        `);
+        const indexRow = result[0];
+        if (!indexRow) {
+          throw new Error(
+            'limite de indices HD atingido ou carteira nao inicializada',
+          );
+        }
+        const index = Number(indexRow.index);
+        const derived = input.deriveAddress(index);
+
+        const addressRows = await tx
+          .insert(hdAddresses)
+          .values({
+            index,
+            address: derived.address,
+            derivationPath: derived.derivationPath,
+            merchantWalletId: input.merchantWalletId,
+            intentId: null,
+          })
+          .returning();
+        const address = addressRows[0];
+        if (!address) throw new Error('falha ao inserir endereco HD');
+
+        const intentRows = await tx
+          .insert(paymentIntents)
+          .values({
+            clientId: input.clientId,
+            externalId: input.externalId,
+            amountSats: input.amountSats,
+            description: input.description,
+            status: 'criando',
+            expiresAt: input.expiresAt,
+            graceUntil: input.graceUntil,
+            onchainAddressId: address.id,
+            merchantWalletId: input.merchantWalletId,
+            ...(input.currency ? { currency: input.currency } : {}),
+            ...(input.amountFiat !== undefined
+              ? { amountFiat: input.amountFiat }
+              : {}),
+            ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
+            metadata: input.metadata,
+          })
+          .returning();
+        const intent = intentRows[0];
+        if (!intent) throw new Error('falha ao inserir intent');
+
+        const linkedRows = await tx
+          .update(hdAddresses)
+          .set({ intentId: intent.id })
+          .where(eq(hdAddresses.id, address.id))
+          .returning();
+        const linkedAddress = linkedRows[0];
+        if (!linkedAddress) throw new Error('falha ao vincular endereco a intent');
+
+        return { intent, address: linkedAddress };
+      });
+    },
+
     async createIntentWithAddress(input) {
       return db.transaction(async (tx) => {
         const result = await tx.execute<{ index: number }>(sql`
@@ -537,6 +1537,11 @@ export function createRepositories(db: Db): Repositories {
             expiresAt: input.expiresAt,
             graceUntil: input.graceUntil,
             onchainAddressId: address.id,
+            ...(input.currency ? { currency: input.currency } : {}),
+            ...(input.amountFiat !== undefined
+              ? { amountFiat: input.amountFiat }
+              : {}),
+            ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
             metadata: input.metadata,
           })
           .returning();
@@ -553,6 +1558,15 @@ export function createRepositories(db: Db): Repositories {
 
         return { intent, address: linkedAddress };
       });
+    },
+
+    async findIntentById(id) {
+      const rows = await db
+        .select()
+        .from(paymentIntents)
+        .where(eq(paymentIntents.id, id))
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     async findIntentByIdForClient(id, clientId) {
@@ -598,6 +1612,21 @@ export function createRepositories(db: Db): Repositories {
           ),
         )
         .orderBy(asc(paymentIntents.createdAt))
+        .limit(limit);
+    },
+
+    async listPaidLightningIntentsForTreasury(limit) {
+      return db
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            inArray(paymentIntents.status, ['pago', 'pago_tardio']),
+            inArray(paymentIntents.paidRail, ['lightning', 'both']),
+            isNotNull(paymentIntents.lightningPaymentHash),
+          ),
+        )
+        .orderBy(asc(paymentIntents.paidAt))
         .limit(limit);
     },
 
@@ -1190,7 +2219,8 @@ export function createRepositories(db: Db): Repositories {
         .insert(webhookEvents)
         .values({
           clientId: input.clientId,
-          intentId: input.intentId,
+          intentId: input.intentId ?? null,
+          pixChargeId: input.pixChargeId ?? null,
           eventType: input.eventType,
           dedupeKey: input.dedupeKey,
           payload: input.payload,
@@ -1260,12 +2290,734 @@ export function createRepositories(db: Db): Repositories {
       return rows[0] ?? null;
     },
 
+    async findActiveUsdcSettlementWalletForClient(clientId) {
+      const rows = await db
+        .select()
+        .from(merchantWallets)
+        .where(
+          and(
+            eq(merchantWallets.merchantId, clientId),
+            eq(merchantWallets.kind, 'usdc_settlement'),
+            eq(merchantWallets.status, 'ativo'),
+          ),
+        )
+        .orderBy(asc(merchantWallets.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findTreasuryWalletByKind(kind) {
+      const rows = await db
+        .select({
+          id: treasuryWallets.id,
+          kind: treasuryWallets.kind,
+          chain: treasuryWallets.chain,
+          network: treasuryWallets.network,
+          address: treasuryWallets.address,
+          status: treasuryWallets.status,
+        })
+        .from(treasuryWallets)
+        .where(
+          and(eq(treasuryWallets.kind, kind as never), eq(treasuryWallets.status, 'ativo')),
+        )
+        .orderBy(asc(treasuryWallets.createdAt))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async createConversionOrder(input) {
+      const rows = await db
+        .insert(conversionOrders)
+        .values({
+          merchantId: input.merchantId,
+          intentId: input.intentId,
+          sourceAmountSats: input.sourceAmountSats,
+          provider: input.provider,
+          fxQuoteId: input.fxQuoteId ?? null,
+          targetAmountMinor: input.targetAmountMinor ?? null,
+          providerOrderId: input.providerOrderId ?? null,
+          inboundAddress: input.inboundAddress ?? null,
+          memo: input.memo ?? null,
+          quoteExpiresAt: input.quoteExpiresAt ?? null,
+          providerPayload: input.providerPayload ?? null,
+        })
+        .onConflictDoNothing({ target: conversionOrders.intentId })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.intentId, input.intentId))
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar ordem de conversao');
+      return found;
+    },
+
+    async findConversionOrderById(id) {
+      const rows = await db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findConversionOrderByIntentId(intentId) {
+      const rows = await db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.intentId, intentId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updateConversionOrder(input) {
+      const rows = await db
+        .update(conversionOrders)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.targetAmountMinor !== undefined
+            ? { targetAmountMinor: input.targetAmountMinor }
+            : {}),
+          ...(input.providerOrderId !== undefined
+            ? { providerOrderId: input.providerOrderId }
+            : {}),
+          ...(input.inboundAddress !== undefined
+            ? { inboundAddress: input.inboundAddress }
+            : {}),
+          ...(input.memo !== undefined ? { memo: input.memo } : {}),
+          ...(input.quoteExpiresAt !== undefined
+            ? { quoteExpiresAt: input.quoteExpiresAt }
+            : {}),
+          ...(input.providerPayload !== undefined
+            ? { providerPayload: input.providerPayload }
+            : {}),
+          ...(input.feeSats !== undefined ? { feeSats: input.feeSats } : {}),
+          ...(input.feeMinor !== undefined ? { feeMinor: input.feeMinor } : {}),
+          ...(input.txids !== undefined ? { txids: input.txids } : {}),
+          ...(input.error !== undefined ? { error: input.error } : {}),
+          ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(conversionOrders.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listIntentsAwaitingConversion(limit) {
+      return db
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            inArray(paymentIntents.status, ['pago', 'pago_tardio']),
+            inArray(paymentIntents.settlementStatus, [
+              'nao_iniciado',
+              'aguardando_confirmacao',
+              'pronto_para_conversao',
+            ]),
+            isNull(paymentIntents.conversionOrderId),
+          ),
+        )
+        .orderBy(asc(paymentIntents.paidAt))
+        .limit(limit);
+    },
+
+    async listConversionOrdersToQuote(limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.status, 'criada'))
+        .orderBy(asc(conversionOrders.createdAt))
+        .limit(limit);
+    },
+
+    async listConversionOrdersToSend(limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.status, 'enviando_btc'))
+        .orderBy(asc(conversionOrders.updatedAt))
+        .limit(limit);
+    },
+
+    async listConversionOrdersToMonitor(limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .where(
+          inArray(conversionOrders.status, ['aguardando_swap', 'recebendo_usdc']),
+        )
+        .orderBy(asc(conversionOrders.updatedAt))
+        .limit(limit);
+    },
+
+    async listConversionOrders(limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .orderBy(asc(conversionOrders.createdAt))
+        .limit(limit);
+    },
+
+    async listConversionOrdersForMerchant(merchantId, limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.merchantId, merchantId))
+        .orderBy(asc(conversionOrders.createdAt))
+        .limit(limit);
+    },
+
+    async findConversionOrderByIdForMerchant(id, merchantId) {
+      const rows = await db
+        .select()
+        .from(conversionOrders)
+        .where(
+          and(
+            eq(conversionOrders.id, id),
+            eq(conversionOrders.merchantId, merchantId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async listConversionLegs(conversionId) {
+      return db
+        .select()
+        .from(conversionLegs)
+        .where(eq(conversionLegs.conversionId, conversionId))
+        .orderBy(asc(conversionLegs.createdAt));
+    },
+
+    async listConvertedConversionsAwaitingPayout(limit) {
+      return db
+        .select()
+        .from(conversionOrders)
+        .where(eq(conversionOrders.status, 'convertida'))
+        .orderBy(asc(conversionOrders.updatedAt))
+        .limit(limit);
+    },
+
+    async upsertConversionLeg(input) {
+      const rows = await db
+        .insert(conversionLegs)
+        .values({
+          conversionId: input.conversionId,
+          leg: input.leg,
+          provider: input.provider,
+          status: input.status ?? 'pendente',
+          txid: input.txid ?? null,
+          providerRef: input.providerRef ?? null,
+          amountIn: input.amountIn ?? null,
+          amountOut: input.amountOut ?? null,
+          feeMinor: input.feeMinor ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [conversionLegs.conversionId, conversionLegs.leg],
+          set: {
+            provider: input.provider,
+            ...(input.status !== undefined ? { status: input.status } : {}),
+            ...(input.txid !== undefined ? { txid: input.txid } : {}),
+            ...(input.providerRef !== undefined
+              ? { providerRef: input.providerRef }
+              : {}),
+            ...(input.amountIn !== undefined ? { amountIn: input.amountIn } : {}),
+            ...(input.amountOut !== undefined
+              ? { amountOut: input.amountOut }
+              : {}),
+            ...(input.feeMinor !== undefined ? { feeMinor: input.feeMinor } : {}),
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao gravar perna da conversao');
+      return row;
+    },
+
+    async createPixCharge(input) {
+      const rows = await db
+        .insert(pixCharges)
+        .values({
+          ...(input.id ? { id: input.id } : {}),
+          clientId: input.clientId,
+          externalId: input.externalId,
+          provider: 'lunium',
+          providerExternalId: input.providerExternalId,
+          amountBrlCents: input.amountBrlCents,
+          asset: input.asset ?? 'USDC',
+          chain: input.chain ?? 'base',
+          destinationAddress: input.destinationAddress ?? null,
+          payerTaxHash: input.payerTaxHash ?? null,
+          payerTaxLast4: input.payerTaxLast4 ?? null,
+          metadata: input.metadata ?? null,
+        })
+        .onConflictDoNothing({
+          target: [pixCharges.clientId, pixCharges.externalId],
+        })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            eq(pixCharges.clientId, input.clientId),
+            eq(pixCharges.externalId, input.externalId),
+          ),
+        )
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar cobranca PIX');
+      return found;
+    },
+
+    async findPixChargeById(id) {
+      const rows = await db
+        .select()
+        .from(pixCharges)
+        .where(eq(pixCharges.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPixChargeByIdForClient(id, clientId) {
+      const rows = await db
+        .select()
+        .from(pixCharges)
+        .where(and(eq(pixCharges.id, id), eq(pixCharges.clientId, clientId)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPixChargeByClientAndExternalId(clientId, externalId) {
+      const rows = await db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            eq(pixCharges.clientId, clientId),
+            eq(pixCharges.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPixChargeByProviderChargeId(provider, providerChargeId) {
+      const rows = await db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            eq(pixCharges.provider, provider as never),
+            eq(pixCharges.providerChargeId, providerChargeId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updatePixCharge(input) {
+      const rows = await db
+        .update(pixCharges)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.settlementStatus !== undefined
+            ? { settlementStatus: input.settlementStatus }
+            : {}),
+          ...(input.providerChargeId !== undefined
+            ? { providerChargeId: input.providerChargeId }
+            : {}),
+          ...(input.providerStatus !== undefined
+            ? { providerStatus: input.providerStatus }
+            : {}),
+          ...(input.providerSettlementStatus !== undefined
+            ? { providerSettlementStatus: input.providerSettlementStatus }
+            : {}),
+          ...(input.qrCopypaste !== undefined
+            ? { qrCopypaste: input.qrCopypaste }
+            : {}),
+          ...(input.qrImageUrl !== undefined
+            ? { qrImageUrl: input.qrImageUrl }
+            : {}),
+          ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+          ...(input.paidAt !== undefined ? { paidAt: input.paidAt } : {}),
+          ...(input.settledAt !== undefined ? { settledAt: input.settledAt } : {}),
+          ...(input.e2e !== undefined ? { e2e: input.e2e } : {}),
+          ...(input.payerName !== undefined ? { payerName: input.payerName } : {}),
+          ...(input.feeLuniumBps !== undefined
+            ? { feeLuniumBps: input.feeLuniumBps }
+            : {}),
+          ...(input.feeLuniumFixedCents !== undefined
+            ? { feeLuniumFixedCents: input.feeLuniumFixedCents }
+            : {}),
+          ...(input.feePartnerBps !== undefined
+            ? { feePartnerBps: input.feePartnerBps }
+            : {}),
+          ...(input.feeTotalCents !== undefined
+            ? { feeTotalCents: input.feeTotalCents }
+            : {}),
+          ...(input.netCents !== undefined ? { netCents: input.netCents } : {}),
+          ...(input.assetAmountMinor !== undefined
+            ? { assetAmountMinor: input.assetAmountMinor }
+            : {}),
+          ...(input.withdrawFee !== undefined
+            ? { withdrawFee: input.withdrawFee }
+            : {}),
+          ...(input.settlementTxHash !== undefined
+            ? { settlementTxHash: input.settlementTxHash }
+            : {}),
+          ...(input.settlementTxUrl !== undefined
+            ? { settlementTxUrl: input.settlementTxUrl }
+            : {}),
+          ...(input.providerPayload !== undefined
+            ? { providerPayload: input.providerPayload }
+            : {}),
+          ...(input.error !== undefined ? { error: input.error } : {}),
+          ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+          ...(input.lastCheckedAt !== undefined
+            ? { lastCheckedAt: input.lastCheckedAt }
+            : {}),
+          ...(input.payoutId !== undefined ? { payoutId: input.payoutId } : {}),
+          version: sql`${pixCharges.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(pixCharges.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listPixChargesToReconcile(limit) {
+      return db
+        .select()
+        .from(pixCharges)
+        .where(
+          inArray(pixCharges.status, ['criando', 'pendente', 'pago', 'incerto']),
+        )
+        .orderBy(asc(pixCharges.updatedAt))
+        .limit(limit);
+    },
+
+    async listPixChargesAwaitingPayout(limit) {
+      return db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            eq(pixCharges.status, 'liquidado'),
+            eq(pixCharges.settlementStatus, 'convertido'),
+            isNull(pixCharges.payoutId),
+          ),
+        )
+        .orderBy(asc(pixCharges.settledAt))
+        .limit(limit);
+    },
+
+    async listPixCharges(limit) {
+      return db
+        .select()
+        .from(pixCharges)
+        .orderBy(asc(pixCharges.createdAt))
+        .limit(limit);
+    },
+
+    async listPixChargesForMerchant(merchantId, limit) {
+      return db
+        .select()
+        .from(pixCharges)
+        .where(eq(pixCharges.clientId, merchantId))
+        .orderBy(asc(pixCharges.createdAt))
+        .limit(limit);
+    },
+
+    async listUnprocessedProviderEvents(provider, limit) {
+      return db
+        .select({
+          id: providerEvents.id,
+          eventType: providerEvents.eventType,
+          externalId: providerEvents.externalId,
+          payload: providerEvents.payload,
+        })
+        .from(providerEvents)
+        .where(
+          and(
+            eq(providerEvents.provider, provider),
+            isNull(providerEvents.processedAt),
+          ),
+        )
+        .orderBy(asc(providerEvents.createdAt))
+        .limit(limit);
+    },
+
+    async markProviderEventProcessed(id) {
+      await db
+        .update(providerEvents)
+        .set({ processedAt: new Date() })
+        .where(eq(providerEvents.id, id));
+    },
+
+    async insertProviderEvent(input) {
+      const rows = await db
+        .insert(providerEvents)
+        .values({
+          provider: input.provider,
+          eventType: input.eventType,
+          externalId: input.externalId,
+          conversionId: input.conversionId ?? null,
+          pixChargeId: input.pixChargeId ?? null,
+          payload: input.payload,
+        })
+        .onConflictDoNothing({
+          target: [providerEvents.provider, providerEvents.externalId],
+        })
+        .returning({ id: providerEvents.id });
+      return rows.length > 0;
+    },
+
+    async hasProviderEvent(provider, externalId) {
+      const rows = await db
+        .select({ id: providerEvents.id })
+        .from(providerEvents)
+        .where(
+          and(
+            eq(providerEvents.provider, provider),
+            eq(providerEvents.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    async updateIntentSettlement(input) {
+      return db.transaction(async (tx) => {
+        const locked = await tx
+          .select()
+          .from(paymentIntents)
+          .where(eq(paymentIntents.id, input.intentId))
+          .for('update')
+          .limit(1);
+        const current = locked[0];
+        if (!current || !input.from.includes(current.settlementStatus)) return null;
+        const rows = await tx
+          .update(paymentIntents)
+          .set({
+            settlementStatus: input.to,
+            ...(input.conversionOrderId !== undefined
+              ? { conversionOrderId: input.conversionOrderId }
+              : {}),
+            ...(input.payoutId !== undefined ? { payoutId: input.payoutId } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(paymentIntents.id, input.intentId))
+          .returning();
+        return rows[0] ?? null;
+      });
+    },
+
+    async createPayout(input) {
+      const rows = await db
+        .insert(payouts)
+        .values({
+          merchantId: input.merchantId,
+          walletId: input.walletId,
+          amountMinor: input.amountMinor,
+          idempotencyKey: input.idempotencyKey,
+          conversionId: input.conversionId ?? null,
+          pixChargeId: input.pixChargeId ?? null,
+          destinationAddress: input.destinationAddress ?? null,
+          feeMinor: input.feeMinor ?? null,
+          status: input.status ?? 'pendente',
+          approvedBy: input.approvedBy ?? null,
+          lastError: input.lastError ?? null,
+        })
+        .onConflictDoNothing({ target: payouts.idempotencyKey })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.idempotencyKey, input.idempotencyKey))
+        .limit(1);
+      const row = existing[0];
+      if (!row) throw new Error('falha ao criar payout');
+      return row;
+    },
+
+    async findPayoutById(id) {
+      const rows = await db.select().from(payouts).where(eq(payouts.id, id)).limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPayoutByConversionId(conversionId) {
+      const rows = await db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.conversionId, conversionId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPayoutByPixChargeId(pixChargeId) {
+      const rows = await db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.pixChargeId, pixChargeId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updatePayout(input) {
+      const rows = await db
+        .update(payouts)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.txid !== undefined ? { txid: input.txid } : {}),
+          ...(input.feeMinor !== undefined ? { feeMinor: input.feeMinor } : {}),
+          ...(input.approvedBy !== undefined
+            ? { approvedBy: input.approvedBy }
+            : {}),
+          ...(input.lastError !== undefined ? { lastError: input.lastError } : {}),
+          ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
+          ...(input.confirmedAt !== undefined
+            ? { confirmedAt: input.confirmedAt }
+            : {}),
+        })
+        .where(eq(payouts.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async claimPayoutForSending(id) {
+      const rows = await db
+        .update(payouts)
+        .set({ status: 'enviando' })
+        .where(and(eq(payouts.id, id), eq(payouts.status, 'aprovado')))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listPayoutsToSend(limit) {
+      return db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.status, 'aprovado'))
+        .orderBy(asc(payouts.createdAt))
+        .limit(limit);
+    },
+
+    async listPayoutsToMonitor(limit) {
+      return db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.status, 'enviando'))
+        .orderBy(asc(payouts.createdAt))
+        .limit(limit);
+    },
+
+    async listPayouts(limit) {
+      return db
+        .select()
+        .from(payouts)
+        .orderBy(asc(payouts.createdAt))
+        .limit(limit);
+    },
+
+    async listPayoutsForMerchant(merchantId, limit) {
+      return db
+        .select()
+        .from(payouts)
+        .where(eq(payouts.merchantId, merchantId))
+        .orderBy(asc(payouts.createdAt))
+        .limit(limit);
+    },
+
+    async findPayoutByIdForMerchant(id, merchantId) {
+      const rows = await db
+        .select()
+        .from(payouts)
+        .where(and(eq(payouts.id, id), eq(payouts.merchantId, merchantId)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async listTreasuryWallets() {
+      return db
+        .select()
+        .from(treasuryWallets)
+        .orderBy(asc(treasuryWallets.createdAt));
+    },
+
+    async getSettlementCounts() {
+      const conversionRows = await db
+        .select({
+          status: conversionOrders.status,
+          count: sql<string>`count(*)::text`,
+        })
+        .from(conversionOrders)
+        .groupBy(conversionOrders.status);
+      const payoutRows = await db
+        .select({
+          status: payouts.status,
+          count: sql<string>`count(*)::text`,
+        })
+        .from(payouts)
+        .groupBy(payouts.status);
+      return {
+        conversions: Object.fromEntries(
+          conversionRows.map((row) => [row.status, Number(row.count)]),
+        ),
+        payouts: Object.fromEntries(
+          payoutRows.map((row) => [row.status, Number(row.count)]),
+        ),
+      };
+    },
+
+    async sumPayoutMinorSince(merchantId, since) {
+      const rows = await db
+        .select({
+          total: sql<string>`coalesce(sum(${payouts.amountMinor}), 0)::text`,
+        })
+        .from(payouts)
+        .where(
+          and(
+            eq(payouts.merchantId, merchantId),
+            gt(payouts.createdAt, since),
+            inArray(payouts.status, ['aprovado', 'enviando', 'confirmado']),
+          ),
+        );
+      return BigInt(rows[0]?.total ?? '0');
+    },
+
     async getStatusCounts() {
-      const [intents, webhooks, sweeps, pending, due, active] = await Promise.all([
+      const [intents, pixChargeRows, pixProviderEventRows, pixLatencyRows, webhooks, sweeps, pending, due, active] = await Promise.all([
         db.execute<{ status: string; count: number }>(sql`
           select status, count(*)::int as count
           from payment_intents
           group by status
+        `),
+        db.execute<{ status: string; count: number }>(sql`
+          select status, count(*)::int as count
+          from pix_charges
+          group by status
+        `),
+        db.execute<{ status: string; count: number }>(sql`
+          select case when processed_at is null then 'pendente' else 'processado' end as status,
+                 count(*)::int as count
+          from provider_events
+          where provider = 'lunium'
+          group by 1
+        `),
+        db.execute<{ avg_seconds: string | null }>(sql`
+          select avg(extract(epoch from (settled_at - paid_at)))::text as avg_seconds
+          from pix_charges
+          where settled_at is not null and paid_at is not null
         `),
         db.execute<{ status: string; count: number }>(sql`
           select status, count(*)::int as count
@@ -1312,6 +3064,9 @@ export function createRepositories(db: Db): Repositories {
       `);
       return {
         intents: toRecord(intents),
+        pixCharges: toRecord(pixChargeRows),
+        pixProviderEvents: toRecord(pixProviderEventRows),
+        pixSettlementLatencySeconds: Number(pixLatencyRows[0]?.avg_seconds ?? 0),
         webhooks: toRecord(webhooks),
         sweeps: toRecord(sweeps),
         pendingIntents: Number(pending[0]?.count ?? 0),
@@ -1324,6 +3079,43 @@ export function createRepositories(db: Db): Repositories {
           paidAmountSats: String(row.paid_amount_sats),
         })),
       };
+    },
+
+    async insertReconciliationRun(job) {
+      const rows = await db
+        .insert(reconciliationRuns)
+        .values({ job })
+        .returning({ id: reconciliationRuns.id });
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar execucao de reconciliacao');
+      return row;
+    },
+
+    async finishReconciliationRun(input) {
+      await db
+        .update(reconciliationRuns)
+        .set({
+          ok: input.ok,
+          details: input.details,
+          finishedAt: new Date(),
+        })
+        .where(eq(reconciliationRuns.id, input.id));
+    },
+
+    async listReconciliationRuns(limit) {
+      const rows = await db
+        .select()
+        .from(reconciliationRuns)
+        .orderBy(asc(reconciliationRuns.startedAt))
+        .limit(limit);
+      return rows.map((row) => ({
+        id: row.id,
+        job: row.job,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        ok: row.ok,
+        details: row.details,
+      }));
     },
 
     async insertAuditEvent(input) {

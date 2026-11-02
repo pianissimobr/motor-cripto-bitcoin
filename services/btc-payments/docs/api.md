@@ -6,6 +6,10 @@ resumo ao lado do código.
 
 Base: `PUBLIC_BASE_URL` (ex.: `https://payments.example.com`).
 
+> Além da API HMAC, há também o **portal do lojista** (`/auth/*`,
+> `/v1/portal/*`), a **página pública de checkout** (`/pay/:id`) e o **snippet**
+> (`/checkout.js`). Guia passo a passo em [manual.md](manual.md).
+
 ## Autenticacao
 
 Rotas `/v1/*` exigem HMAC:
@@ -28,6 +32,16 @@ METHOD\nPATH\nTIMESTAMP\nNONCE\nSHA256(rawBody)
 - Timestamp com janela de 300s.
 - Nonce unico por cliente; reuso retorna 401.
 - O corpo assinado e o JSON exato enviado.
+
+Escopos por cliente:
+
+```text
+payments:write  payments:read
+wallets:read    wallets:write
+balances:read   conversions:read  payouts:read
+```
+
+Escopo ausente retorna `403`.
 
 ## Criar cobranca
 
@@ -88,6 +102,116 @@ Status: `criando`, `pendente`, `pago`, `parcial`, `expirado`, `pago_tardio`,
 
 Somente `pendente`. Pagamento Lightning tardio de uma cobranca cancelada nao
 altera o status; fica registrado para revisao.
+
+## Saldos e liquidação
+
+- `GET /v1/balances` retorna contas do ledger com `debit`, `credit` e
+  `balance` em string. Para passivos, `balance` e `credit - debit`.
+- `GET /v1/conversions` e `GET /v1/conversions/:id` retornam a ordem THORChain,
+  `target_amount_minor` em USDC (6 casas) e, no detalhe, as pernas.
+- `GET /v1/payouts` e `GET /v1/payouts/:id` retornam o payout USDC na Base.
+
+## Carteiras
+
+`GET /v1/wallets`
+
+`POST /v1/wallets` aceita:
+
+```json
+{ "kind": "btc_deposit", "xpub": "tpub...", "derivation_prefix": "0" }
+```
+
+```json
+{ "kind": "usdc_settlement", "address": "0x..." }
+```
+
+O endereco USDC e unico por loja. Repetir o mesmo endereco na mesma loja e
+idempotente; em outra loja retorna `409`.
+
+## Taxas
+
+`GET /v1/fx/rates` retorna `BTC/BRL` e `BTC/USD` atuais com `source` e
+`observed_at`.
+
+## Admin
+
+Exigem `Authorization: Bearer <ADMIN_TOKEN>`:
+
+```text
+GET  /admin/api/merchants
+GET  /admin/api/treasury
+GET  /admin/api/conversions
+POST /admin/api/conversions/:id/retry
+GET  /admin/api/payouts
+POST /admin/api/payouts/:id/approve
+POST /admin/api/payouts/:id/retry
+GET  /admin/api/reconciliation
+```
+
+`GET /admin/api/reconciliation` retorna `ok` e confere se debitos e creditos
+do ledger batem por ativo.
+
+
+## PIX -> USDC
+
+`POST /v1/pix-charges` cria uma cobrança PIX na Lunium e entrega USDC na Base
+para a treasury da plataforma. O `PayoutService` liquida a loja.
+
+```json
+{
+  "external_id": "pedido-123",
+  "amount": "50.00",
+  "currency": "BRL",
+  "payer_tax_number": "00000000191",
+  "payer_name": "Cliente"
+}
+```
+
+Resposta:
+
+```json
+{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "provider": "lunium",
+  "provider_charge_id": "ci_...",
+  "status": "pendente",
+  "settlement_status": "nao_iniciado",
+  "amount_brl_cents": "5000",
+  "asset": "USDC",
+  "chain": "base",
+  "pix": {
+    "qr_copypaste": "000201...",
+    "qr_image_url": "https://...",
+    "qr_svg": "<svg ...>",
+    "expires_at": "..."
+  },
+  "payout_id": null
+}
+```
+
+Consultas:
+
+```text
+GET /v1/pix-charges/:id
+GET /v1/pix-charges?external_id=pedido-123
+```
+
+Detalhes em [pix.md](pix.md).
+
+## Webhooks de liquidacao
+
+Alem dos eventos de pagamento, o worker envia:
+
+```text
+payment_intent.converted
+payment_intent.conversion_failed
+payment_intent.conversion_refunded
+payment_intent.payout_pending
+payment_intent.payout_sent
+payment_intent.payout_confirmed
+payment_intent.payout_failed
+```
 
 ## Erros
 

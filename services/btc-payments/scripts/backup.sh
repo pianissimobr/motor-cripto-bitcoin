@@ -9,9 +9,10 @@ if [ -f .env.production ]; then
   set +a
 fi
 
-mkdir -p backups
+backup_dir="${BACKUP_DIR:-backups}"
+mkdir -p "$backup_dir"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-out="backups/btc-payments-${stamp}.sql.gz"
+out="${backup_dir}/btc-payments-${stamp}.sql.gz"
 compose_file="${COMPOSE_FILE:-docker-compose.prod.yml}"
 db_service="${DB_SERVICE:-db}"
 
@@ -25,7 +26,11 @@ else
     | gzip > "$out"
 fi
 
+gzip -t "$out"
+sha256sum "$out" > "${out}.sha256"
+
 echo "Banco salvo em: $out"
+echo "Checksum em: ${out}.sha256"
 echo
 echo "Nao esqueca de guardar tambem, fora do servidor:"
 echo "  - data/keystore.json (se SIGNER_MODE=local)"
@@ -35,7 +40,7 @@ echo "  - endereco da carteira fria"
 echo
 echo "Exemplo: BACKUP_KEYSTORE=1 $0 (copia o keystore para backups/)"
 if [ "${BACKUP_KEYSTORE:-0}" = "1" ] && [ -f data/keystore.json ]; then
-  cp data/keystore.json "backups/keystore-${stamp}.json"
-  chmod 600 "backups/keystore-${stamp}.json"
-  echo "Keystore copiado para backups/keystore-${stamp}.json"
+  cp data/keystore.json "${backup_dir}/keystore-${stamp}.json"
+  chmod 600 "${backup_dir}/keystore-${stamp}.json"
+  echo "Keystore copiado para ${backup_dir}/keystore-${stamp}.json"
 fi

@@ -17,7 +17,7 @@ Há quatro portas de entrada:
 
 Corpo máximo: 64 KiB. Acima disso a resposta é 413, `code: bad_request`. JSON desconhecido num corpo `.strict()` é 400.
 
-O limite é 120 pedidos por janela de 60 segundos. A chave da loja e do admin é o cabeçalho `Authorization` inteiro, então cada cliente tem o seu balde. O webhook do LNbits usa o IP. `/health` não conta. Estourar devolve 429.
+O limite é 120 pedidos por janela de 60 segundos. A chave da loja e do admin é o hash (SHA-256) do cabeçalho `Authorization`, então cada cliente tem o seu balde. O webhook do LNbits usa o IP. `/health` não conta. Estourar devolve 429.
 
 ---
 
@@ -261,6 +261,58 @@ Resposta 2xx marca entregue. Qualquer outra coisa, timeout ou redirect, entra de
 
 O webhook não inclui a invoice, o endereço, nem `metadata`.
 
+
+---
+
+## PIX -> USDC na Base
+
+`POST /v1/pix-charges`
+
+```json
+{
+  "external_id": "pedido-123",
+  "amount": "50.00",
+  "currency": "BRL",
+  "payer_tax_number": "00000000191",
+  "payer_name": "Cliente"
+}
+```
+
+Resposta:
+
+```json
+{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "provider": "lunium",
+  "provider_charge_id": "ci_...",
+  "status": "pendente",
+  "settlement_status": "nao_iniciado",
+  "amount_brl_cents": "5000",
+  "asset": "USDC",
+  "chain": "base",
+  "pix": {
+    "qr_copypaste": "000201...",
+    "qr_image_url": "https://...",
+    "qr_svg": "<svg ...>",
+    "expires_at": "..."
+  },
+  "payout_id": null,
+  "error": null
+}
+```
+
+Consultas:
+
+```text
+GET /v1/pix-charges/:id
+GET /v1/pix-charges?external_id=pedido-123
+```
+
+O CPF/CNPJ do pagador é obrigatório pela Lunium. Ele não é persistido em
+texto claro. O fluxo completo, status e webhooks estão em
+[services/btc-payments/docs/pix.md](../services/btc-payments/docs/pix.md).
+
 ---
 
 ## Webhook de entrada do LNbits
@@ -410,6 +462,32 @@ Não consulta banco nem LNbits. Serve para o processo estar de pé.
 | `cold_wallet` | Sweep desligado, ou `COLD_WALLET_ADDRESS` é um endereço dessa rede |
 | `lnbits` | A API do LNbits responde |
 | `esplora` | O Esplora responde, com a altura da ponta |
+
+---
+
+## Portal, auth e checkout público
+
+Alem da API HMAC, o serviço expõe um portal para o lojista (cookie de sessão) e
+uma página pública de checkout. O manual completo está em
+[`services/btc-payments/docs/manual.md`](../services/btc-payments/docs/manual.md).
+
+| Quem | Prefixo | Credencial |
+| --- | --- | --- |
+| Lojista (portal) | `POST /auth/*`, `GET/POST/PATCH/DELETE /v1/portal/*` | Cookie `portal_sid` + `X-CSRF-Token` nas mutações |
+| Pagador | `GET /pay/:id`, `GET /pay/:id/status` | nenhuma |
+
+Auth: `POST /auth/register`, `POST /auth/login`, `POST /auth/verify-email`,
+`POST /auth/logout`, `GET /auth/me`, `POST /auth/forgot-password`,
+`POST /auth/reset-password`, `POST /auth/change-password`. O cadastro cria a
+conta **e** a primeira loja (`unverified`).
+
+Lojas/carteiras/checkout/relatórios/assinaturas ficam em
+`/v1/portal/merchants/:id/...` — isolados por `merchant_members` (outra loja
+responde 403). Assinaturas recorrentes ficam em
+`/v1/portal/merchants/:id/subscriptions`.
+
+A página `/pay/:id` mostra o QR (BIP21 com `lightning=`) e faz poll em
+`/pay/:id/status`. O snippet embutível é `/checkout.js`.
 
 ---
 

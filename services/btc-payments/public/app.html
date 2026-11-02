@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Dashboard — Motor Cripto</title>
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+<header>
+  <strong>Motor Cripto</strong>
+  <span class="muted">Portal do lojista</span>
+  <span class="spacer"></span>
+  <label>Loja
+    <select id="merchant-select"></select>
+  </label>
+  <button id="logout" class="ghost">Sair</button>
+</header>
+<main>
+  <p id="erro" class="erro"></p>
+
+  <div class="card">
+    <h2>Visão geral</h2>
+    <div class="grid" id="kpis">
+      <div class="kpi"><div class="value">—</div><div class="label">Volume (sats)</div></div>
+      <div class="kpi"><div class="value">—</div><div class="label">QRs gerados</div></div>
+      <div class="kpi"><div class="value">—</div><div class="label">Pagos</div></div>
+      <div class="kpi"><div class="value">—</div><div class="label">Taxa de pagamento</div></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="col card">
+      <h2>Criar checkout (one-time)</h2>
+      <form id="checkout-form">
+        <label>Valor em sats<input id="checkout-sats" inputmode="numeric" required placeholder="1000"></label>
+        <label>Descrição<input id="checkout-desc" maxlength="200" placeholder="Pedido #123"></label>
+        <button type="submit">Gerar QR</button>
+      </form>
+      <div id="checkout-result" class="hidden">
+        <div id="checkout-qr" class="qr"></div>
+        <pre id="checkout-uri" class="creds"></pre>
+        <a id="checkout-link" href="#" target="_blank" rel="noopener">Abrir página de pagamento</a>
+      </div>
+    </div>
+    <div class="col card">
+      <h2>Carteiras</h2>
+      <form id="wallet-form">
+        <label>Tipo
+          <select id="wallet-kind">
+            <option value="btc_deposit">BTC (xpub de depósito)</option>
+            <option value="usdc_settlement">USDC Base (liquidação)</option>
+          </select>
+        </label>
+        <label id="wallet-xpub-label">xpub<input id="wallet-xpub" placeholder="tpub.../xpub..."></label>
+        <label id="wallet-addr-label" class="hidden">Endereço USDC<input id="wallet-addr" placeholder="0x..."></label>
+        <button type="submit">Adicionar</button>
+      </form>
+      <div id="wallets"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Checkouts recentes</h2>
+    <table id="intents"><thead><tr><th>Status</th><th>Valor</th><th>Rail</th><th>Criado</th></tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>Assinaturas (recorrente)</h2>
+    <form id="subscription-form" class="row">
+      <div class="col"><label>Nome<input id="sub-name" required maxlength="80"></label></div>
+      <div class="col"><label>Valor (sats)<input id="sub-sats" inputmode="numeric" required placeholder="1000"></label></div>
+      <div class="col"><label>Ciclo
+        <select id="sub-interval">
+          <option value="day">diário</option>
+          <option value="week">semanal</option>
+          <option value="month" selected>mensal</option>
+        </select>
+      </label></div>
+      <div class="col" style="display:flex;align-items:flex-end"><button type="submit">Criar</button></div>
+    </form>
+    <div id="subscriptions"></div>
+  </div>
+
+  <div class="card">
+    <h2>Perguntas frequentes</h2>
+    <details>
+      <summary>O motor guarda o meu dinheiro?</summary>
+      <p class="muted">Não. Ele só cria o caminho (QR/invoice) e confirma a chegada. A liquidação (USDC) vai para a carteira que você cadastrar.</p>
+    </details>
+    <details>
+      <summary>Como recebo o valor das vendas?</summary>
+      <p class="muted">Cadastre uma carteira <code>usdc_settlement</code> (endereço 0x na Base) em "Carteiras". O valor recebido é convertido e enviado para ela.</p>
+    </details>
+    <details>
+      <summary>Onde estão a API key e os secrets?</summary>
+      <p class="muted">Eles aparecem uma única vez, na criação da loja. Depois você só enxerga o prefixo. Perdeu? Use "Rotacionar API key".</p>
+    </details>
+    <details>
+      <summary>O que é o xpub de depósito?</summary>
+      <p class="muted">É a sua <strong>chave pública</strong> de conta BIP84 (<code>m/84'/0'/0'</code>). Deriva os endereços de recebimento sem poder gastar. Nunca cole xprv/seed.</p>
+    </details>
+    <details>
+      <summary>Lightning ou on-chain, qual aparece no QR?</summary>
+      <p class="muted">O QR mostrado é BIP21 e já embute a invoice Lightning quando existe. O cliente pode pagar pelo canal mais rápido; o motor confirma qualquer um dos dois.</p>
+    </details>
+    <details>
+      <summary>Como sei que um pagamento foi confirmado?</summary>
+      <p class="muted">Pelo webhook (evento <code>payment_intent.paid</code>) ou consultando <code>GET /v1/payment-intents/:id</code>. A página <code>/pay/:id/status</code> também atualiza sozinha.</p>
+    </details>
+    <details>
+      <summary>Por que minha chamada retorna 401?</summary>
+      <p class="muted">As causas mais comuns: relógio fora de ±300 s (ative NTP), nonce reutilizado, assinatura mal montada (assine o corpo cru) ou caminho com query string na string canônica.</p>
+    </details>
+    <details>
+      <summary>Para que serve o external_id?</summary>
+      <p class="muted">É a chave de idempotência. Repetir a mesma cobrança com o mesmo <code>external_id</code> devolve a mesma cobrança, sem criar outra. Com outro valor, dá 409.</p>
+    </details>
+    <details>
+      <summary>Posso receber via PIX?</summary>
+      <p class="muted">Se o PIX estiver habilitado na sua conta, sim: <code>POST /v1/pix-charges</code>. O CPF/CNPJ do pagador é exigido pela provedora.</p>
+    </details>
+    <details>
+      <summary>Como funcionam as assinaturas?</summary>
+      <p class="muted">Você define valor e ciclo. A cada ciclo o motor gera uma nova cobrança e avisa pelo webhook. Não há débito automático — o cliente aprova cada ciclo.</p>
+    </details>
+    <details>
+      <summary>Meu webhook não chegou. E agora?</summary>
+      <p class="muted">Confira se a <code>webhook_url</code> está configurada e retorna 2xx rápido. O motor re-tenta com backoff; falhas finais são visíveis só pelo operador/replay.</p>
+    </details>
+    <details>
+      <summary>Onde vejo meus relatórios?</summary>
+      <p class="muted">Neste painel (indicadores acima) e em <code>/v1/portal/merchants/:id/reports/*</code> — volume, por rail e série temporal.</p>
+    </details>
+  </div>
+</main>
+<script type="module" src="/portal.js"></script>
+</body>
+</html>

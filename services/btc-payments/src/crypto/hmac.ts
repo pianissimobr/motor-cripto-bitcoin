@@ -16,6 +16,15 @@ export function hmacSha256Hex(secret: string, data: string | Buffer): string {
   return createHmac('sha256', secret).update(data).digest('hex');
 }
 
+/**
+ * Blind index determinista (HMAC) para busca exata de valor de baixa entropia
+ * (ex.: CPF/CNPJ) sem expor o valor cru e sem permitir brute force so com a
+ * leitura do banco.
+ */
+export function blindIndex(key: Buffer, value: string): string {
+  return createHmac('sha256', key).update(value).digest('hex');
+}
+
 export function timingSafeEqualHex(a: string, b: string): boolean {
   if (!/^[0-9a-f]+$/i.test(a) || !/^[0-9a-f]+$/i.test(b)) return false;
   if (a.length !== b.length) return false;

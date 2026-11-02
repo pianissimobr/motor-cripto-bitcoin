@@ -1,0 +1,605 @@
+import { randomUUID } from 'node:crypto';
+import QRCode from 'qrcode';
+import type { AppConfig } from '../config.js';
+import { LuniumError, type LuniumCharge, type LuniumClient } from '../adapters/lunium/client.js';
+import { verifyUsdcSettlement } from '../adapters/chain/base-usdc-verify.js';
+import { blindIndex } from '../crypto/hmac.js';
+import type { Repositories } from '../db/repositories.js';
+import {
+  ConflictError,
+  NotFoundError,
+  ServiceUnavailableError,
+  UpstreamError,
+  ValidationError,
+} from '../domain/errors.js';
+import {
+  assertPixChargeTransition,
+  canTransitionPixCharge,
+  isFinalPixStatus,
+  mapLuniumStatus,
+} from '../domain/pix.js';
+import {
+  parseDecimalToMinor,
+  type PixCharge,
+  type SettlementStatus,
+} from '../domain/types.js';
+import { merchantAccountCode, PLATFORM_ACCOUNTS } from '../domain/ledger.js';
+import type { LedgerService } from '../ledger/ledger-service.js';
+import type { Logger } from '../logger.js';
+import type { AlertService } from './alert-service.js';
+import { enqueuePixChargeEvent } from './pix-events.js';
+
+export type CreatePixChargeInput = {
+  clientId: string;
+  externalId: string;
+  amountBrlCents: bigint;
+  payerTaxNumber: string;
+  payerName?: string | null;
+  metadata?: Record<string, unknown> | null;
+  sandboxScenario?: string | null;
+};
+
+export type PixChargeDto = {
+  id: string;
+  external_id: string;
+  provider: 'lunium';
+  provider_charge_id: string | null;
+  status: PixCharge['status'];
+  settlement_status: PixCharge['settlementStatus'];
+  amount_brl_cents: string;
+  asset: 'USDC';
+  chain: 'base';
+  pix: {
+    qr_copypaste: string | null;
+    qr_image_url: string | null;
+    qr_svg: string | null;
+    expires_at: string | null;
+  };
+  payout_id: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PixChargeServiceDeps = {
+  repos: Repositories;
+  ledger: LedgerService;
+  lunium: LuniumClient;
+  config: AppConfig;
+  logger: Logger;
+  alerts?: AlertService;
+  now?: () => Date;
+};
+
+type PixChargeUpdate = Parameters<Repositories['updatePixCharge']>[0];
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function iso(value: Date | null): string | null {
+  return value?.toISOString() ?? null;
+}
+
+export function normalizePayerTax(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length !== 11 && digits.length !== 14) {
+    throw new ValidationError(
+      'payer_tax_number deve ter 11 (CPF) ou 14 (CNPJ) digitos',
+    );
+  }
+  return digits;
+}
+
+function isUncertainProviderError(err: unknown): boolean {
+  if (!(err instanceof LuniumError)) return true;
+  return err.statusCode === 429 || err.statusCode >= 500;
+}
+
+function settlementStatusFor(mapped: PixCharge['status']): SettlementStatus {
+  if (mapped === 'pago') return 'aguardando_confirmacao';
+  if (mapped === 'liquidado') return 'convertido';
+  if (mapped === 'manual') return 'manual';
+  if (mapped === 'falhou' || mapped === 'incerto') return 'falhou';
+  return 'nao_iniciado';
+}
+
+export class PixChargeService {
+  constructor(private readonly deps: PixChargeServiceDeps) {}
+
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
+  }
+
+  private async toDto(charge: PixCharge): Promise<PixChargeDto> {
+    let qrSvg: string | null = null;
+    if (!charge.qrImageUrl && charge.qrCopypaste) {
+      try {
+        qrSvg = await QRCode.toString(charge.qrCopypaste, {
+          type: 'svg',
+          margin: 1,
+          width: 256,
+        });
+      } catch (err) {
+        this.deps.logger.warn(
+          { err, pixChargeId: charge.id },
+          'falha ao gerar QR PIX local',
+        );
+      }
+    }
+    return {
+      id: charge.id,
+      external_id: charge.externalId,
+      provider: charge.provider,
+      provider_charge_id: charge.providerChargeId,
+      status: charge.status,
+      settlement_status: charge.settlementStatus,
+      amount_brl_cents: charge.amountBrlCents.toString(),
+      asset: charge.asset,
+      chain: charge.chain,
+      pix: {
+        qr_copypaste: charge.qrCopypaste,
+        qr_image_url: charge.qrImageUrl,
+        qr_svg: qrSvg,
+        expires_at: iso(charge.expiresAt),
+      },
+      payout_id: charge.payoutId,
+      error: charge.error,
+      created_at: charge.createdAt.toISOString(),
+      updated_at: charge.updatedAt.toISOString(),
+    };
+  }
+
+  async create(
+    input: CreatePixChargeInput,
+  ): Promise<{ dto: PixChargeDto; reused: boolean }> {
+    if (!this.deps.config.pix.enabled) {
+      throw new ServiceUnavailableError('PIX desabilitado');
+    }
+    const destination = this.deps.config.pix.destinationAddress;
+    if (!destination) {
+      throw new ServiceUnavailableError('carteira treasury USDC nao configurada');
+    }
+    if (input.amountBrlCents < this.deps.config.pix.minBrlCents) {
+      throw new ValidationError(
+        `valor abaixo do minimo (${this.deps.config.pix.minBrlCents.toString()} centavos)`,
+      );
+    }
+    if (input.amountBrlCents > this.deps.config.pix.maxBrlCents) {
+      throw new ValidationError(
+        `valor acima do maximo (${this.deps.config.pix.maxBrlCents.toString()} centavos)`,
+      );
+    }
+
+    const payerTax = normalizePayerTax(input.payerTaxNumber);
+    const payerTaxHash = blindIndex(
+      this.deps.config.crypto.payerTaxBlindKey,
+      payerTax,
+    );
+    const payerTaxLast4 = payerTax.slice(-4);
+
+    const existing = await this.deps.repos.findPixChargeByClientAndExternalId(
+      input.clientId,
+      input.externalId,
+    );
+    if (existing) {
+      if (
+        existing.amountBrlCents !== input.amountBrlCents ||
+        existing.payerTaxHash !== payerTaxHash
+      ) {
+        throw new ConflictError('external_id ja usado com dados diferentes');
+      }
+      return { dto: await this.toDto(existing), reused: true };
+    }
+
+    try {
+      const limits = await this.deps.lunium.getLimits(payerTax);
+      if (
+        typeof limits.max_amount_cents === 'number' &&
+        input.amountBrlCents > BigInt(limits.max_amount_cents)
+      ) {
+        throw new ValidationError('valor acima do limite atual do pagador');
+      }
+    } catch (err) {
+      if (err instanceof ValidationError) throw err;
+      this.deps.logger.warn(
+        { err, externalId: input.externalId },
+        'nao foi possivel consultar limites da Lunium; criacao vai revalidar',
+      );
+    }
+
+    const id = randomUUID();
+    const providerExternalId = `pix_${id}`;
+    const created = await this.deps.repos.createPixCharge({
+      id,
+      clientId: input.clientId,
+      externalId: input.externalId,
+      providerExternalId,
+      amountBrlCents: input.amountBrlCents,
+      destinationAddress: destination,
+      payerTaxHash,
+      payerTaxLast4,
+      metadata: input.metadata ?? null,
+    });
+
+    try {
+      const isSandbox =
+        this.deps.config.pix.luniumApiKey?.startsWith('lun_test_') ?? false;
+      const charge = await this.deps.lunium.createCharge({
+        amountCents: input.amountBrlCents,
+        payerTaxNumber: payerTax,
+        ...(input.payerName ? { payerName: input.payerName } : {}),
+        externalId: providerExternalId,
+        customerRef: input.clientId,
+        asset: this.deps.config.pix.asset,
+        chain: this.deps.config.pix.chain,
+        payoutAddress: destination,
+        ...(isSandbox && input.sandboxScenario
+          ? { sandboxScenario: input.sandboxScenario }
+          : {}),
+      });
+      const updated = await this.applyProviderCharge(created, charge);
+      await enqueuePixChargeEvent(
+        { repos: this.deps.repos, now: () => this.now() },
+        updated,
+        'pix_charge.created',
+        'created',
+      );
+      await this.deps.repos.insertAuditEvent({
+        actor: 'api',
+        action: 'pix_charge.created',
+        entity: 'pix_charge',
+        entityId: created.id,
+        metadata: {
+          externalId: created.externalId,
+          amountBrlCents: created.amountBrlCents.toString(),
+          providerChargeId: charge.cashin_id,
+        },
+      });
+      return { dto: await this.toDto(updated), reused: false };
+    } catch (err) {
+      const message = errorMessage(err);
+      const uncertain = isUncertainProviderError(err);
+      const pending = await this.deps.repos.updatePixCharge({
+        id: created.id,
+        status: uncertain ? 'incerto' : 'falhou',
+        settlementStatus: uncertain ? 'manual' : 'falhou',
+        error: message,
+        attempts: created.attempts + 1,
+        lastCheckedAt: this.now(),
+      });
+      if (uncertain) {
+        await this.deps.alerts?.send({
+          level: 'error',
+          title: 'criacao de PIX incerta',
+          message: message,
+          metadata: { pixChargeId: created.id, externalId: created.externalId },
+        });
+      }
+      this.deps.logger.error(
+        { err, pixChargeId: created.id, externalId: created.externalId },
+        'falha ao criar cobranca PIX',
+      );
+      if (pending) {
+        await enqueuePixChargeEvent(
+          { repos: this.deps.repos, now: () => this.now() },
+          pending,
+          'pix_charge.failed',
+          'create_failed',
+        );
+      }
+      throw new UpstreamError('falha ao criar cobranca PIX', {
+        details: { pix_charge_id: created.id, external_id: created.externalId },
+        cause: err,
+      });
+    }
+  }
+
+  async getById(clientId: string, id: string): Promise<PixChargeDto> {
+    const charge = await this.deps.repos.findPixChargeByIdForClient(id, clientId);
+    if (!charge) throw new NotFoundError('cobranca PIX nao encontrada');
+    return this.toDto(charge);
+  }
+
+  async getByExternalId(
+    clientId: string,
+    externalId: string,
+  ): Promise<PixChargeDto> {
+    const charge = await this.deps.repos.findPixChargeByClientAndExternalId(
+      clientId,
+      externalId,
+    );
+    if (!charge) throw new NotFoundError('cobranca PIX nao encontrada');
+    return this.toDto(charge);
+  }
+
+  async listForMerchant(clientId: string, limit: number): Promise<PixChargeDto[]> {
+    const charges = await this.deps.repos.listPixChargesForMerchant(
+      clientId,
+      limit,
+    );
+    return Promise.all(charges.map((charge) => this.toDto(charge)));
+  }
+
+  async list(limit: number): Promise<PixChargeDto[]> {
+    const charges = await this.deps.repos.listPixCharges(limit);
+    return Promise.all(charges.map((charge) => this.toDto(charge)));
+  }
+
+  async sync(id: string): Promise<PixChargeDto> {
+    const local = await this.deps.repos.findPixChargeById(id);
+    if (!local) throw new NotFoundError('cobranca PIX nao encontrada');
+
+    const providerCharge = await this.fetchProviderCharge(local);
+    if (!providerCharge) return this.toDto(local);
+    return this.toDto(await this.applyProviderCharge(local, providerCharge));
+  }
+
+  async reconcile(limit: number): Promise<{
+    checked: number;
+    synced: number;
+    errors: number;
+  }> {
+    const charges = await this.deps.repos.listPixChargesToReconcile(limit);
+    let synced = 0;
+    let errors = 0;
+    for (const charge of charges) {
+      try {
+        await this.sync(charge.id);
+        synced++;
+      } catch (err) {
+        errors++;
+        this.deps.logger.error(
+          { err, pixChargeId: charge.id },
+          'erro ao reconciliar cobranca PIX',
+        );
+      }
+    }
+    return { checked: charges.length, synced, errors };
+  }
+
+  async applyProviderCharge(
+    local: PixCharge,
+    charge: LuniumCharge,
+  ): Promise<PixCharge> {
+    const providerStatus = charge.status;
+    const providerSettlement = charge.settlement_status;
+    const mapped = mapLuniumStatus(providerStatus, providerSettlement);
+
+    if (isFinalPixStatus(local.status) && mapped !== local.status) {
+      return local;
+    }
+
+    const baseUpdate: PixChargeUpdate = {
+      id: local.id,
+      providerChargeId: local.providerChargeId ?? charge.cashin_id,
+      providerStatus,
+      providerSettlementStatus: providerSettlement,
+      qrCopypaste: charge.qr_copypaste ?? local.qrCopypaste,
+      qrImageUrl: charge.qr_image_url ?? local.qrImageUrl,
+      expiresAt: charge.expires_at ? new Date(charge.expires_at) : local.expiresAt,
+      paidAt: charge.paid_at ? new Date(charge.paid_at) : local.paidAt,
+      settledAt: charge.settled_at ? new Date(charge.settled_at) : local.settledAt,
+      e2e: charge.e2e ?? local.e2e,
+      payerName: charge.payer_name ?? local.payerName,
+      feeLuniumBps: charge.lunium_fee_bps ?? local.feeLuniumBps,
+      feeLuniumFixedCents:
+        charge.lunium_fee_fixed_cents !== undefined &&
+        charge.lunium_fee_fixed_cents !== null
+          ? BigInt(charge.lunium_fee_fixed_cents)
+          : local.feeLuniumFixedCents,
+      feePartnerBps: charge.partner_fee_bps ?? local.feePartnerBps,
+      feeTotalCents:
+        charge.fee_total_cents !== undefined && charge.fee_total_cents !== null
+          ? BigInt(charge.fee_total_cents)
+          : local.feeTotalCents,
+      netCents:
+        charge.net_cents !== undefined && charge.net_cents !== null
+          ? BigInt(charge.net_cents)
+          : local.netCents,
+      assetAmountMinor: charge.asset_amount
+        ? parseDecimalToMinor(charge.asset_amount, 6)
+        : charge.sandbox && charge.usdt_amount
+          ? parseDecimalToMinor(charge.usdt_amount, 6)
+          : local.assetAmountMinor,
+      withdrawFee: charge.withdraw_fee ?? local.withdrawFee,
+      settlementTxHash: charge.settlement_tx_hash ?? local.settlementTxHash,
+      settlementTxUrl: charge.settlement_tx_url ?? local.settlementTxUrl,
+      providerPayload: charge as Record<string, unknown>,
+      error: charge.error ?? null,
+      lastCheckedAt: this.now(),
+    };
+
+    if (local.status === 'liquidado' && mapped !== 'liquidado') {
+      const manual = await this.deps.repos.updatePixCharge({
+        ...baseUpdate,
+        status: 'manual',
+        settlementStatus: 'manual',
+        error: `status ${mapped} recebido apos liquidacao`,
+      });
+      if (!manual) throw new Error('falha ao atualizar cobranca PIX');
+      await this.deps.alerts?.send({
+        level: 'error',
+        title: 'PIX liquidado com status posterior',
+        message: `status ${mapped} recebido apos liquidacao`,
+        metadata: { pixChargeId: local.id },
+      });
+      return manual;
+    }
+
+    if (mapped === 'liquidado') {
+      return this.settle(local, baseUpdate);
+    }
+
+    const canMove = mapped !== local.status;
+    if (canMove && !canTransitionPixCharge(local.status, mapped)) {
+      this.deps.logger.warn(
+        { pixChargeId: local.id, from: local.status, to: mapped },
+        'status PIX fora de ordem; mantendo estado local',
+      );
+      return local;
+    }
+    if (canMove) assertPixChargeTransition(local.status, mapped);
+
+    const updated = await this.deps.repos.updatePixCharge({
+      ...baseUpdate,
+      status: canMove ? mapped : local.status,
+      settlementStatus: settlementStatusFor(mapped),
+    });
+    if (!updated) throw new Error('falha ao atualizar cobranca PIX');
+
+    if (canMove) {
+      const eventType =
+        mapped === 'pago'
+          ? 'pix_charge.paid'
+          : mapped === 'expirado'
+            ? 'pix_charge.expired'
+            : mapped === 'reembolsado'
+              ? 'pix_charge.refunded'
+              : mapped === 'falhou'
+                ? 'pix_charge.failed'
+                : null;
+      if (eventType) {
+        await enqueuePixChargeEvent(
+          { repos: this.deps.repos, now: () => this.now() },
+          updated,
+          eventType,
+          mapped,
+        );
+      }
+    }
+
+    return updated;
+  }
+
+  private async fetchProviderCharge(local: PixCharge): Promise<LuniumCharge | null> {
+    if (local.providerChargeId) {
+      return this.deps.lunium.getCharge(local.providerChargeId);
+    }
+    const found = await this.deps.lunium.findChargesByExternalId(
+      local.providerExternalId,
+    );
+    return found[0] ?? null;
+  }
+
+  private async verifySettlement(
+    local: PixCharge,
+    update: PixChargeUpdate,
+  ): Promise<'ok' | 'pending' | 'invalid'> {
+    if (!this.deps.config.pix.verifySettlementTx) return 'ok';
+    if (!update.settlementTxHash) return 'pending';
+    if (!local.destinationAddress) return 'invalid';
+    const result = await verifyUsdcSettlement({
+      rpcUrls: this.deps.config.payout.baseRpcUrls,
+      chainId: this.deps.config.payout.baseChainId,
+      usdcAddress: this.deps.config.payout.usdcAddress,
+      txHash: update.settlementTxHash,
+      recipient: local.destinationAddress,
+      minAmountMinor: update.assetAmountMinor ?? 0n,
+      timeoutMs: this.deps.config.pix.timeoutMs,
+    });
+    if (result.kind === 'ok') return 'ok';
+    this.deps.logger.warn(
+      {
+        pixChargeId: local.id,
+        txHash: update.settlementTxHash,
+        kind: result.kind,
+        detail: result.detail,
+      },
+      'verificacao on-chain da liquidacao PIX',
+    );
+    return result.kind;
+  }
+
+  private async settle(
+    local: PixCharge,
+    update: PixChargeUpdate,
+  ): Promise<PixCharge> {
+    if (!update.assetAmountMinor || update.assetAmountMinor <= 0n) {
+      const manual = await this.deps.repos.updatePixCharge({
+        ...update,
+        status: 'manual',
+        settlementStatus: 'manual',
+        error: 'settlement sem asset_amount valido',
+      });
+      if (!manual) throw new Error('falha ao atualizar cobranca PIX');
+      await this.deps.alerts?.send({
+        level: 'error',
+        title: 'PIX liquidado sem valor USDC',
+        metadata: { pixChargeId: local.id },
+      });
+      return manual;
+    }
+
+    const verification = await this.verifySettlement(local, update);
+    if (verification === 'invalid') {
+      const manual = await this.deps.repos.updatePixCharge({
+        ...update,
+        status: 'manual',
+        settlementStatus: 'manual',
+        error: 'liquidacao PIX nao confere on-chain com a treasury',
+      });
+      if (!manual) throw new Error('falha ao atualizar cobranca PIX');
+      await this.deps.alerts?.send({
+        level: 'error',
+        title: 'liquidacao PIX nao confere on-chain com a treasury',
+        metadata: {
+          pixChargeId: local.id,
+          txHash: update.settlementTxHash,
+        },
+      });
+      return manual;
+    }
+    if (verification === 'pending') {
+      const deferred = await this.deps.repos.updatePixCharge({
+        ...update,
+        status: local.status,
+        settlementStatus:
+          local.status === 'liquidado'
+            ? local.settlementStatus
+            : 'aguardando_confirmacao',
+        error: 'aguardando confirmacao on-chain da liquidacao',
+      });
+      return deferred ?? local;
+    }
+
+    await this.deps.ledger.postTransaction({
+      kind: 'pix_settlement',
+      referenceType: 'pix_charge',
+      referenceId: local.id,
+      entries: [
+        {
+          accountCode: PLATFORM_ACCOUNTS.treasuryUsdc,
+          asset: 'USDC',
+          debitMinor: update.assetAmountMinor,
+        },
+        {
+          accountCode: merchantAccountCode(local.clientId, 'usdc_available'),
+          merchantId: local.clientId,
+          asset: 'USDC',
+          creditMinor: update.assetAmountMinor,
+        },
+      ],
+    });
+
+    if (local.status !== 'liquidado') {
+      assertPixChargeTransition(local.status, 'liquidado');
+    }
+    const updated = await this.deps.repos.updatePixCharge({
+      ...update,
+      status: 'liquidado',
+      settlementStatus: 'convertido',
+      settledAt: update.settledAt ?? this.now(),
+      error: null,
+    });
+    if (!updated) throw new Error('falha ao liquidar cobranca PIX');
+
+    await enqueuePixChargeEvent(
+      { repos: this.deps.repos, now: () => this.now() },
+      updated,
+      'pix_charge.settled',
+      'settled',
+    );
+    return updated;
+  }
+}

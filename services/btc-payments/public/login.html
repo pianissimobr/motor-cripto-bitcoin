@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Entrar — Motor Cripto</title>
+<link rel="stylesheet" href="/portal.css">
+</head>
+<body>
+<header>
+  <strong>Motor Cripto</strong>
+  <span class="muted">Portal do lojista</span>
+</header>
+<main>
+  <section class="card narrow">
+    <h1>Entrar</h1>
+    <form id="login-form">
+      <label>E-mail<input id="email" type="email" autocomplete="username" required></label>
+      <label>Senha<input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Entrar</button>
+    </form>
+    <p id="erro" class="erro"></p>
+    <p class="muted">Não tem conta? <a href="/signup.html">Cadastre-se</a></p>
+  </section>
+</main>
+<script type="module">
+const form = document.getElementById('login-form');
+const erro = document.getElementById('erro');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  erro.textContent = '';
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+  const res = await fetch('/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (res.ok) {
+    window.location.href = '/app.html';
+    return;
+  }
+  const body = await res.json().catch(() => ({}));
+  erro.textContent = body?.error?.message ?? 'Falha ao entrar';
+});
+</script>
+</body>
+</html>

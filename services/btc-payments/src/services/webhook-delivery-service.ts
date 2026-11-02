@@ -69,6 +69,14 @@ export class WebhookDeliveryService {
     if (!client || client.status !== 'ativo') {
       return this.fail(event, now, 'cliente da API inexistente ou inativo');
     }
+    if (!client.webhookUrl || client.webhookUrl.trim().length === 0) {
+      await this.deps.repos.markWebhookDelivered(event.id);
+      this.deps.logger.debug(
+        { eventId: event.id, clientId: client.id },
+        'webhook descartado: cliente sem webhook_url configurado',
+      );
+      return 'delivered';
+    }
 
     let secret: string;
     try {

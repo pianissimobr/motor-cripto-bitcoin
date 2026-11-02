@@ -14,6 +14,20 @@ import { WebhookDeliveryService } from './services/webhook-delivery-service.js';
 import { SweepService } from './services/sweep-service.js';
 import { createSweepSigner } from './adapters/signer/factory.js';
 import { AlertService } from './services/alert-service.js';
+import { ensureDefaultWallets } from './services/merchant-wallet-service.js';
+import { LedgerService } from './ledger/ledger-service.js';
+import { ThorchainClient } from './adapters/conversion/thorchain.js';
+import { createTreasuryBtcSender } from './adapters/conversion/btc-treasury.js';
+import { createLightningTreasuryWithdrawal } from './adapters/conversion/lnbits-withdrawal.js';
+import { ConversionService } from './services/conversion-service.js';
+import { TreasuryService } from './services/treasury-service.js';
+import { PayoutService } from './services/payout-service.js';
+import { createUsdcPayoutAdapter } from './adapters/payout/base-usdc.js';
+import { ReconciliationService } from './services/reconciliation-service.js';
+import { LuniumClient } from './adapters/lunium/client.js';
+import { PixChargeService } from './services/pix-charge-service.js';
+import { LuniumWebhookService } from './services/lunium-webhook-service.js';
+import { SubscriptionService } from './services/subscription-service.js';
 
 export type WorkerHandle = {
   stop: () => Promise<void>;
@@ -34,8 +48,10 @@ export async function startWorker(): Promise<WorkerHandle> {
   });
 
   const xpub = parseConfiguredXpub(config.btc.xpub, config.btc.network);
+  const treasuryBtcAddress =
+    config.treasury.btcAddress ?? config.sweep.coldWalletAddress;
   if (config.sweep.enabled) {
-    assertAddress(config.sweep.coldWalletAddress!, config.btc.network);
+    assertAddress(treasuryBtcAddress!, config.btc.network);
   }
 
   const db = createDb(config.database);
@@ -52,6 +68,28 @@ export async function startWorker(): Promise<WorkerHandle> {
         'Restaure o xpub original ou faça uma migracao consciente.',
     );
   }
+  await ensureDefaultWallets(db.db, {
+    xpub: config.btc.xpub,
+    xpubFingerprint: xpub.fingerprint,
+    derivationPrefix: config.btc.derivationPrefix,
+    network: config.btc.network,
+    gapLimit: config.btc.gapLimit,
+    ...(config.treasury.btcAddress ?? config.sweep.coldWalletAddress
+      ? {
+          coldWalletAddress:
+            config.treasury.btcAddress ?? config.sweep.coldWalletAddress,
+        }
+      : {}),
+    ...(config.treasury.btcAddress
+      ? { treasuryBtcAddress: config.treasury.btcAddress }
+      : {}),
+    ...(config.treasury.usdcBaseAddress
+      ? { treasuryUsdcAddress: config.treasury.usdcBaseAddress }
+      : {}),
+    ...(config.treasury.gasBaseAddress
+      ? { gasBaseAddress: config.treasury.gasBaseAddress }
+      : {}),
+  });
 
   const lnbits = new LnbitsClient({
     url: config.lightning.url,
@@ -74,6 +112,12 @@ export async function startWorker(): Promise<WorkerHandle> {
     logger,
     alerts,
   });
+  const subscriptions = new SubscriptionService({
+    repos,
+    paymentIntents,
+    logger,
+    alerts,
+  });
   const onchainWatcher = new OnchainWatcher({
     repos,
     esplora,
@@ -86,6 +130,80 @@ export async function startWorker(): Promise<WorkerHandle> {
     config,
     logger,
   });
+  const ledger = new LedgerService(db.db);
+
+  const conversionService = config.conversion.enabled
+    ? new ConversionService({
+        repos,
+        ledger,
+        swap: new ThorchainClient({
+          urls: config.conversion.thorchainUrls,
+          usdcAddress: config.payout.usdcAddress,
+          timeoutMs: config.conversion.timeoutMs,
+          quoteToleranceBps: config.conversion.quoteToleranceBps,
+        }),
+        sender: createTreasuryBtcSender(config),
+        config,
+        logger,
+        alerts,
+      })
+    : null;
+  const treasuryService = config.conversion.enabled
+    ? new TreasuryService({
+        repos,
+        withdrawal: createLightningTreasuryWithdrawal(config),
+        config,
+        logger,
+        alerts,
+      })
+    : null;
+  const lunium =
+    config.pix.enabled && config.pix.luniumApiKey
+      ? new LuniumClient({
+          apiUrl: config.pix.luniumApiUrl,
+          apiKey: config.pix.luniumApiKey,
+          ...(config.pix.luniumWebhookSecret
+            ? { webhookSecret: config.pix.luniumWebhookSecret }
+            : {}),
+          timeoutMs: config.pix.timeoutMs,
+        })
+      : null;
+  const pixCharges = lunium
+    ? new PixChargeService({
+        repos,
+        ledger,
+        lunium,
+        config,
+        logger,
+        alerts,
+      })
+    : null;
+  const luniumWebhook = pixCharges && lunium
+    ? new LuniumWebhookService({
+        repos,
+        lunium,
+        pixCharges,
+        config,
+        logger,
+        alerts,
+      })
+    : null;
+  const reconciliationService = new ReconciliationService({
+    repos,
+    ledger,
+    logger,
+    alerts,
+  });
+  const payoutService = config.payout.enabled
+    ? new PayoutService({
+        repos,
+        ledger,
+        adapter: createUsdcPayoutAdapter(config),
+        config,
+        logger,
+        alerts,
+      })
+    : null;
 
   let sweepService: SweepService | null = null;
   if (config.sweep.enabled) {
@@ -134,6 +252,11 @@ export async function startWorker(): Promise<WorkerHandle> {
         return { ...result, noncesRemovidos };
       },
     },
+    {
+      name: 'subscription-charge',
+      intervalMs: config.jobs.subscriptionMs,
+      run: () => subscriptions.runCycle(batch),
+    },
   ];
 
   if (sweepService) {
@@ -145,6 +268,57 @@ export async function startWorker(): Promise<WorkerHandle> {
     });
   }
 
+  if (treasuryService) {
+    const service = treasuryService;
+    jobs.push({
+      name: 'treasury-withdrawal',
+      intervalMs: config.jobs.conversionPollMs,
+      run: () => service.runCycle(batch),
+    });
+  }
+
+  if (conversionService) {
+    const service = conversionService;
+    jobs.push({
+      name: 'conversion',
+      intervalMs: config.jobs.conversionPollMs,
+      run: () => service.runCycle(batch),
+    });
+  }
+
+  if (payoutService) {
+    const service = payoutService;
+    jobs.push({
+      name: 'payout',
+      intervalMs: config.jobs.payoutPollMs,
+      run: () => service.runCycle(batch),
+    });
+  }
+
+  if (pixCharges) {
+    const service = pixCharges;
+    jobs.push({
+      name: 'pix-reconcile',
+      intervalMs: config.jobs.pixPollMs,
+      run: () => service.reconcile(batch),
+    });
+  }
+
+  if (luniumWebhook) {
+    const service = luniumWebhook;
+    jobs.push({
+      name: 'lunium-inbox',
+      intervalMs: config.jobs.pixPollMs,
+      run: () => service.processPending(batch),
+    });
+  }
+
+  jobs.push({
+    name: 'reconciliation',
+    intervalMs: config.jobs.reconciliationMs,
+    run: () => reconciliationService.runCycle(),
+  });
+
   logger.info(
     {
       network: config.btc.network,
@@ -152,6 +326,9 @@ export async function startWorker(): Promise<WorkerHandle> {
       signerMode: config.signer.mode,
       sweepEnabled: config.sweep.enabled,
       sweepJob: Boolean(sweepService),
+      conversionEnabled: config.conversion.enabled,
+      payoutEnabled: config.payout.enabled,
+      treasuryBtcSigner: config.conversion.treasuryBtcSignerUrl ? 'remote' : 'manual',
       jobs: jobs.map((job) => ({ name: job.name, intervalMs: job.intervalMs })),
     },
     'worker btc-payments iniciado',

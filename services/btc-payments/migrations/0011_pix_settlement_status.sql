@@ -1,0 +1,2 @@
+ALTER TABLE "pix_charges" ADD COLUMN "settlement_status" text DEFAULT 'nao_iniciado' NOT NULL;--> statement-breakpoint
+ALTER TABLE "pix_charges" ADD CONSTRAINT "pix_charges_settlement_status_chk" CHECK ("pix_charges"."settlement_status" in ('nao_iniciado','aguardando_confirmacao','pronto_para_conversao','convertendo','convertido','payout_pendente','pago','falhou','manual'));

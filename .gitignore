@@ -8,3 +8,7 @@ data/
 coverage/
 .DS_Store
 *.tsbuildinfo
+
+__pycache__/
+*.pyc
+api-new.md

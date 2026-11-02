@@ -7,8 +7,9 @@ import {
   timingSafeEqualHex,
   verifyRequestSignature,
 } from '../crypto/hmac.js';
-import { UnauthorizedError } from '../domain/errors.js';
+import { ForbiddenError, UnauthorizedError } from '../domain/errors.js';
 import type { Repositories } from '../db/repositories.js';
+import { DEFAULT_API_SCOPES, type ApiScope } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 
 export type ApiSignatureInput = {
@@ -105,7 +106,7 @@ function headerString(
   return Array.isArray(value) ? value[0] : value;
 }
 
-export function createApiAuth(deps: AuthDeps) {
+export function createApiAuth(deps: AuthDeps, requiredScope?: ApiScope) {
   return async (
     request: import('fastify').FastifyRequest,
     _reply: import('fastify').FastifyReply,
@@ -164,6 +165,13 @@ export function createApiAuth(deps: AuthDeps) {
       new Date(Date.now() + 10 * 60 * 1000),
     );
     if (!accepted) throw new UnauthorizedError('nonce reutilizado');
+
+    if (requiredScope) {
+      const scopes = client.scopes ?? DEFAULT_API_SCOPES;
+      if (!scopes.includes(requiredScope)) {
+        throw new ForbiddenError(`escopo ${requiredScope} ausente`);
+      }
+    }
 
     request.apiClient = client;
   };

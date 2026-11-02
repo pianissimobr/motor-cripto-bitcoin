@@ -10,6 +10,23 @@ Eventos:
 - `payment_intent.expired`
 - `payment_intent.canceled`
 - `payment_intent.reorged`
+- `payment_intent.converted`
+- `payment_intent.conversion_failed`
+- `payment_intent.conversion_refunded`
+- `payment_intent.payout_pending`
+- `payment_intent.payout_sent`
+- `payment_intent.payout_confirmed`
+- `payment_intent.payout_failed`
+- `pix_charge.created`
+- `pix_charge.paid`
+- `pix_charge.settled`
+- `pix_charge.expired`
+- `pix_charge.refunded`
+- `pix_charge.failed`
+- `pix_charge.payout_pending`
+- `pix_charge.payout_sent`
+- `pix_charge.payout_confirmed`
+- `pix_charge.payout_failed`
 
 Headers:
 
@@ -46,6 +63,9 @@ Payload:
 }
 ```
 
+Eventos de liquidacao incluem `settlement_status`, `conversion_id`, `payout_id`,
+`target_amount_minor` e `txid` quando aplicavel.
+
 Verificacao em Node:
 
 ```ts
@@ -77,3 +97,13 @@ Entrega:
 - A versao 1.6 do LNbits envia `payment.json()`, que chega como string JSON;
   o endpoint aceita objeto e string.
 - Erros de verificacao no LNbits retornam 5xx para o LNbits tentar de novo.
+
+## Entrada da Lunium (PIX)
+
+`POST /webhooks/lunium`
+
+- Verifica `X-Lunium-Signature` com HMAC-SHA256 sobre `timestamp.rawBody`.
+- Confere `X-Lunium-Event-Id` com o `event_id` do corpo.
+- Persiste o evento bruto em `provider_events` antes de responder 2xx.
+- O worker consulta `GET /cashin/{cashin_id}/status` antes de creditar.
+- Deduplica por `(provider, event_id)` e tolera eventos fora de ordem.

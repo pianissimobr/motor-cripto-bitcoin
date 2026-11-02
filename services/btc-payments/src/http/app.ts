@@ -1,8 +1,12 @@
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import fastifyStatic from '@fastify/static';
+import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AppError } from '../domain/errors.js';
+import { sha256Hex } from '../crypto/hmac.js';
 import type { Logger } from '../logger.js';
 import type { Readiness } from './readiness.js';
 import { registerRoutes } from './routes.js';
@@ -48,6 +52,20 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   );
 
   void app.register(helmet, { global: true });
+  void app.register(cookie);
+
+  const publicDir = join(import.meta.dirname, '..', '..', 'public');
+  void app.register(fastifyStatic, {
+    root: publicDir,
+    prefix: '/',
+    wildcard: false,
+    index: false,
+  });
+
+  app.get('/login', async (_request, reply) => reply.redirect('/login.html'));
+  app.get('/signup', async (_request, reply) => reply.redirect('/signup.html'));
+  app.get('/portal', async (_request, reply) => reply.redirect('/app.html'));
+
   void app.register(cors, {
     origin: deps.config.server.corsAllowedOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -70,7 +88,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       if (path.startsWith('/webhooks/lnbits')) return `lnbits:${request.ip}`;
       const authorization = request.headers.authorization;
       if (typeof authorization === 'string' && authorization.length > 0) {
-        return `auth:${authorization}`;
+        return `auth:${sha256Hex(authorization)}`;
       }
       return request.ip;
     },

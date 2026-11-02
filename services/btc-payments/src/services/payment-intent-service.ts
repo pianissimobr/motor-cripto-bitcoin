@@ -1,6 +1,10 @@
 import QRCode from 'qrcode';
 import type { AppConfig } from '../config.js';
-import { deriveAddress, type AccountXpub } from '../adapters/hd/derivation.js';
+import {
+  deriveAddress,
+  parseAccountXpub,
+  type AccountXpub,
+} from '../adapters/hd/derivation.js';
 import type { LnbitsClient } from '../adapters/lnbits/client.js';
 import type { Repositories } from '../db/repositories.js';
 import { buildBip21, buildLnbitsWebhookUrl } from '../domain/bip21.js';
@@ -16,9 +20,11 @@ import { satsToBtc } from '../domain/money.js';
 import type { AlertService } from './alert-service.js';
 import type {
   HdAddress,
+  MerchantWallet,
   PaidRail,
   PaymentIntent,
   PaymentIntentStatus,
+  SettlementStatus,
 } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import { enqueueIntentEvent } from './intent-events.js';
@@ -30,6 +36,10 @@ export type CreatePaymentIntentInput = {
   description?: string | null;
   metadata?: Record<string, unknown> | null;
   expiresInSeconds?: number;
+  walletId?: string;
+  currency?: 'BRL' | 'USD';
+  amountFiat?: bigint;
+  fxQuoteId?: string;
 };
 
 export type PaymentIntentLightningDto = {
@@ -49,6 +59,15 @@ export type PaymentIntentDto = {
   external_id: string;
   status: PaymentIntentStatus;
   amount_sats: string;
+  currency: 'BRL' | 'USD' | null;
+  amount_fiat: string | null;
+  settlement_status: SettlementStatus;
+  fx_quote: {
+    id: string;
+    rate: string;
+    spread_bps: number;
+    expires_at: string;
+  } | null;
   description: string | null;
   expires_at: string;
   grace_until: string;
@@ -112,9 +131,16 @@ export class PaymentIntentService {
     const description = input.description?.trim() || null;
     const metadata = input.metadata ?? null;
 
+    const wallet = await this.resolveWallet(input.clientId, input.walletId);
+    const accountXpub = wallet
+      ? parseAccountXpub(wallet.xpub!, this.deps.config.btc.network)
+      : this.deps.xpub;
+    const derivationPrefix =
+      wallet?.derivationPrefix ?? this.deps.config.btc.derivationPrefix;
+
     let created;
     try {
-      created = await this.deps.repos.createIntentWithAddress({
+      const createInput = {
         clientId: input.clientId,
         externalId: input.externalId,
         amountSats: input.amountSats,
@@ -123,19 +149,30 @@ export class PaymentIntentService {
         expiresAt,
         graceUntil,
         maxIndex: this.deps.config.btc.maxIndex,
-        deriveAddress: (index) => {
+        ...(input.currency ? { currency: input.currency } : {}),
+        ...(input.amountFiat !== undefined
+          ? { amountFiat: input.amountFiat }
+          : {}),
+        ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
+        deriveAddress: (index: number) => {
           const derived = deriveAddress(
-            this.deps.xpub,
+            accountXpub,
             index,
             this.deps.config.btc.network,
-            this.deps.config.btc.derivationPrefix,
+            derivationPrefix,
           );
           return {
             address: derived.address,
             derivationPath: derived.path,
           };
         },
-      });
+      };
+      created = wallet
+        ? await this.deps.repos.createIntentWithWalletAddress({
+            ...createInput,
+            merchantWalletId: wallet.id,
+          })
+        : await this.deps.repos.createIntentWithAddress(createInput);
     } catch (err) {
       const raced = await this.deps.repos.findIntentByClientAndExternalId(
         input.clientId,
@@ -209,6 +246,13 @@ export class PaymentIntentService {
   async getById(clientId: string, id: string): Promise<PaymentIntentDto> {
     const intent = await this.deps.repos.findIntentByIdForClient(id, clientId);
     if (!intent) throw new NotFoundError('cobranca nao encontrada');
+    return this.toDto(intent);
+  }
+
+  /** Acesso publico (pagina de checkout), sem vinculo de cliente. */
+  async getPublicById(id: string): Promise<PaymentIntentDto | null> {
+    const intent = await this.deps.repos.findIntentById(id);
+    if (!intent) return null;
     return this.toDto(intent);
   }
 
@@ -531,6 +575,34 @@ export class PaymentIntentService {
     };
   }
 
+  private async resolveWallet(
+    clientId: string,
+    walletId?: string,
+  ): Promise<MerchantWallet | null> {
+    const wallet = walletId
+      ? await this.deps.repos.findMerchantWalletById(walletId)
+      : ((await this.deps.repos.findActiveBtcDepositWalletForClient(clientId)) ??
+        (await this.deps.repos.findDefaultBtcWallet()));
+
+    if (!wallet) return null;
+    if (wallet.kind !== 'btc_deposit') {
+      throw new ValidationError('carteira de deposito BTC invalida');
+    }
+    if (wallet.status !== 'ativo') {
+      throw new ValidationError('carteira de deposito BTC inativa');
+    }
+    if (wallet.merchantId && wallet.merchantId !== clientId) {
+      throw new ValidationError('carteira de deposito nao pertence a loja');
+    }
+    if (wallet.chain !== 'bitcoin') {
+      throw new ValidationError('carteira de deposito nao e Bitcoin');
+    }
+    if (!wallet.xpub) {
+      throw new ValidationError('carteira de deposito sem xpub');
+    }
+    return wallet;
+  }
+
   private async handleExisting(
     intent: PaymentIntent,
     amountSats: bigint,
@@ -567,9 +639,14 @@ export class PaymentIntentService {
   }
 
   async toDto(intent: PaymentIntent): Promise<PaymentIntentDto> {
-    const address: HdAddress | null = intent.onchainAddressId
-      ? await this.deps.repos.findHdAddressById(intent.onchainAddressId)
-      : null;
+    const [address, fxQuote] = await Promise.all([
+      intent.onchainAddressId
+        ? this.deps.repos.findHdAddressById(intent.onchainAddressId)
+        : Promise.resolve(null),
+      intent.fxQuoteId
+        ? this.deps.repos.findFxQuoteById(intent.fxQuoteId)
+        : Promise.resolve(null),
+    ]);
 
     let onchain: PaymentIntentOnchainDto | null = null;
     let qrSvg: string | null = null;
@@ -600,6 +677,17 @@ export class PaymentIntentService {
       external_id: intent.externalId,
       status: intent.status,
       amount_sats: intent.amountSats.toString(),
+      currency: intent.currency,
+      amount_fiat: intent.amountFiat?.toString() ?? null,
+      settlement_status: intent.settlementStatus,
+      fx_quote: fxQuote
+        ? {
+            id: fxQuote.id,
+            rate: fxQuote.rate,
+            spread_bps: fxQuote.spreadBps,
+            expires_at: fxQuote.expiresAt.toISOString(),
+          }
+        : null,
       description: intent.description,
       expires_at: intent.expiresAt.toISOString(),
       grace_until: intent.graceUntil.toISOString(),

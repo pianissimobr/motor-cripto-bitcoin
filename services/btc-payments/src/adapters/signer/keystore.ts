@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { dirname } from 'node:path';
 import type { BtcNetworkName } from '../../config.js';
 
-const SCRYPT_N = 1 << 15;
+const SCRYPT_N = 1 << 17;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const KEY_LEN = 32;

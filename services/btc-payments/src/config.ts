@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 
 export const SERVICE_NAME = 'btc-payments';
@@ -95,6 +96,7 @@ const EnvSchema = z
 
     INTENT_TTL_SECONDS: intFromEnv(600, 30, 86_400),
     INTENT_GRACE_SECONDS: intFromEnv(86_400, 0),
+    FX_QUOTE_TTL_SECONDS: intFromEnv(600, 30, 86_400),
 
     ONCHAIN_CONFIRMATIONS: intFromEnv(1, 1),
     ONCHAIN_HIGH_VALUE_SATS: bigintFromEnv('1000000'),
@@ -115,6 +117,18 @@ const EnvSchema = z
 
     SWEEP_ENABLED: boolFromEnv(true),
     COLD_WALLET_ADDRESS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    TREASURY_BTC_ADDRESS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    TREASURY_USDC_ADDRESS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    GAS_BASE_ADDRESS: z.preprocess(
       (v) => (v === '' ? undefined : v),
       z.string().min(1).optional(),
     ),
@@ -143,15 +157,102 @@ const EnvSchema = z
     WEBHOOK_TIMEOUT_MS: intFromEnv(10_000, 1_000),
     WEBHOOK_MAX_ATTEMPTS: intFromEnv(6, 1),
 
+    CONVERSION_ENABLED: boolFromEnv(false),
+    THORCHAIN_URLS: z
+      .string()
+      .default('https://thornode.ninerealms.com,https://thornode.thorswap.net'),
+    THORCHAIN_TIMEOUT_MS: intFromEnv(15_000, 1_000),
+    CONVERSION_MIN_CONFIRMATIONS: intFromEnv(3, 1),
+    CONVERSION_MIN_SATS: bigintFromEnv('10000'),
+    CONVERSION_SLIPPAGE_BPS: intFromEnv(100, 0, 5_000),
+    CONVERSION_QUOTE_TOLERANCE_BPS: intFromEnv(50, 0, 5_000),
+    CONVERSION_MAX_ATTEMPTS: intFromEnv(3, 1),
+    TREASURY_BTC_SIGNER_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('TREASURY_BTC_SIGNER_URL invalida').optional(),
+    ),
+    TREASURY_BTC_SIGNER_TOKEN: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    LNBITS_WITHDRAWAL_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('LNBITS_WITHDRAWAL_URL invalida').optional(),
+    ),
+    LNBITS_WITHDRAWAL_TOKEN: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+
+    PAYOUT_ENABLED: boolFromEnv(false),
+    BASE_RPC_URLS: z.string().default('https://mainnet.base.org,https://base-rpc.publicnode.com'),
+    BASE_CHAIN_ID: intFromEnv(8453, 1),
+    BASE_USDC_ADDRESS: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'BASE_USDC_ADDRESS invalido')
+      .default('0x833589fCD6EDB6E08F4C7C32D4f71b54BDA02913'),
+    BASE_PAYOUT_PRIVATE_KEY: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().regex(/^0x[a-fA-F0-9]{64}$/, 'BASE_PAYOUT_PRIVATE_KEY invalida').optional(),
+    ),
+    PAYOUT_HOT_ADDRESS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'PAYOUT_HOT_ADDRESS invalido').optional(),
+    ),
+    PAYOUT_CONFIRMATIONS: intFromEnv(1, 1),
+    PAYOUT_NEW_WALLET_CARE_SECONDS: intFromEnv(86_400, 0),
+    PAYOUT_USD_BRL_RATE_CENTS: intFromEnv(540, 1),
+    PAYOUT_MIN_GAS_WEI: bigintFromEnv('100000000000000'),
+    PAYOUT_SIGNER_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('PAYOUT_SIGNER_URL invalida').optional(),
+    ),
+    PAYOUT_SIGNER_TOKEN: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    PAYOUT_MAX_ATTEMPTS: intFromEnv(3, 1),
+
+    PIX_ENABLED: boolFromEnv(false),
+    LUNIUM_API_URL: httpUrl('LUNIUM_API_URL invalida').default(
+      'https://api.luniumpay.com',
+    ),
+    LUNIUM_API_KEY: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    LUNIUM_WEBHOOK_SECRET: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(8).optional(),
+    ),
+    LUNIUM_TIMEOUT_MS: intFromEnv(15_000, 1_000),
+    PIX_ASSET: z.literal('usdc').default('usdc'),
+    PIX_CHAIN: z.literal('base').default('base'),
+    PIX_MIN_BRL_CENTS: bigintFromEnv('2500'),
+    PIX_MAX_BRL_CENTS: bigintFromEnv('25000000'),
+    PIX_VERIFY_SETTLEMENT_TX: boolFromEnv(true),
+
     RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),
     RATE_LIMIT_MAX: intFromEnv(120, 1),
+
+    SESSION_TTL_SECONDS: intFromEnv(604_800, 600, 31_536_000),
 
     JOBS_LIGHTNING_RECONCILE_MS: intFromEnv(15_000, 1_000),
     JOBS_EXPIRY_POLL_MS: intFromEnv(10_000, 1_000),
     JOBS_ONCHAIN_POLL_MS: intFromEnv(15_000, 1_000),
     JOBS_WEBHOOK_POLL_MS: intFromEnv(10_000, 1_000),
     JOBS_SWEEP_POLL_MS: intFromEnv(30_000, 1_000),
+    JOBS_CONVERSION_POLL_MS: intFromEnv(30_000, 1_000),
+    JOBS_PAYOUT_POLL_MS: intFromEnv(30_000, 1_000),
+    JOBS_PIX_POLL_MS: intFromEnv(30_000, 1_000),
+    JOBS_SUBSCRIPTION_MS: intFromEnv(60_000, 1_000),
+    JOBS_RECONCILIATION_MS: intFromEnv(86_400_000, 60_000),
     JOBS_BATCH_SIZE: intFromEnv(50, 1, 1_000),
+
+    METRICS_TOKEN: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(8, 'METRICS_TOKEN precisa ter ao menos 8 caracteres').optional(),
+    ),
 
     ALERT_WEBHOOK_URL: z.preprocess(
       (v) => (v === '' ? undefined : v),
@@ -163,11 +264,11 @@ const EnvSchema = z
     ),
   })
   .superRefine((env, ctx) => {
-    if (env.SWEEP_ENABLED && !env.COLD_WALLET_ADDRESS) {
+    if (env.SWEEP_ENABLED && !env.COLD_WALLET_ADDRESS && !env.TREASURY_BTC_ADDRESS) {
       ctx.addIssue({
         code: 'custom',
         path: ['COLD_WALLET_ADDRESS'],
-        message: 'obrigatorio quando SWEEP_ENABLED=true',
+        message: 'COLD_WALLET_ADDRESS ou TREASURY_BTC_ADDRESS obrigatorio quando SWEEP_ENABLED=true',
       });
     }
     if (env.SIGNER_MODE === 'remote' && !env.SIGNER_REMOTE_URL) {
@@ -177,12 +278,45 @@ const EnvSchema = z
         message: 'obrigatorio quando SIGNER_MODE=remote',
       });
     }
+    if (env.PIX_ENABLED && !env.LUNIUM_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LUNIUM_API_KEY'],
+        message: 'obrigatorio quando PIX_ENABLED=true',
+      });
+    }
+    if (env.PIX_ENABLED && !env.LUNIUM_WEBHOOK_SECRET) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LUNIUM_WEBHOOK_SECRET'],
+        message: 'obrigatorio quando PIX_ENABLED=true',
+      });
+    }
+    if (
+      env.PIX_ENABLED &&
+      !env.TREASURY_USDC_ADDRESS &&
+      !env.PAYOUT_HOT_ADDRESS
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TREASURY_USDC_ADDRESS'],
+        message:
+          'TREASURY_USDC_ADDRESS ou PAYOUT_HOT_ADDRESS obrigatorio quando PIX_ENABLED=true',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
     if (env.ADMIN_TOKEN.length < 32) {
       ctx.addIssue({
         code: 'custom',
         path: ['ADMIN_TOKEN'],
         message: 'em producao precisa ter ao menos 32 caracteres',
+      });
+    }
+    if (!env.METRICS_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['METRICS_TOKEN'],
+        message: 'em producao a rota /metrics nao pode ficar aberta',
       });
     }
     if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
@@ -230,6 +364,7 @@ export type AppConfig = {
     corsAllowedOrigins: string[];
     rateLimitWindowMs: number;
     rateLimitMax: number;
+    sessionTtlSeconds: number;
   };
   database: {
     url: string;
@@ -240,6 +375,7 @@ export type AppConfig = {
     activeKid: string;
     legacyKid: string;
     dataKey: Buffer;
+    payerTaxBlindKey: Buffer;
   };
   btc: {
     network: BtcNetworkName;
@@ -247,6 +383,9 @@ export type AppConfig = {
     derivationPrefix: string;
     maxIndex: number;
     gapLimit: number;
+  };
+  fx: {
+    quoteTtlSeconds: number;
   };
   onchain: {
     confirmations: number;
@@ -265,6 +404,11 @@ export type AppConfig = {
     url: string;
     timeoutMs: number;
   };
+  treasury: {
+    btcAddress?: string;
+    usdcBaseAddress?: string;
+    gasBaseAddress?: string;
+  };
   sweep: {
     enabled: boolean;
     coldWalletAddress?: string;
@@ -274,6 +418,48 @@ export type AppConfig = {
     maxFeePct: number;
     rbfAfterSeconds: number;
     maxAttempts: number;
+  };
+  conversion: {
+    enabled: boolean;
+    thorchainUrls: string[];
+    timeoutMs: number;
+    minConfirmations: number;
+    minSats: bigint;
+    slippageBps: number;
+    quoteToleranceBps: number;
+    maxAttempts: number;
+    treasuryBtcSignerUrl?: string;
+    treasuryBtcSignerToken?: string;
+    lnbitsWithdrawalUrl?: string;
+    lnbitsWithdrawalToken?: string;
+  };
+  payout: {
+    enabled: boolean;
+    baseRpcUrls: string[];
+    baseChainId: number;
+    usdcAddress: string;
+    privateKey?: string;
+    hotAddress?: string;
+    confirmations: number;
+    newWalletCareSeconds: number;
+    maxAttempts: number;
+    usdBrlCents: bigint;
+    minGasWei: bigint;
+    signerUrl?: string;
+    signerToken?: string;
+  };
+  pix: {
+    enabled: boolean;
+    luniumApiUrl: string;
+    luniumApiKey?: string;
+    luniumWebhookSecret?: string;
+    timeoutMs: number;
+    asset: 'usdc';
+    chain: 'base';
+    destinationAddress?: string;
+    minBrlCents: bigint;
+    maxBrlCents: bigint;
+    verifySettlementTx: boolean;
   };
   signer: {
     mode: SignerMode;
@@ -292,7 +478,15 @@ export type AppConfig = {
     onchainPollMs: number;
     webhookPollMs: number;
     sweepPollMs: number;
+    conversionPollMs: number;
+    payoutPollMs: number;
+    pixPollMs: number;
+    subscriptionMs: number;
+    reconciliationMs: number;
     batchSize: number;
+  };
+  metrics: {
+    token?: string;
   };
   alerts: {
     webhookUrl?: string;
@@ -313,6 +507,15 @@ function decodeKey(base64: string, name: string): Buffer {
     throw new Error(`${name} precisa decodificar para exatamente 32 bytes`);
   }
   return key;
+}
+
+/**
+ * Deriva uma chave dedicada para blind index a partir da chave mestre de
+ * cifragem. A derivacao usa o dominio como HMAC key e a chave mestre como
+ * entrada, separando o indice reversivel do segredo de cifragem principal.
+ */
+function deriveBlindKey(master: Buffer, domain: string): Buffer {
+  return createHmac('sha256', domain).update(master).digest();
 }
 
 function buildCrypto(env: Env): AppConfig['crypto'] {
@@ -350,6 +553,7 @@ function buildCrypto(env: Env): AppConfig['crypto'] {
     activeKid,
     legacyKid,
     dataKey: keyring[legacyKid]!,
+    payerTaxBlindKey: deriveBlindKey(keyring[legacyKid]!, 'btc-payments/payer-tax/v1'),
   };
 }
 
@@ -369,6 +573,16 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
   const env = EnvSchema.parse(raw);
   const crypto = buildCrypto(env);
 
+  if (env.NODE_ENV === 'production') {
+    for (const [kid, key] of Object.entries(crypto.keyring)) {
+      if (key.equals(Buffer.alloc(32))) {
+        throw new Error(
+          `chave de cifragem "${kid}" e fraca (todos os bytes zero). Gere com: openssl rand -base64 32`,
+        );
+      }
+    }
+  }
+
   return {
     service: {
       name: SERVICE_NAME,
@@ -385,6 +599,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       corsAllowedOrigins: buildCorsOrigins(env),
       rateLimitWindowMs: env.RATE_LIMIT_WINDOW_MS,
       rateLimitMax: env.RATE_LIMIT_MAX,
+      sessionTtlSeconds: env.SESSION_TTL_SECONDS,
     },
     database: {
       url: env.DATABASE_URL,
@@ -401,6 +616,9 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       derivationPrefix: env.BTC_DERIVATION_PREFIX,
       maxIndex: env.BTC_MAX_INDEX,
       gapLimit: env.BTC_GAP_LIMIT,
+    },
+    fx: {
+      quoteTtlSeconds: env.FX_QUOTE_TTL_SECONDS,
     },
     onchain: {
       confirmations: env.ONCHAIN_CONFIRMATIONS,
@@ -422,6 +640,15 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       url: env.ESPLORA_URL.replace(/\/+$/, ''),
       timeoutMs: env.ESPLORA_TIMEOUT_MS,
     },
+    treasury: {
+      ...(env.TREASURY_BTC_ADDRESS
+        ? { btcAddress: env.TREASURY_BTC_ADDRESS }
+        : {}),
+      ...(env.TREASURY_USDC_ADDRESS
+        ? { usdcBaseAddress: env.TREASURY_USDC_ADDRESS }
+        : {}),
+      ...(env.GAS_BASE_ADDRESS ? { gasBaseAddress: env.GAS_BASE_ADDRESS } : {}),
+    },
     sweep: {
       enabled: env.SWEEP_ENABLED,
       ...(env.COLD_WALLET_ADDRESS
@@ -433,6 +660,72 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       maxFeePct: env.SWEEP_MAX_FEE_PCT,
       rbfAfterSeconds: env.SWEEP_RBF_AFTER_SECONDS,
       maxAttempts: env.SWEEP_MAX_ATTEMPTS,
+    },
+    conversion: {
+      enabled: env.CONVERSION_ENABLED,
+      thorchainUrls: env.THORCHAIN_URLS.split(',')
+        .map((url) => url.trim().replace(/\/+$/, ''))
+        .filter((url) => url.length > 0),
+      timeoutMs: env.THORCHAIN_TIMEOUT_MS,
+      minConfirmations: env.CONVERSION_MIN_CONFIRMATIONS,
+      minSats: env.CONVERSION_MIN_SATS,
+      slippageBps: env.CONVERSION_SLIPPAGE_BPS,
+      quoteToleranceBps: env.CONVERSION_QUOTE_TOLERANCE_BPS,
+      maxAttempts: env.CONVERSION_MAX_ATTEMPTS,
+      ...(env.TREASURY_BTC_SIGNER_URL
+        ? { treasuryBtcSignerUrl: env.TREASURY_BTC_SIGNER_URL.replace(/\/+$/, '') }
+        : {}),
+      ...(env.TREASURY_BTC_SIGNER_TOKEN
+        ? { treasuryBtcSignerToken: env.TREASURY_BTC_SIGNER_TOKEN }
+        : {}),
+      ...(env.LNBITS_WITHDRAWAL_URL
+        ? { lnbitsWithdrawalUrl: env.LNBITS_WITHDRAWAL_URL.replace(/\/+$/, '') }
+        : {}),
+      ...(env.LNBITS_WITHDRAWAL_TOKEN
+        ? { lnbitsWithdrawalToken: env.LNBITS_WITHDRAWAL_TOKEN }
+        : {}),
+    },
+    payout: {
+      enabled: env.PAYOUT_ENABLED,
+      baseRpcUrls: env.BASE_RPC_URLS.split(',')
+        .map((url) => url.trim().replace(/\/+$/, ''))
+        .filter((url) => url.length > 0),
+      baseChainId: env.BASE_CHAIN_ID,
+      usdcAddress: env.BASE_USDC_ADDRESS,
+      ...(env.BASE_PAYOUT_PRIVATE_KEY
+        ? { privateKey: env.BASE_PAYOUT_PRIVATE_KEY }
+        : {}),
+      ...(env.PAYOUT_HOT_ADDRESS ? { hotAddress: env.PAYOUT_HOT_ADDRESS } : {}),
+      confirmations: env.PAYOUT_CONFIRMATIONS,
+      newWalletCareSeconds: env.PAYOUT_NEW_WALLET_CARE_SECONDS,
+      maxAttempts: env.PAYOUT_MAX_ATTEMPTS,
+      usdBrlCents: BigInt(env.PAYOUT_USD_BRL_RATE_CENTS),
+      minGasWei: env.PAYOUT_MIN_GAS_WEI,
+      ...(env.PAYOUT_SIGNER_URL
+        ? { signerUrl: env.PAYOUT_SIGNER_URL.replace(/\/+$/, '') }
+        : {}),
+      ...(env.PAYOUT_SIGNER_TOKEN
+        ? { signerToken: env.PAYOUT_SIGNER_TOKEN }
+        : {}),
+    },
+    pix: {
+      enabled: env.PIX_ENABLED,
+      luniumApiUrl: env.LUNIUM_API_URL.replace(/\/+$/, ''),
+      ...(env.LUNIUM_API_KEY ? { luniumApiKey: env.LUNIUM_API_KEY } : {}),
+      ...(env.LUNIUM_WEBHOOK_SECRET
+        ? { luniumWebhookSecret: env.LUNIUM_WEBHOOK_SECRET }
+        : {}),
+      timeoutMs: env.LUNIUM_TIMEOUT_MS,
+      asset: env.PIX_ASSET,
+      chain: env.PIX_CHAIN,
+      ...(env.TREASURY_USDC_ADDRESS
+        ? { destinationAddress: env.TREASURY_USDC_ADDRESS }
+        : env.PAYOUT_HOT_ADDRESS
+          ? { destinationAddress: env.PAYOUT_HOT_ADDRESS }
+          : {}),
+      minBrlCents: env.PIX_MIN_BRL_CENTS,
+      maxBrlCents: env.PIX_MAX_BRL_CENTS,
+      verifySettlementTx: env.PIX_VERIFY_SETTLEMENT_TX,
     },
     signer: {
       mode: env.SIGNER_MODE,
@@ -453,7 +746,15 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       onchainPollMs: env.JOBS_ONCHAIN_POLL_MS,
       webhookPollMs: env.JOBS_WEBHOOK_POLL_MS,
       sweepPollMs: env.JOBS_SWEEP_POLL_MS,
+      conversionPollMs: env.JOBS_CONVERSION_POLL_MS,
+      payoutPollMs: env.JOBS_PAYOUT_POLL_MS,
+      pixPollMs: env.JOBS_PIX_POLL_MS,
+      subscriptionMs: env.JOBS_SUBSCRIPTION_MS,
+      reconciliationMs: env.JOBS_RECONCILIATION_MS,
       batchSize: env.JOBS_BATCH_SIZE,
+    },
+    metrics: {
+      ...(env.METRICS_TOKEN ? { token: env.METRICS_TOKEN } : {}),
     },
     alerts: {
       ...(env.ALERT_WEBHOOK_URL ? { webhookUrl: env.ALERT_WEBHOOK_URL } : {}),

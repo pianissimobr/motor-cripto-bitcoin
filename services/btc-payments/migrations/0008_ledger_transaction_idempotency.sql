@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "ledger_transactions_ref_uq" ON "ledger_transactions" USING btree ("kind","reference_type","reference_id");

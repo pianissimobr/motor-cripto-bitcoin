@@ -8,6 +8,7 @@ import {
 } from './adapters/hd/derivation.js';
 import type { EsploraClient } from './adapters/chain/esplora.js';
 import type { LnbitsClient } from './adapters/lnbits/client.js';
+import type { LuniumClient } from './adapters/lunium/client.js';
 import type { Readiness } from './http/readiness.js';
 
 export type ReadinessDeps = {
@@ -18,6 +19,7 @@ export type ReadinessDeps = {
   repos: Repositories;
   lnbits: LnbitsClient;
   esplora: EsploraClient;
+  lunium?: Pick<LuniumClient, 'health'>;
 };
 
 export function createReadiness(deps: ReadinessDeps): Readiness {
@@ -83,6 +85,19 @@ export function createReadiness(deps: ReadinessDeps): Readiness {
             : { ok: false, detail: result.detail ?? 'Esplora indisponivel' };
         },
       },
+      ...(deps.lunium
+        ? [
+            {
+              name: 'lunium',
+              run: async () => {
+                const result = await deps.lunium!.health();
+                return result.ok
+                  ? { ok: true }
+                  : { ok: false, detail: result.detail ?? 'Lunium indisponivel' };
+              },
+            },
+          ]
+        : []),
     ],
   };
 }

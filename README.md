@@ -5,9 +5,10 @@ Motor de pagamentos **Bitcoin**: Lightning via LNbits e on-chain watch-only
 webhook quando o pagamento chega a um estado final. O valor on-chain é varrido
 para a carteira fria do operador.
 
-O livro de quem integra e de quem opera está em
-[web/docs/index.html](web/docs/index.html). O mapa do repositório, com o
-caminho de um pagamento, está em [docs/guia.md](docs/guia.md). O contrato
+A documentação técnica interna completa, em HTML navegável, está em
+[docs/index.html](docs/index.html). O livro de quem integra e de quem opera
+está em [web/docs/index.html](web/docs/index.html). O mapa do repositório, com
+o caminho de um pagamento, está em [docs/guia.md](docs/guia.md). O contrato
 HTTP, com corpos e códigos, está em [docs/API.md](docs/API.md).
 
 ```
@@ -23,8 +24,14 @@ cliente da API
                     sweep on-chain para COLD_WALLET_ADDRESS
 ```
 
-A API deste serviço escuta na porta **4580**. Ela não hospeda página de
-checkout e não fala com a Ramp.
+A API deste serviço escuta na porta **4580**. Além da API HMAC, hoje ele
+também hospeda:
+
+- o **portal do lojista** (`/login`, `/signup`, `/portal`);
+- a **página pública de checkout** (`/pay/:id`) e o snippet `checkout.js`;
+- **relatórios** e **assinaturas recorrentes** (`/v1/portal/...`).
+
+Ele não fala com a Ramp (isso é do motor antigo `src/`, porta 4578).
 
 ## Subida local
 

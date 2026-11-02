@@ -1,0 +1,1428 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor Cripto — Documentação Técnica Interna</title>
+<style>
+:root{
+  --bg:#0b1020;--panel:#111a33;--panel2:#0f172c;--text:#e8eefc;--muted:#9fb0d0;
+  --line:#243354;--accent:#62d6ff;--accent2:#8ef0b5;--warn:#ffcc66;--danger:#ff7b8a;
+  --code:#08101f;--link:#8fc7ff;--shadow:0 18px 60px rgba(0,0,0,.35);
+  --sidebar:300px;--radius:14px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:
+  radial-gradient(1200px 700px at 80% -10%,rgba(98,214,255,.12),transparent 60%),
+  radial-gradient(900px 600px at 10% 0%,rgba(142,240,181,.08),transparent 55%),
+  var(--bg);color:var(--text);font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+a{color:var(--link);text-decoration:none}
+a:hover{text-decoration:underline}
+code,pre,kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+code{background:#0a1428;border:1px solid var(--line);padding:.12em .35em;border-radius:6px;font-size:.9em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto;position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}
+pre code{background:none;border:0;padding:0;font-size:.86rem;line-height:1.55}
+h1,h2,h3,h4{line-height:1.25;letter-spacing:-.01em}
+h1{font-size:clamp(2rem,3.2vw,3rem);margin:0 0 10px}
+h2{font-size:1.55rem;margin:0 0 18px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h3{font-size:1.12rem;margin:28px 0 10px;color:#d8e8ff}
+h4{font-size:1rem;margin:22px 0 8px;color:var(--accent2)}
+p{margin:0 0 14px;color:#d6e0f4}
+ul,ol{margin:0 0 16px 1.25rem;padding:0}
+li{margin:6px 0}
+hr{border:0;border-top:1px solid var(--line);margin:28px 0}
+small,.small{font-size:.86rem;color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:#0d1730;color:var(--muted);padding:3px 9px;border-radius:999px;font-size:.76rem;letter-spacing:.04em;text-transform:uppercase}
+.badge.good{color:var(--accent2);border-color:#245c42}
+.badge.warn{color:var(--warn);border-color:#5c4a1f}
+.badge.bad{color:var(--danger);border-color:#5c2730}
+.layout{display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;overflow:auto;border-right:1px solid var(--line);background:rgba(9,15,30,.88);backdrop-filter:blur(10px);padding:20px 16px 40px;z-index:20}
+.brand{padding:6px 8px 16px}
+.brand strong{display:block;font-size:1.05rem;letter-spacing:.02em}
+.brand span{color:var(--muted);font-size:.8rem}
+.search-wrap{position:relative;margin:10px 0 16px}
+.search-wrap input{width:100%;background:#081124;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:10px 12px 10px 34px;outline:none}
+.search-wrap input:focus{border-color:var(--accent)}
+.search-wrap:before{content:"⌕";position:absolute;left:11px;top:7px;color:var(--muted);font-size:1.1rem}
+.nav-title{font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#7183a8;margin:16px 8px 6px}
+.nav a{display:block;padding:6px 9px;border-radius:8px;color:#b9c8e4;font-size:.88rem}
+.nav a:hover{background:#101c38;text-decoration:none;color:#fff}
+.nav a.active{background:linear-gradient(90deg,rgba(98,214,255,.18),rgba(98,214,255,.04));color:#fff;border-left:2px solid var(--accent)}
+.nav a.sub{padding-left:20px;font-size:.82rem;color:#8fa4c9}
+.main{min-width:0;padding:0 clamp(18px,4vw,56px) 80px}
+.hero{padding:46px 0 26px;border-bottom:1px solid var(--line);margin-bottom:30px}
+.hero .kicker{color:var(--accent);font-size:.78rem;text-transform:uppercase;letter-spacing:.16em;margin-bottom:10px}
+.hero p{max-width:880px;font-size:1.06rem;color:#c8d6ee}
+.hero-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+.btn{display:inline-flex;align-items:center;gap:8px;background:#0e1a34;border:1px solid var(--line);color:var(--text);padding:8px 12px;border-radius:9px;cursor:pointer;font:inherit;font-size:.86rem}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:22px 0 8px}
+.card{background:linear-gradient(180deg,rgba(22,35,65,.78),rgba(13,23,47,.78));border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+.card .n{font-size:1.45rem;font-weight:700;letter-spacing:-.03em;color:#fff}
+.card .l{font-size:.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:2px}
+section{scroll-margin-top:22px;margin:0 0 46px}
+section section{margin:26px 0 30px;border-left:2px solid #1a2a4a;padding-left:18px}
+.callout{border:1px solid var(--line);border-left:4px solid var(--accent);background:#0d1730;border-radius:10px;padding:14px 16px;margin:16px 0}
+.callout.warn{border-left-color:var(--warn)}
+.callout.bad{border-left-color:var(--danger)}
+.callout.good{border-left-color:var(--accent2)}
+.callout strong{color:#fff}
+table{width:100%;border-collapse:collapse;margin:14px 0 20px;font-size:.9rem}
+th,td{border:1px solid var(--line);padding:10px 11px;text-align:left;vertical-align:top}
+th{background:#0e1a34;color:#cfe0ff;font-weight:600}
+tr:nth-child(even) td{background:rgba(255,255,255,.018)}
+td code{white-space:nowrap}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:16px 0 22px}
+.flow .node{background:#0e1a34;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:.82rem;color:#d9e8ff}
+.flow .arrow{color:var(--accent);font-weight:700}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.kv{display:grid;grid-template-columns:180px 1fr;gap:8px 14px;font-size:.9rem}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0}
+.status{display:inline-block;padding:1px 7px;border-radius:6px;background:#0a1428;border:1px solid var(--line);font-size:.78rem;color:#cfe0ff}
+.toc-inline{columns:2;column-gap:28px}
+.toc-inline a{display:block;break-inside:avoid;margin:4px 0}
+.copy{position:absolute;right:8px;top:8px;font-size:.7rem;padding:4px 7px;border-radius:6px;background:#0e1a34;border:1px solid var(--line);color:#b9c8e4;cursor:pointer;opacity:.65}
+pre:hover .copy{opacity:1}
+.top{position:fixed;right:18px;bottom:18px;z-index:30;background:#0e1a34;border:1px solid var(--line);border-radius:50%;width:44px;height:44px;color:var(--text);cursor:pointer;font-size:1.1rem;box-shadow:var(--shadow)}
+.footer{border-top:1px solid var(--line);padding-top:20px;color:var(--muted);font-size:.85rem}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.tiny{font-size:.78rem;color:var(--muted)}
+details{border:1px solid var(--line);border-radius:10px;background:#0d1730;padding:10px 14px;margin:12px 0}
+summary{cursor:pointer;color:#d9e8ff;font-weight:600}
+details[open] summary{margin-bottom:10px}
+@media (max-width:980px){
+  :root{--sidebar:0px}
+  .layout{display:block}
+  .sidebar{position:relative;height:auto;width:100%;border-right:0;border-bottom:1px solid var(--line)}
+  .nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:2px}
+  .nav-title{grid-column:1/-1}
+  .main{padding:0 18px 70px}
+  .toc-inline{columns:1}
+  .kv{grid-template-columns:1fr}
+}
+@media print{
+  .sidebar,.top,.hero-actions,.copy{display:none!important}
+  .layout{display:block}.main{padding:0}
+  body{background:#fff;color:#111}
+  .card,pre,details,.callout{box-shadow:none;background:#fff}
+  a{color:#0645ad}
+  section{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar">
+  <div class="brand">
+    <strong>Motor Cripto</strong>
+    <span>Documentação técnica interna</span>
+    <div style="margin-top:10px"><span class="badge good">Build atual</span> <span class="badge">2026-10-31</span></div>
+  </div>
+  <div class="search-wrap"><input id="search" type="search" placeholder="Buscar seção... (Ctrl+K)" autocomplete="off"></div>
+  <nav class="nav" id="nav">
+    <div class="nav-title">Comece aqui</div>
+    <a href="#visao-geral">Visão geral</a>
+    <a href="#objetivos">Objetivos e não-objetivos</a>
+    <a href="#estado">Estado atual</a>
+    <a href="#mapa">Mapa do repositório</a>
+
+    <div class="nav-title">Arquitetura</div>
+    <a href="#arquitetura">Arquitetura geral</a>
+    <a href="#processos">API, worker e jobs</a>
+    <a href="#componentes">Componentes internos</a>
+
+    <div class="nav-title">Fluxos</div>
+    <a href="#fluxo-btc">Bitcoin: cobrança</a>
+    <a href="#fluxo-lightning">Pagamento Lightning</a>
+    <a href="#fluxo-onchain">Pagamento on-chain</a>
+    <a href="#fluxo-sweep">Sweep BTC</a>
+    <a href="#fluxo-conversao">Conversão THORChain</a>
+    <a href="#fluxo-payout">Payout USDC</a>
+    <a href="#fluxo-pix">PIX → USDC</a>
+    <a href="#fluxo-ledger">Ledger e reconciliação</a>
+
+    <div class="nav-title">API ativa</div>
+    <a href="#api-ativa">Introdução e autenticação</a>
+    <a href="#api-erros">Erros, limites e idempotência</a>
+    <a href="#api-intents">Cobranças Bitcoin</a>
+    <a href="#api-pix">Cobranças PIX</a>
+    <a href="#api-saldos">Saldos, conversões e payouts</a>
+    <a href="#api-carteiras">Carteiras e câmbio</a>
+    <a href="#api-metrics">Métricas</a>
+    <a href="#api-webhooks-entrada">Webhooks de entrada</a>
+    <a href="#api-admin">Admin</a>
+    <a href="#api-saude">Saúde e prontidão</a>
+    <a href="#api-webhooks-saida">Webhooks de saída</a>
+
+    <div class="nav-title">Portal e checkout</div>
+    <a href="#portal">Portal do lojista e autenticação</a>
+    <a href="#checkout">Checkout público e snippet</a>
+    <a href="#recorrente">Assinaturas recorrentes</a>
+
+    <div class="nav-title">API legada</div>
+    <a href="#legado">Motor Polygon / Ramp</a>
+    <a href="#legado-api">Endpoints legados</a>
+
+    <div class="nav-title">Dados e operação</div>
+    <a href="#modelo-dados">Modelo de dados</a>
+    <a href="#config">Configuração</a>
+    <a href="#deploy">Deploy e topologia</a>
+    <a href="#observabilidade">Observabilidade</a>
+    <a href="#runbook">Runbook</a>
+    <a href="#seguranca">Segurança</a>
+
+    <div class="nav-title">Desenvolvimento</div>
+    <a href="#dev">Guia de desenvolvimento</a>
+    <a href="#testes">Testes</a>
+    <a href="#limitacoes">Limitações e pendências</a>
+    <a href="#referencias">Referências</a>
+  </nav>
+</aside>
+
+<main class="main">
+<header class="hero" id="topo">
+  <div class="kicker">Documento interno · engenharia e operação</div>
+  <h1>Motor Cripto</h1>
+  <p>Documentação completa do repositório: visão de produto, arquitetura, fluxos de pagamento Bitcoin e PIX, contrato HTTP, modelo de dados, operação e guia de desenvolvimento.</p>
+  <div class="hero-actions">
+    <a class="btn" href="#visao-geral">Começar pela visão geral</a>
+    <a class="btn" href="#api-ativa">Ir para a API</a>
+    <button class="btn" onclick="window.print()">Imprimir / PDF</button>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="n">2</div><div class="l">motores no repositório</div></div>
+    <div class="card"><div class="n">4580</div><div class="l">porta do motor ativo</div></div>
+    <div class="card"><div class="n">31</div><div class="l">tabelas no serviço ativo</div></div>
+    <div class="card"><div class="n">BTC + PIX</div><div class="l">rails de entrada</div></div>
+    <div class="card"><div class="n">USDC</div><div class="l">liquidação na Base</div></div>
+  </div>
+</header>
+
+<section id="visao-geral">
+<h2>1. Visão geral</h2>
+<p>Este repositório contém um motor de pagamentos em evolução, com dois momentos técnicos distintos:</p>
+<table>
+<thead><tr><th>Motor</th><th>Onde está</th><th>Porta</th><th>Papel</th><th>Situação</th></tr></thead>
+<tbody>
+<tr><td><strong>Bitcoin + PIX</strong></td><td><code>services/btc-payments</code></td><td><code>4580</code></td><td>API e worker de cobrança Bitcoin (Lightning e on-chain), conversão para USDC na Base, payout, PIX via Lunium, ledger e conciliação.</td><td><span class="badge good">Ativo</span></td></tr>
+<tr><td><strong>Polygon / Ramp</strong></td><td><code>src/</code>, <code>web/admin/</code>, <code>web/docs/</code></td><td><code>4578</code></td><td>Motor anterior de stablecoin com página pública de checkout, perfil de on-ramp e sweep para carteira allowlisted.</td><td><span class="badge warn">Legado</span></td></tr>
+</tbody>
+</table>
+<div class="callout good"><strong>Regra de ouro:</strong> para integração nova, use <code>services/btc-payments</code>. O código em <code>src/</code> é histórico e não implementa o contrato atual de <code>/v1/payment-intents</code>.</div>
+<p>A proposta do motor ativo é receber valor em Bitcoin ou PIX, manter um registro contábil confiável, converter para dólar digital e liquidar a loja em USDC na rede Base. A operação é dividida em API e worker para que a resposta HTTP não dependa de confirmações de rede, filas ou retries.</p>
+<h3>O que o motor entrega</h3>
+<ul>
+<li><strong>Bitcoin:</strong> invoice Lightning e endereço on-chain por cobrança, QR BIP21, detecção de pagamento, confirmação, reorg, pagamento tardio, sweep e conversão THORChain.</li>
+<li><strong>PIX:</strong> cobrança PIX via Lunium, QR/copia-e-cola, webhook assinado, confirmação canônica, entrega de USDC na treasury e payout.</li>
+<li><strong>Liquidação:</strong> ledger de partidas dobradas em BTC, BRL, USD e USDC; payout USDC na Base com allowlist, limites, gas, batching e retry.</li>
+<li><strong>Operação:</strong> métricas Prometheus, conciliação diária, backup/restore, runbook, drills e documentação de webhooks.</li>
+</ul>
+</section>
+
+<section id="objetivos">
+<h2>2. Objetivos e não-objetivos</h2>
+<div class="grid2">
+<div>
+<h3>Objetivos</h3>
+<ul>
+<li>Oferecer uma API-first para lojas criarem cobranças e receberem confirmação confiável.</li>
+<li>Não depender de uma única forma de pagamento: Lightning, on-chain e PIX.</li>
+<li>Separar claramente pagamento recebido de dinheiro liquidado.</li>
+<li>Converter BTC ou PIX em USDC na Base com registro contábil auditável.</li>
+<li>Liquidar a loja com controles de allowlist, limites e revisão manual.</li>
+<li>Ser operável: logs, métricas, alertas, backup, restauração e drills.</li>
+<li>Permitir evolução por rails sem quebrar o fluxo existente.</li>
+</ul>
+</div>
+<div>
+<h3>Não-objetivos do MVP</h3>
+<ul>
+<li>Hospedar um checkout completo ou página de pagamento no serviço ativo.</li>
+<li>PIX de saída (USDC → PIX) e custódia de BRL.</li>
+<li>Cold wallet BTC por loja; o sweep BTC é global.</li>
+<li>Suporte multi-chain amplo para payout; o foco é USDC nativo na Base.</li>
+<li>Garantir liquidez ou preço fixo de THORChain/Lunium; o motor usa quotes e estados do provider.</li>
+<li>Substituir controles de KYC/AML da operação ou da Lunium.</li>
+</ul>
+</div>
+</div>
+</section>
+
+<section id="estado">
+<h2>3. Estado atual</h2>
+<p>O motor Bitcoin está implementado e validado em regtest e em testes de integração com Postgres. O rail PIX foi adicionado com provider Lunium e validado em sandbox: criação de cobrança, simulação de pagamento, webhook assinado, inbox, conciliação, crédito no ledger e liquidação.</p>
+<table>
+<thead><tr><th>Área</th><th>Estado</th><th>Observação</th></tr></thead>
+<tbody>
+<tr><td>Bitcoin Lightning/on-chain</td><td><span class="badge good">Implementado</span></td><td>LNbits + Esplora; sweep com signer local/remoto/PSBT.</td></tr>
+<tr><td>Conversão BTC → USDC</td><td><span class="badge good">Implementado</span></td><td>THORChain multi-endpoint, quote, envio, monitoramento, refund.</td></tr>
+<tr><td>Payout USDC Base</td><td><span class="badge good">Implementado</span></td><td>Allowlist, gas, limites, batching, approve/retry, confirmação on-chain.</td></tr>
+<tr><td>PIX → USDC</td><td><span class="badge good">Implementado + sandbox</span></td><td>Lunium, webhook HMAC, inbox durável, reconexão e ledger.</td></tr>
+<tr><td>Ledger / reconciliação</td><td><span class="badge good">Implementado</span></td><td>Partidas dobradas, idempotência, job diário e métricas.</td></tr>
+<tr><td>Portal do lojista</td><td><span class="badge good">Implementado</span></td><td>Cadastro/login, lojas, carteiras, relatórios e credenciais via sessão.</td></tr>
+<tr><td>Checkout público</td><td><span class="badge good">Implementado</span></td><td><code>/pay/:id</code> + snippet <code>/checkout.js</code>.</td></tr>
+<tr><td>Assinaturas recorrentes</td><td><span class="badge good">Implementado</span></td><td>Agenda gera nova cobrança por ciclo + webhook (sem débito automático).</td></tr>
+<tr><td>Testes reais BTC/PIX</td><td><span class="badge warn">Pendente</span></td><td>Dependem de chave live, fundos e carteiras reais.</td></tr>
+<tr><td>Motor Polygon/Ramp</td><td><span class="badge warn">Legado</span></td><td>Mantido no repositório; não é o contrato atual.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="mapa">
+<h2>4. Mapa do repositório</h2>
+<pre><code>motor-cripto-bitcoin/
+├── services/btc-payments/       # MOTOR ATIVO (porta 4580)
+│   ├── src/
+│   │   ├── server.ts            # API Fastify
+│   │   ├── worker.ts            # jobs assíncronos
+│   │   ├── config.ts            # validação de ambiente
+│   │   ├── http/                # rotas, auth HMAC, auth de sessão, portal, checkout, erros, readiness
+│   │   ├── adapters/            # LNbits, Esplora, HD, signer, THORChain, Lunium, Base/USDC
+│   │   ├── services/            # cobrança, conversão, payout, PIX, ledger, auth, relatórios, assinaturas, webhooks
+│   │   ├── domain/              # tipos, estados, dinheiro, BIP21, erros
+│   │   ├── db/                  # schema Drizzle e repositórios
+│   │   ├── ledger/              # livro de partidas dobradas
+│   │   ├── net/                 # guard de SSRF para webhook URL
+│   │   └── crypto/              # HMAC, cifra, senha (scrypt), tokens
+│   ├── public/               # portal estático (login, signup, app) e checkout.js
+│   ├── tests/                   # unitários e integração
+│   ├── migrations/              # SQL versionado do Drizzle
+│   ├── docs/                    # manual, runbook, on-chain, PIX, webhooks, observabilidade, checkout
+│   └── scripts/                 # seed, init de carteira, backup, drills
+├── src/                         # MOTOR LEGADO Polygon/Ramp (porta 4578)
+├── db/migrations/               # schema do motor legado
+├── web/admin/                   # painel do motor legado
+├── web/docs/                    # livro HTML do motor legado
+├── docs/                        # este HTML, API.md, guia.md
+├── test-real.md                 # checklist de testes com dados reais
+├── etapas-pix.md                # checklist da implementação PIX
+├── etapas-portal.md             # checklist da implementação do portal/checkout/recorrente
+└── plano-estrutural.md          # plano original por fases</code></pre>
+<h3>Onde está cada verdade</h3>
+<table>
+<thead><tr><th>Assunto</th><th>Fonte principal</th></tr></thead>
+<tbody>
+<tr><td>Contrato HTTP ativo</td><td><code>services/btc-payments/src/http/api-routes.ts</code> e <code>docs/API.md</code></td></tr>
+<tr><td>Estados e tipos</td><td><code>services/btc-payments/src/domain/types.ts</code></td></tr>
+<tr><td>Banco ativo</td><td><code>services/btc-payments/src/db/schema.ts</code> e <code>migrations/</code></td></tr>
+<tr><td>Regras de cobrança BTC</td><td><code>payment-intent-service.ts</code>, <code>onchain-watcher.ts</code>, <code>sweep-service.ts</code></td></tr>
+<tr><td>Conversão e payout</td><td><code>conversion-service.ts</code>, <code>payout-service.ts</code></td></tr>
+<tr><td>PIX</td><td><code>pix-charge-service.ts</code>, <code>lunium-webhook-service.ts</code>, <code>adapters/lunium/</code></td></tr>
+<tr><td>Ledger</td><td><code>ledger/ledger-service.ts</code></td></tr>
+<tr><td>Portal e auth</td><td><code>auth-service.ts</code>, <code>http/auth-routes.ts</code>, <code>http/portal-routes.ts</code></td></tr>
+<tr><td>Checkout público</td><td><code>http/checkout-routes.ts</code>, <code>public/checkout.js</code></td></tr>
+<tr><td>Assinaturas</td><td><code>subscription-service.ts</code>, job <code>subscription-charge</code> no worker</td></tr>
+<tr><td>Relatórios</td><td><code>report-service.ts</code></td></tr>
+<tr><td>Contrato legado</td><td><code>src/adapters/http/routes.ts</code></td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="arquitetura">
+<h2>5. Arquitetura geral</h2>
+<div class="flow">
+  <span class="node">Loja / Checkout</span><span class="arrow">→</span>
+  <span class="node">API Fastify :4580</span><span class="arrow">→</span>
+  <span class="node">Postgres</span>
+</div>
+<div class="flow">
+  <span class="node">Worker</span><span class="arrow">→</span>
+  <span class="node">LNbits</span>
+  <span class="node">Esplora / Bitcoin</span>
+  <span class="node">THORChain</span>
+  <span class="node">Lunium</span>
+  <span class="node">Base RPC / viem</span>
+</div>
+<p>A API responde rápido e o worker faz o trabalho que não pode depender do ciclo HTTP: reconciliar Lightning, observar a chain, varrer UTXOs, converter, liquidar PIX, pagar USDC, entregar webhooks e reconciliar o ledger.</p>
+<h3>Trust boundaries</h3>
+<ul>
+<li><strong>Loja:</strong> autenticada por API key + HMAC. Recebe webhooks assinados.</li>
+<li><strong>LNbits:</strong> fonte do pagamento Lightning; o POST de webhook não é prova.</li>
+<li><strong>Esplora:</strong> fonte de UTXOs, transações, taxa e broadcast.</li>
+<li><strong>THORChain:</strong> provider de quote/swap; múltiplos endpoints são comparados.</li>
+<li><strong>Lunium:</strong> provider PIX; webhook assinado + GET canônico.</li>
+<li><strong>Base RPC:</strong> confirmação de payout USDC.</li>
+<li><strong>Signer:</strong> fora da API; o xprv não entra no processo HTTP.</li>
+</ul>
+</section>
+
+<section id="processos">
+<h2>6. API, worker e jobs</h2>
+<div class="grid2">
+<div>
+<h3>API</h3>
+<ul>
+<li>Sobe em <code>src/server.ts</code>.</li>
+<li>Não abre keystore.</li>
+<li>Autentica, cria cobranças, consulta estado, expõe admin, recebe webhooks de entrada e métricas.</li>
+<li>Porta padrão <code>4580</code>.</li>
+</ul>
+</div>
+<div>
+<h3>Worker</h3>
+<ul>
+<li>Sobe em <code>src/worker.ts</code>.</li>
+<li>Processo separado, mesmo Postgres.</li>
+<li>Jobs de reconciliação, expiração, on-chain, webhooks, sweep, conversão, payout, PIX, inbox Lunium e reconciliação diária.</li>
+<li>O sweep só entra se o signer estiver disponível.</li>
+</ul>
+</div>
+</div>
+<table>
+<thead><tr><th>Job</th><th>Intervalo padrão</th><th>Responsabilidade</th></tr></thead>
+<tbody>
+<tr><td><code>lightning-reconcile</code></td><td>15s</td><td>Confirma invoices pendentes no LNbits.</td></tr>
+<tr><td><code>expiry</code></td><td>10s</td><td>Expira/parcializa intents vencidas.</td></tr>
+<tr><td><code>onchain-watch</code></td><td>15s</td><td>Lê UTXOs, confirma, detecta reorg e pagamento tardio.</td></tr>
+<tr><td><code>webhook-delivery</code></td><td>10s</td><td>Entrega outbox com backoff; limpa nonces expirados.</td></tr>
+<tr><td><code>sweep</code></td><td>30s</td><td>Varre BTC confirmado para treasury/cold wallet.</td></tr>
+<tr><td><code>treasury-withdrawal</code></td><td>30s</td><td>Saca saldo Lightning da LNbits para treasury BTC.</td></tr>
+<tr><td><code>conversion</code></td><td>30s</td><td>THORChain BTC → USDC Base.</td></tr>
+<tr><td><code>payout</code></td><td>30s</td><td>Cria, envia e monitora payouts USDC.</td></tr>
+<tr><td><code>pix-reconcile</code></td><td>30s</td><td>Reconcilia cobranças PIX pendentes/incertas.</td></tr>
+<tr><td><code>lunium-inbox</code></td><td>30s</td><td>Processa eventos Lunium persistidos.</td></tr>
+<tr><td><code>reconciliation</code></td><td>24h</td><td>Confere ledger e estados; grava histórico.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="componentes">
+<h2>7. Componentes internos</h2>
+<table>
+<thead><tr><th>Camada</th><th>Arquivos principais</th><th>Responsabilidade</th></tr></thead>
+<tbody>
+<tr><td>HTTP</td><td><code>http/app.ts</code>, <code>api-routes.ts</code>, <code>auth.ts</code>, <code>readiness.ts</code></td><td>Fastify, HMAC, escopos, rate limit, erros, rotas e health.</td></tr>
+<tr><td>Config</td><td><code>config.ts</code></td><td>Valida todo o ambiente e falha cedo. Nenhum segredo é logado.</td></tr>
+<tr><td>Bitcoin</td><td><code>payment-intent-service.ts</code>, <code>onchain-watcher.ts</code>, <code>sweep-service.ts</code></td><td>Cobrança, invoice, endereço, estados, confirmação e sweep.</td></tr>
+<tr><td>HD wallet</td><td><code>adapters/hd/</code></td><td>Derivação BIP84/P2WPKH a partir de xpub.</td></tr>
+<tr><td>LNbits</td><td><code>adapters/lnbits/</code></td><td>Criação de invoice, consulta de pagamento e saúde.</td></tr>
+<tr><td>Esplora</td><td><code>adapters/chain/esplora.ts</code></td><td>UTXOs, tx, taxa, broadcast e saúde.</td></tr>
+<tr><td>Signer</td><td><code>adapters/signer/</code></td><td>Assinatura local, remota ou PSBT; validação do raw antes do broadcast.</td></tr>
+<tr><td>THORChain</td><td><code>adapters/conversion/thorchain.ts</code></td><td>Quote multi-endpoint, tolerância, status e refund.</td></tr>
+<tr><td>Lunium</td><td><code>adapters/lunium/client.ts</code></td><td>Criação/consulta PIX, limites, preview, erros e HMAC de webhook.</td></tr>
+<tr><td>Payout Base</td><td><code>adapters/payout/base-usdc.ts</code></td><td>Transferência ERC-20, gas, confirmação e signer remoto.</td></tr>
+<tr><td>Serviços</td><td><code>services/</code></td><td>Orquestração de cobrança, conversão, PIX, payout, alertas, métricas e reconciliação.</td></tr>
+<tr><td>Ledger</td><td><code>ledger/ledger-service.ts</code></td><td>Partidas dobradas, idempotência por referência e totais por ativo.</td></tr>
+<tr><td>Persistência</td><td><code>db/schema.ts</code>, <code>db/repositories.ts</code></td><td>Drizzle, transações, locks e consultas de estado.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="fluxo-btc">
+<h2>8. Fluxo Bitcoin: criação de cobrança</h2>
+<ol>
+<li>A loja chama <code>POST /v1/payment-intents</code> com <code>external_id</code> e valor em sats ou valor fiat + moeda.</li>
+<li>A API autentica HMAC, valida escopo <code>payments:write</code> e idempotência por <code>(cliente, external_id)</code>.</li>
+<li>Se houver valor fiat, o <code>FxService</code> cria uma quote com <code>spreadBps</code> do cliente e TTL.</li>
+<li>O Postgres aloca um índice HD e grava a intent em <code>criando</code> com endereço derivado.</li>
+<li>A API cria a invoice no LNbits com callback para <code>/webhooks/lnbits</code>.</li>
+<li>A intent vira <code>pendente</code> e a resposta traz invoice, endereço, BIP21 e QR SVG.</li>
+</ol>
+<div class="callout"><strong>Idempotência:</strong> mesmo <code>external_id</code> com o mesmo valor devolve a cobrança existente (200). Valor diferente devolve 409. <code>falha_criacao</code> exige outro <code>external_id</code>.</div>
+</section>
+
+<section id="fluxo-lightning">
+<h2>9. Pagamento Lightning</h2>
+<ol>
+<li>LNbits chama <code>POST /webhooks/lnbits?token=...</code>.</li>
+<li>O token é comparado em tempo constante; o corpo pode ser objeto ou string JSON.</li>
+<li>O motor extrai <code>payment_hash</code> ou <code>checking_id</code>.</li>
+<li>O status é confirmado em <code>GET /api/v1/payments/{payment_hash}</code> no LNbits.</li>
+<li>O valor é interpretado como sats ou msat conforme a invoice; valor divergente não liquida.</li>
+<li>Intent pendente vira <code>pago</code>; intent vencida/cancelada pode virar <code>pago_tardio</code> ou ser ignorada, com auditoria/alerta.</li>
+</ol>
+<pre><code>pendente ──pago──► pago ──reorg──► reorg ──reconfirmado──► pago
+    │                 │
+    └──expira──► expirado ──pagamento tardio──► pago_tardio</code></pre>
+</section>
+
+<section id="fluxo-onchain">
+<h2>10. Pagamento on-chain e reorg</h2>
+<ul>
+<li>O worker lê UTXOs do endereço no Esplora a cada ciclo.</li>
+<li>Confirmações são calculadas pela altura da ponta; o padrão é 1, ou 3 acima de <code>ONCHAIN_HIGH_VALUE_SATS</code>.</li>
+<li>Quando a soma confirmada cobre o valor, a intent vira <code>pago</code> ou <code>pago_tardio</code>.</li>
+<li>Excesso vira <code>overpaid_sats</code>; não há tolerância percentual.</li>
+<li>Reorg só é declarado quando a soma válida cai abaixo do valor; sair da lista de UTXO não basta.</li>
+<li>Saídas gastas pelo sweep continuam contabilizadas enquanto o depósito original existir.</li>
+</ul>
+<div class="callout warn"><strong>Fora do prazo:</strong> UTXO novo em intent cancelada/expirada gera alerta e não reabre a intent como paga, mas entra no sweep.</div>
+</section>
+
+<section id="fluxo-sweep">
+<h2>11. Sweep BTC</h2>
+<p>O sweep move BTC confirmado dos endereços de cobrança para uma carteira fria/treasury global. Não há carteira fria por loja.</p>
+<ol>
+<li>Lista saídas confirmadas com confirmações suficientes e sem sweep ativo no endereço.</li>
+<li>Monta transação com RBF, uma saída para a carteira fria/treasury.</li>
+<li>Valida poeira, taxa e limite percentual.</li>
+<li>Assina via signer local, remoto ou PSBT.</li>
+<li>Valida o raw: mesmos inputs, uma saída, taxa dentro do limite.</li>
+<li>Transmite, marca UTXOs como <code>gasto</code> e monitora confirmação/RBF.</li>
+</ol>
+<pre><code>pendente → construindo → assinando → transmitindo → aguardando_confirmacao_rede → sweepado
+                                              └── falhou / manual / substituido</code></pre>
+</section>
+
+<section id="fluxo-conversao">
+<h2>12. Conversão BTC → USDC na Base</h2>
+<ol>
+<li>Intent paga entra na fila de conversão.</li>
+<li><code>ConversionService</code> cria uma ordem com provider THORChain.</li>
+<li>Cota em múltiplos endpoints, compara inbound/memo/valor e aplica slippage/tolerância.</li>
+<li>Envia BTC da treasury para o inbound address com memo.</li>
+<li>Monitora o swap e o recebimento de USDC na carteira da loja/treasury.</li>
+<li>Atualiza status: <code>convertida</code>, <code>reembolsada</code>, <code>falhou</code> ou <code>manual</code>.</li>
+<li>O ledger registra BTC recebido, conversão e USDC disponível.</li>
+</ol>
+<pre><code>criada → cotando → enviando_btc → aguardando_swap → recebendo_usdc → convertida
+                                 └── falhou / reembolsada / manual</code></pre>
+</section>
+
+<section id="fluxo-payout">
+<h2>13. Payout USDC na Base</h2>
+<ol>
+<li>O worker lista conversões/PIX liquidados sem payout.</li>
+<li>Busca a carteira <code>usdc_settlement</code> ativa e allowlisted da loja.</li>
+<li>Aplica batching, limite por payout, limite diário e carência de carteira nova.</li>
+<li>Decide: automático, aprovação manual ou retido.</li>
+<li>Confere gas ETH na hot wallet.</li>
+<li>Envia USDC via <code>viem</code> ou signer remoto.</li>
+<li>Monitora confirmação/revert na Base e fecha o ledger.</li>
+</ol>
+<pre><code>pendente → aprovado → enviando → confirmado
+      └── retido / falhou / cancelado</code></pre>
+</section>
+
+<section id="fluxo-pix">
+<h2>14. PIX → USDC</h2>
+<div class="flow">
+  <span class="node">Checkout</span><span class="arrow">→</span>
+  <span class="node">POST /v1/pix-charges</span><span class="arrow">→</span>
+  <span class="node">Lunium /cashin/charge</span><span class="arrow">→</span>
+  <span class="node">QR PIX</span>
+</div>
+<ol>
+<li>A loja envia valor BRL, <code>external_id</code> e CPF/CNPJ do pagador.</li>
+<li>O motor cria um registro local <code>criando</code> antes de chamar a Lunium.</li>
+<li>A Lunium recebe <code>destino=cripto</code>, <code>asset=usdc</code>, <code>chain=base</code> e a treasury como destino.</li>
+<li>O cliente paga o PIX; a Lunium envia <code>cashin.paid</code> e <code>cashin.settled</code> por webhook assinado.</li>
+<li>O evento é persistido em inbox antes de 2xx e processado pelo worker.</li>
+<li>O worker consulta o status canônico na Lunium.</li>
+<li>Quando <code>settlement_status=sent</code>, o ledger debita treasury USDC e credita a loja.</li>
+<li>O <code>PayoutService</code> envia USDC para a carteira allowlisted.</li>
+</ol>
+<pre><code>criando → pendente → pago → liquidado
+                 └── expirado / reembolsado / falhou / incerto / manual</code></pre>
+<div class="callout"><strong>CPF/CNPJ:</strong> é obrigatório para a Lunium. O motor não persiste o documento em claro; guarda hash e últimos quatro dígitos. O pagador precisa usar o mesmo documento.</div>
+</section>
+
+<section id="fluxo-ledger">
+<h2>15. Ledger e reconciliação</h2>
+<p>O ledger usa partidas dobradas. Cada transação tem um <code>kind</code>, uma referência (<code>reference_type</code> + <code>reference_id</code>) e lançamentos que precisam fechar por ativo.</p>
+<table>
+<thead><tr><th>Conta</th><th>Tipo</th><th>Uso</th></tr></thead>
+<tbody>
+<tr><td><code>treasury:btc</code></td><td>asset</td><td>BTC recebido/sweepado.</td></tr>
+<tr><td><code>treasury:usdc</code></td><td>asset</td><td>USDC na treasury/Base.</td></tr>
+<tr><td><code>conversion:clearing</code></td><td>asset</td><td>Trânsito de conversão.</td></tr>
+<tr><td><code>platform:spread</code></td><td>revenue</td><td>Spread/comissão da plataforma.</td></tr>
+<tr><td><code>platform:network_fees</code></td><td>expense</td><td>Taxas de rede.</td></tr>
+<tr><td><code>merchant:&lt;id&gt;:btc_receivable</code></td><td>liability</td><td>BTC devido à loja.</td></tr>
+<tr><td><code>merchant:&lt;id&gt;:usdc_available</code></td><td>liability</td><td>USDC disponível para payout.</td></tr>
+<tr><td><code>merchant:&lt;id&gt;:payout_in_transit</code></td><td>liability</td><td>Payout enviado aguardando confirmação.</td></tr>
+<tr><td><code>merchant:&lt;id&gt;:fees</code></td><td>revenue</td><td>Taxas da loja.</td></tr>
+</tbody>
+</table>
+<p>A reconciliação diária confere se débitos e créditos batem por ativo, conta estados presos e grava em <code>reconciliation_runs</code>. <code>GET /admin/api/reconciliation</code> expõe o resultado.</p>
+</section>
+
+<section id="api-ativa">
+<h2>16. API ativa: introdução e autenticação</h2>
+<p>Base local: <code>http://localhost:4580</code>. Em produção, <code>PUBLIC_BASE_URL</code>. JSON em UTF-8; valores monetários são strings inteiras em unidades mínimas, nunca float.</p>
+<table>
+<thead><tr><th>Grupo</th><th>Prefixo</th><th>Credencial</th></tr></thead>
+<tbody>
+<tr><td>Loja</td><td><code>/v1/</code></td><td>API key + HMAC</td></tr>
+<tr><td>Operador</td><td><code>/admin/api/</code></td><td><code>Authorization: Bearer ADMIN_TOKEN</code></td></tr>
+<tr><td>LNbits</td><td><code>POST /webhooks/lnbits</code></td><td><code>?token=LNBITS_WEBHOOK_TOKEN</code></td></tr>
+<tr><td>Lunium</td><td><code>POST /webhooks/lunium</code></td><td>HMAC <code>X-Lunium-Signature</code></td></tr>
+<tr><td>Métricas</td><td><code>GET /metrics</code></td><td><code>Bearer METRICS_TOKEN</code> se configurado</td></tr>
+<tr><td>Probe</td><td><code>/health</code>, <code>/ready</code></td><td>Nenhuma</td></tr>
+</tbody>
+</table>
+<h3>Assinatura HMAC da API</h3>
+<pre><code>Authorization: Bearer mk_btc_live_...
+X-Timestamp: 1792700000
+X-Nonce: pedido-123-tentativa-1
+X-Signature: v1=&lt;hex&gt;
+Content-Type: application/json
+
+canonical =
+  METHOD + "\n" +
+  PATH   + "\n" +
+  TIMESTAMP + "\n" +
+  NONCE  + "\n" +
+  SHA256(raw_body)
+
+signature = HMAC-SHA256(request_secret, canonical)</code></pre>
+<ul>
+<li><code>PATH</code> sem query string.</li>
+<li>Timestamp com janela de 300s.</li>
+<li>Nonce de 8 a 128 caracteres, único por cliente, guardado por 10 minutos.</li>
+<li>Reuso de nonce retorna 401.</li>
+<li>O corpo assinado é o JSON exato enviado.</li>
+</ul>
+<h3>Escopos</h3>
+<table>
+<thead><tr><th>Escopo</th><th>Permite</th></tr></thead>
+<tbody>
+<tr><td><code>payments:write</code></td><td>Criar/cancelar intents e PIX; criar carteiras? Não: carteira tem escopo próprio.</td></tr>
+<tr><td><code>payments:read</code></td><td>Ler intents, PIX, taxas.</td></tr>
+<tr><td><code>wallets:read</code></td><td>Listar carteiras.</td></tr>
+<tr><td><code>wallets:write</code></td><td>Criar carteira BTC/USDC.</td></tr>
+<tr><td><code>balances:read</code></td><td>Ler saldos do ledger.</td></tr>
+<tr><td><code>conversions:read</code></td><td>Ler conversões.</td></tr>
+<tr><td><code>payouts:read</code></td><td>Ler payouts.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="api-erros">
+<h2>17. Erros, limites e idempotência</h2>
+<h3>Formato de erro</h3>
+<pre><code>{
+  "error": {
+    "code": "validation_error",
+    "message": "corpo invalido",
+    "details": []
+  }
+}</code></pre>
+<table>
+<thead><tr><th>HTTP</th><th>Code</th><th>Quando</th></tr></thead>
+<tbody>
+<tr><td>400</td><td><code>validation_error</code></td><td>Corpo/query/path inválido, valor fora da faixa, campos conflitantes.</td></tr>
+<tr><td>401</td><td><code>unauthorized</code></td><td>API key/HMAC/nonce/timestamp/token inválido.</td></tr>
+<tr><td>403</td><td><code>forbidden</code></td><td>Escopo ausente.</td></tr>
+<tr><td>404</td><td><code>not_found</code></td><td>Recurso inexistente ou de outro cliente.</td></tr>
+<tr><td>409</td><td><code>conflict</code></td><td>Idempotência divergente, estado incompatível, endereço já usado.</td></tr>
+<tr><td>413</td><td><code>bad_request</code></td><td>Corpo acima de 64 KiB.</td></tr>
+<tr><td>429</td><td>limite do Fastify</td><td>Rate limit por cliente/IP.</td></tr>
+<tr><td>502</td><td><code>upstream_error</code></td><td>LNbits/THORChain/Lunium falhou.</td></tr>
+<tr><td>503</td><td><code>service_unavailable</code></td><td>Serviço/feature desabilitado ou readiness falhou.</td></tr>
+</tbody>
+</table>
+<ul>
+<li>Corpo máximo: <strong>64 KiB</strong>.</li>
+<li>Rate limit padrão: <strong>120 requisições por 60s</strong> por cliente/IP; <code>/health</code> não conta.</li>
+<li>Idempotência principal: <code>external_id</code> por cliente, exceto PIX que usa tabela própria e provider external id.</li>
+<li>Timeout de webhook de saída: 10s; até 6 tentativas com backoff.</li>
+</ul>
+</section>
+
+<section id="api-intents">
+<h2>18. Cobranças Bitcoin</h2>
+<h3>POST /v1/payment-intents</h3>
+<p>Escopo: <code>payments:write</code>.</p>
+<table>
+<thead><tr><th>Campo</th><th>Tipo</th><th>Obrigatório</th><th>Regra</th></tr></thead>
+<tbody>
+<tr><td><code>external_id</code></td><td>string</td><td>sim</td><td>1–128 caracteres; único por cliente.</td></tr>
+<tr><td><code>amount_sats</code></td><td>string/integer</td><td>um dos dois</td><td>Inteiro positivo; string de dígitos ou número seguro.</td></tr>
+<tr><td><code>amount</code></td><td>string/number</td><td>um dos dois</td><td>Valor fiat com até 2 casas; exige <code>currency</code>.</td></tr>
+<tr><td><code>currency</code></td><td><code>BRL</code>/<code>USD</code></td><td>com amount</td><td>Moeda da cotação.</td></tr>
+<tr><td><code>description</code></td><td>string</td><td>não</td><td>Até 200 caracteres; label do BIP21.</td></tr>
+<tr><td><code>expires_in_seconds</code></td><td>integer</td><td>não</td><td>30–86.400.</td></tr>
+<tr><td><code>metadata</code></td><td>objeto</td><td>não</td><td>Livre; guardado.</td></tr>
+<tr><td><code>settlement</code></td><td>objeto</td><td>não</td><td><code>{asset:"USDC",chain:"base",wallet_id?}</code>.</td></tr>
+</tbody>
+</table>
+<pre><code>{
+  "external_id": "pedido-123",
+  "amount": "50.00",
+  "currency": "BRL",
+  "description": "Pedido 123",
+  "expires_in_seconds": 600
+}</code></pre>
+<h3>Resposta 201</h3>
+<pre><code>{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "status": "pendente",
+  "amount_sats": "10000",
+  "currency": "BRL",
+  "amount_fiat": "5000",
+  "settlement_status": "nao_iniciado",
+  "fx_quote": {
+    "id": "uuid",
+    "rate": "0.000000...",
+    "spread_bps": 100,
+    "expires_at": "2026-10-31T..."
+  },
+  "description": "Pedido 123",
+  "expires_at": "2026-10-31T...",
+  "grace_until": "2026-11-01T...",
+  "paid_at": null,
+  "paid_rail": null,
+  "paid_amount_sats": null,
+  "overpaid_sats": null,
+  "lightning": {
+    "invoice": "lnbc...",
+    "payment_hash": "...",
+    "expires_at": "2026-10-31T..."
+  },
+  "onchain": {
+    "address": "bc1q...",
+    "amount_btc": "0.00010000",
+    "bip21": "bitcoin:bc1q...?amount=0.00010000&lightning=lnbc..."
+  },
+  "payment_uri": "bitcoin:bc1q...",
+  "qr_svg": "&lt;svg ...&gt;",
+  "created_at": "...",
+  "updated_at": "..."
+}</code></pre>
+<h3>Status da intent</h3>
+<p><span class="status">criando</span> <span class="status">pendente</span> <span class="status">pago</span> <span class="status">pago_tardio</span> <span class="status">parcial</span> <span class="status">expirado</span> <span class="status">cancelado</span> <span class="status">reorg</span> <span class="status">falha_criacao</span></p>
+<h3>Consultas</h3>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Escopo</th><th>Observação</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/v1/payment-intents?external_id=...</code></td><td><code>payments:read</code></td><td>Busca idempotente por cliente.</td></tr>
+<tr><td>GET</td><td><code>/v1/payment-intents/:id</code></td><td><code>payments:read</code></td><td>Detalhe por UUID.</td></tr>
+<tr><td>POST</td><td><code>/v1/payment-intents/:id/cancel</code></td><td><code>payments:write</code></td><td>Somente <code>pendente</code>.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="api-pix">
+<h2>19. Cobranças PIX</h2>
+<h3>POST /v1/pix-charges</h3>
+<p>Escopo: <code>payments:write</code>.</p>
+<table>
+<thead><tr><th>Campo</th><th>Tipo</th><th>Obrigatório</th><th>Regra</th></tr></thead>
+<tbody>
+<tr><td><code>external_id</code></td><td>string</td><td>sim</td><td>1–128; único por cliente.</td></tr>
+<tr><td><code>amount</code></td><td>string/number</td><td>sim</td><td>Valor BRL com até 2 casas.</td></tr>
+<tr><td><code>currency</code></td><td><code>BRL</code></td><td>não</td><td>Default BRL.</td></tr>
+<tr><td><code>payer_tax_number</code></td><td>string</td><td>sim</td><td>CPF (11) ou CNPJ (14), dígitos; não persistido em claro.</td></tr>
+<tr><td><code>payer_name</code></td><td>string</td><td>não</td><td>Até 200.</td></tr>
+<tr><td><code>metadata</code></td><td>objeto</td><td>não</td><td>Livre.</td></tr>
+<tr><td><code>sandbox_scenario</code></td><td>string</td><td>não</td><td>Somente chave <code>lun_test_</code>.</td></tr>
+</tbody>
+</table>
+<pre><code>{
+  "external_id": "pedido-123",
+  "amount": "50.00",
+  "currency": "BRL",
+  "payer_tax_number": "00000000191",
+  "payer_name": "Cliente"
+}</code></pre>
+<h3>Resposta 201</h3>
+<pre><code>{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "provider": "lunium",
+  "provider_charge_id": "ci_...",
+  "status": "pendente",
+  "settlement_status": "nao_iniciado",
+  "amount_brl_cents": "5000",
+  "asset": "USDC",
+  "chain": "base",
+  "pix": {
+    "qr_copypaste": "000201...",
+    "qr_image_url": "https://...",
+    "qr_svg": null,
+    "expires_at": "2026-10-31T..."
+  },
+  "payout_id": null,
+  "error": null,
+  "created_at": "...",
+  "updated_at": "..."
+}</code></pre>
+<h3>Status PIX</h3>
+<p><span class="status">criando</span> <span class="status">pendente</span> <span class="status">pago</span> <span class="status">liquidado</span> <span class="status">expirado</span> <span class="status">reembolsado</span> <span class="status">falhou</span> <span class="status">incerto</span> <span class="status">manual</span></p>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Escopo</th><th>Observação</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/v1/pix-charges?external_id=...</code></td><td><code>payments:read</code></td><td>Busca por idempotência.</td></tr>
+<tr><td>GET</td><td><code>/v1/pix-charges/:id</code></td><td><code>payments:read</code></td><td>Detalhe.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="api-saldos">
+<h2>20. Saldos, conversões e payouts</h2>
+<h3>GET /v1/balances</h3>
+<p>Escopo: <code>balances:read</code>. Retorna contas do ledger da loja com <code>debit</code>, <code>credit</code> e <code>balance</code> como strings.</p>
+<pre><code>{
+  "merchant_id": "uuid",
+  "balances": [
+    {
+      "account_code": "merchant:uuid:usdc_available",
+      "asset": "USDC",
+      "kind": "liability",
+      "debit": "0",
+      "credit": "4494059",
+      "balance": "4494059"
+    }
+  ]
+}</code></pre>
+<h3>GET /v1/conversions e /v1/conversions/:id</h3>
+<p>Escopo: <code>conversions:read</code>. Lista/detalhe de ordens THORChain. O detalhe inclui <code>legs</code> com provider, status, txid, amounts e fees.</p>
+<pre><code>{
+  "id": "uuid",
+  "intent_id": "uuid",
+  "source_asset": "BTC",
+  "source_amount_sats": "100000",
+  "target_asset": "USDC",
+  "target_chain": "base",
+  "target_amount_minor": "50000000",
+  "provider": "thorchain",
+  "status": "convertida",
+  "txids": ["..."],
+  "legs": [
+    {
+      "leg": "thorchain",
+      "provider": "thorchain",
+      "status": "confirmado",
+      "txid": "...",
+      "provider_ref": "...",
+      "amount_in": "100000",
+      "amount_out": "50000000"
+    }
+  ]
+}</code></pre>
+<h3>GET /v1/payouts e /v1/payouts/:id</h3>
+<p>Escopo: <code>payouts:read</code>. Retorna payout USDC com <code>conversion_id</code> ou <code>pix_charge_id</code>, destino, status, txid e timestamps.</p>
+</section>
+
+<section id="api-carteiras">
+<h2>21. Carteiras e câmbio</h2>
+<h3>GET /v1/wallets</h3>
+<p>Escopo: <code>wallets:read</code>. Lista carteiras BTC/USDC da loja.</p>
+<h3>POST /v1/wallets</h3>
+<p>Escopo: <code>wallets:write</code>. Dois formatos:</p>
+<pre><code>{ "kind": "btc_deposit", "xpub": "xpub...", "derivation_prefix": "0" }</code></pre>
+<pre><code>{ "kind": "usdc_settlement", "address": "0x..." }</code></pre>
+<ul>
+<li>Endereço USDC é único por loja; mesmo endereço na mesma loja é idempotente; em outra loja é 409.</li>
+<li>Carteira BTC usa xpub BIP84 e deriva endereços por índice.</li>
+</ul>
+<h3>GET /v1/fx/rates</h3>
+<p>Escopo: <code>payments:read</code>. Retorna BTC/BRL e BTC/USD com <code>btc_price_cents</code>, <code>source</code> e <code>observed_at</code>.</p>
+</section>
+
+<section id="api-metrics">
+<h2>22. Métricas</h2>
+<p><code>GET /metrics</code> em formato Prometheus. Se <code>METRICS_TOKEN</code> estiver definido, exige <code>Authorization: Bearer ...</code>.</p>
+<pre><code>btc_payments_intents{status="..."}
+btc_payments_pix_charges{status="..."}
+btc_payments_pix_provider_events{status="pendente|processado"}
+btc_payments_pix_settlement_latency_seconds
+btc_payments_webhooks{status="..."}
+btc_payments_sweeps{status="..."}
+btc_payments_conversions{status="..."}
+btc_payments_payouts{status="..."}
+btc_payments_pending_intents
+btc_payments_due_webhooks
+btc_payments_active_sweeps
+btc_payments_ledger_balanced
+btc_payments_ledger_debit_minor{asset="BTC|BRL|USD|USDC"}
+btc_payments_ledger_credit_minor{asset="BTC|BRL|USD|USDC"}
+btc_payments_uptime_seconds
+btc_payments_scrape_timestamp_seconds</code></pre>
+</section>
+
+<section id="api-webhooks-entrada">
+<h2>23. Webhooks de entrada</h2>
+<h3>POST /webhooks/lnbits?token=...</h3>
+<ul>
+<li>Token comparado em tempo constante.</li>
+<li>Payload pode ser objeto ou string JSON.</li>
+<li>O status é sempre confirmado em <code>GET /api/v1/payments/{payment_hash}</code>.</li>
+<li>Resposta retorna <code>pago</code>, <code>ignorado</code>, <code>ja_processado</code> ou <code>desconhecido</code>.</li>
+</ul>
+<h3>POST /webhooks/lunium</h3>
+<ul>
+<li>Verifica <code>X-Lunium-Signature</code> sobre o corpo bruto.</li>
+<li>Confere <code>X-Lunium-Event-Id</code> com <code>event_id</code> do payload.</li>
+<li>Persiste em inbox antes de responder 2xx.</li>
+<li>Deduplica por <code>(provider, event_id)</code>.</li>
+<li>O worker consulta o estado canônico antes de creditar.</li>
+</ul>
+</section>
+
+<section id="api-admin">
+<h2>24. Admin</h2>
+<p>Todas exigem <code>Authorization: Bearer ADMIN_TOKEN</code>.</p>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/admin/api/clients</code></td><td>Cria cliente; devolve API key, request secret e webhook secret uma vez.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/clients</code></td><td>Lista clientes.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/status</code></td><td>Contagens, saúde LNbits/Esplora, xpub, signer, uptime.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/webhooks</code></td><td>Lista outbox.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/webhooks/:id/replay</code></td><td>Reenfileira webhook.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/sweeps</code></td><td>Lista sweeps.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/sweeps/:id/retry</code></td><td>Restaura UTXOs e tenta de novo, se a tx sumiu.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/merchants</code></td><td>Lista lojas.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/pix-charges</code></td><td>Lista cobranças PIX.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/pix-charges/:id/sync</code></td><td>Força conciliação com a Lunium.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/treasury</code></td><td>Lista carteiras de treasury.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/conversions</code></td><td>Lista conversões.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/conversions/:id/retry</code></td><td>Reenfileira conversão falha/manual.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/payouts</code></td><td>Lista payouts.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/payouts/:id/approve</code></td><td>Aprova payout retido/pendente.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/payouts/:id/retry</code></td><td>Reenvia payout falho/retido.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/reconciliation</code></td><td>Resultado atual do ledger.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/reconciliation/runs</code></td><td>Histórico de reconciliações.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="api-saude">
+<h2>25. Saúde e prontidão</h2>
+<table>
+<thead><tr><th>Rota</th><th>Resposta</th><th>Uso</th></tr></thead>
+<tbody>
+<tr><td><code>GET /health</code></td><td><code>{"ok":true,...}</code></td><td>Liveness; não depende de dependências externas.</td></tr>
+<tr><td><code>GET /ready</code></td><td>200 ou 503 com checks</td><td>DB, xpub, cold wallet, LNbits, Esplora e Lunium quando PIX ativo.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="api-webhooks-saida">
+<h2>26. Webhooks de saída para a loja</h2>
+<p>Assinatura:</p>
+<pre><code>X-Webhook-Signature: t=&lt;unix&gt;,v1=&lt;hex&gt;
+X-Webhook-Event: payment_intent.paid
+X-Webhook-Delivery: &lt;event_id&gt;
+Content-Type: application/json
+
+HMAC-SHA256(webhook_secret, "${timestamp}.${rawBody}")</code></pre>
+<table>
+<thead><tr><th>Grupo</th><th>Eventos</th></tr></thead>
+<tbody>
+<tr><td>Bitcoin</td><td><code>payment_intent.paid</code>, <code>paid_late</code>, <code>partial</code>, <code>expired</code>, <code>canceled</code>, <code>reorged</code></td></tr>
+<tr><td>Conversão</td><td><code>payment_intent.converted</code>, <code>conversion_failed</code>, <code>conversion_refunded</code></td></tr>
+<tr><td>Payout</td><td><code>payment_intent.payout_pending</code>, <code>payout_sent</code>, <code>payout_confirmed</code>, <code>payout_failed</code></td></tr>
+<tr><td>PIX</td><td><code>pix_charge.created</code>, <code>paid</code>, <code>settled</code>, <code>expired</code>, <code>refunded</code>, <code>failed</code>, <code>payout_pending</code>, <code>payout_sent</code>, <code>payout_confirmed</code>, <code>payout_failed</code></td></tr>
+</tbody>
+</table>
+<p>Payload base PIX:</p>
+<pre><code>{
+  "event": "pix_charge.settled",
+  "event_id": "uuid",
+  "created_at": "...",
+  "data": {
+    "id": "uuid",
+    "external_id": "pedido-123",
+    "provider_charge_id": "ci_...",
+    "status": "liquidado",
+    "settlement_status": "convertido",
+    "amount_brl_cents": "5000",
+    "asset": "USDC",
+    "chain": "base",
+    "asset_amount_minor": "4494059",
+    "settlement_tx_hash": "...",
+    "payout_id": null
+  }
+}</code></pre>
+<p>Entrega: outbox antes da primeira tentativa, backoff <code>60s, 5m, 30m, 2h, 6h, 24h</code>, dedupe por <code>event_id</code>. Resposta 2xx = entregue.</p>
+</section>
+
+<section id="portal">
+<h2>27. Portal do lojista e autenticação</h2>
+<p>Além da API HMAC, o serviço hospeda um portal estático para o lojista. Ele é
+uma camada sobre o mesmo motor (não custodia fundos): login, dashboard, lojas,
+carteiras, credenciais, relatórios e assinaturas.</p>
+<p>Entradas: <code>/login</code>, <code>/signup</code>, <code>/portal</code>
+(apontam para arquivos estáticos em <code>public/</code>). O frontend é vanilla,
+servido por <code>@fastify/static</code>.</p>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/auth/register</code></td><td>Cria conta + loja default (`unverified`) + membership `owner`; devolve credenciais 1x e token de verificação.</td></tr>
+<tr><td>POST</td><td><code>/auth/verify-email</code></td><td>Confirma o e-mail (token devolvido na resposta no MVP, sem SMTP).</td></tr>
+<tr><td>POST</td><td><code>/auth/login</code></td><td>Define cookie de sessão `portal_sid` + `portal_csrf`; devolve usuário e lojas.</td></tr>
+<tr><td>POST</td><td><code>/auth/logout</code></td><td>Revoga a sessão e limpa os cookies.</td></tr>
+<tr><td>GET</td><td><code>/auth/me</code></td><td>Usuário + lojas do usuário.</td></tr>
+<tr><td>POST</td><td><code>/auth/forgot-password</code> / <code>/auth/reset-password</code></td><td>Recuperação de senha (token na resposta no MVP).</td></tr>
+<tr><td>POST</td><td><code>/auth/change-password</code></td><td>Troca a senha (exige sessão + CSRF).</td></tr>
+<tr><td>GET / POST</td><td><code>/v1/portal/merchants</code></td><td>Lista lojas / cria loja nova (revela credenciais 1x).</td></tr>
+<tr><td>GET / PATCH</td><td><code>/v1/portal/merchants/:id</code></td><td>Detalhe e atualização (nome, <code>webhook_url</code>).</td></tr>
+<tr><td>GET/ POST/ DELETE</td><td><code>/v1/portal/merchants/:id/wallets</code></td><td>Carteiras BTC (xpub) e USDC (endereço).</td></tr>
+<tr><td>POST</td><td><code>/v1/portal/merchants/:id/api-key/rotate</code></td><td>Rotaciona API key (revela nova uma vez).</td></tr>
+<tr><td>POST</td><td><code>/v1/portal/merchants/:id/checkout</code></td><td>Cria checkout one-time (sats + descrição).</td></tr>
+<tr><td>GET</td><td><code>/v1/portal/merchants/:id/intents</code></td><td>Lista checkouts da loja.</td></tr>
+<tr><td>GET</td><td><code>/v1/portal/merchants/:id/reports/*</code></td><td>Relatórios (summary / by-rail / series).</td></tr>
+</tbody>
+</table>
+<h3>Identidade e sessão</h3>
+<ul>
+<li>Senhas com <code>crypto.scrypt</code> (N=2^17), salt por usuário.</li>
+<li>Sessão: token opaco de 32 bytes; o banco guarda só o SHA-256. Cookie
+<code>portal_sid</code> httpOnly/Secure/SameSite=Lax; revogável no logout.</li>
+<li>CSRF: token por sessão (cookie <code>portal_csrf</code>) exigido no header
+<code>X-CSRF-Token</code> das mutações.</li>
+<li>Login com throttle em memória por IP+e-mail (anti credential stuffing).</li>
+</ul>
+<h3>Lojas e isolamento</h3>
+<p>1 usuário pode ter N lojas via <code>merchant_members</code> (papel
+<code>owner|admin|member</code>). Toda rota <code>/v1/portal/merchants/:id</code>
+checa a membership: loja de outro usuário responde 403 (anti-IDOR).</p>
+<div class="callout good"><strong>Segredos:</strong> a loja criada no cadastro nasce
+sem <code>webhook_url</code>. O delivery descarta eventos de clientes sem webhook
+configurado. Configure o webhook no portal (validação SSRF + https em produção).</div>
+</section>
+
+<section id="checkout">
+<h2>28. Checkout público e snippet</h2>
+<p>Para quem não quer escrever backend, o motor entrega a página pronta e um
+snippet. O <code>id</code> da cobrança é o token público (não é adivinhável).</p>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/pay/:id</code></td><td>Página HTML pública: QR (BIP21 com <code>lightning=</code>), valor, status com poll.</td></tr>
+<tr><td>GET</td><td><code>/pay/:id/status</code></td><td>Status em JSON: <code>{ status, amount_sats, paid, paid_amount_sats, paid_at, expires_at }</code>.</td></tr>
+<tr><td>GET</td><td><code>/checkout.js</code></td><td>Snippet embutível.</td></tr>
+</tbody>
+</table>
+<p>Snippet:</p>
+<pre><code>&lt;script src="https://SEU-DOMINIO/checkout.js" defer&gt;&lt;/script&gt;
+&lt;button data-motor-checkout="&lt;id-da-cobranca&gt;"&gt;Pagar&lt;/button&gt;</code></pre>
+<p>Programático: <code>MotorCheckout.open('&lt;id&gt;')</code> abre a página em popup.</p>
+<p>A mesma cobrança também é acessível por API, com o HMAC descrito na seção 16.
+Guia passo a passo para o lojista: <a href="../services/btc-payments/docs/manual.md">manual.md</a>.</p>
+</section>
+
+<section id="recorrente">
+<h2>29. Assinaturas recorrentes</h2>
+<p>O motor não tem débito em conta: cada ciclo de assinatura gera uma <strong>nova
+cobrança</strong> que o cliente aprova. O job do worker <code>subscription-charge</code>
+gera, a cada ciclo, uma <code>payment_intent</code> e dispara o webhook normal.</p>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/v1/portal/merchants/:id/subscriptions</code></td><td>Cria plano (nome, sats, ciclo <code>day|week|month</code>).</td></tr>
+<tr><td>GET</td><td><code>/v1/portal/merchants/:id/subscriptions</code></td><td>Lista assinaturas.</td></tr>
+<tr><td>GET / PATCH</td><td><code>.../subscriptions/:subId</code></td><td>Detalhe / edita.</td></tr>
+<tr><td>POST</td><td><code>.../subscriptions/:subId/pause | resume | cancel</code></td><td>Pausa, retoma (reagenda), cancela.</td></tr>
+<tr><td>GET</td><td><code>.../subscriptions/:subId/charges</code></td><td>Histórico de ciclos.</td></tr>
+</tbody>
+</table>
+<p>Cada ciclo grava um <code>subscription_charge</code> ligado à intent, avança
+<code>next_charge_at</code> e usa <code>external_id</code> único por ciclo
+(<code>sub_&lt;id&gt;_&lt;fim&gt;</code>) com <code>metadata.subscription_id</code>. Se a
+cobrança não puder ser criada, a assinatura vira <code>falha</code> e o operador é
+alertado. Ciclos vencidos/cancelados são marcados <code>falhou</code> na conciliação.</p>
+</section>
+
+<section id="legado">
+<h2>30. Motor legado Polygon / Ramp</h2>
+<div class="callout warn"><strong>Legado:</strong> este motor não é o contrato atual. Ele permanece no repositório para consulta e não deve ser usado para integrações novas.</div>
+<p>O motor legado cria links de pagamento com perfil Ramp, deriva endereço HD, detecta depósitos de token na Polygon, varre o valor para uma carteira allowlisted e entrega webhooks <code>realizado</code>/<code>nao_realizado</code>. Ele tem página pública <code>/p/:token</code> e painel em <code>/admin/</code>.</p>
+<table>
+<thead><tr><th>Item</th><th>Valor</th></tr></thead>
+<tbody>
+<tr><td>Porta padrão</td><td><code>4578</code></td></tr>
+<tr><td>Entrada</td><td><code>src/server.ts</code></td></tr>
+<tr><td>Worker</td><td><code>src/worker/index.ts</code></td></tr>
+<tr><td>Schema</td><td><code>db/migrations/</code> e <code>src/core</code></td></tr>
+<tr><td>Auth API</td><td>API key + HMAC, mesmo formato canônico do motor ativo</td></tr>
+<tr><td>Auth admin</td><td>Bearer <code>ADMIN_TOKEN</code></td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="legado-api">
+<h2>31. Endpoints legados</h2>
+<h3>Público</h3>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>GET</td><td><code>/health</code></td><td>Liveness.</td></tr>
+<tr><td>GET</td><td><code>/p/:token</code></td><td>Página HTML pública do link.</td></tr>
+<tr><td>GET</td><td><code>/p/:token/status</code></td><td>Status público: estado, valor fiat, valor recebido, expiração.</td></tr>
+<tr><td>GET</td><td><code>/</code></td><td>Redireciona para <code>/admin/</code>.</td></tr>
+</tbody>
+</table>
+<h3>API do cliente (HMAC)</h3>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Corpo/consulta</th><th>Resposta</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/v1/links</code></td><td><code>external_id</code>, <code>amount_cents</code>, <code>ramp_profile_id</code>, <code>wallet_id</code>, <code>final_url?</code>; header <code>Idempotency-Key</code> opcional.</td><td><code>{data: linkDto, reused}</code></td></tr>
+<tr><td>GET</td><td><code>/v1/links/:id</code></td><td>UUID do link.</td><td><code>{data: linkDto}</code></td></tr>
+<tr><td>GET</td><td><code>/v1/links?limit=50</code></td><td>1–200.</td><td><code>{data: linkDto[]}</code></td></tr>
+<tr><td>POST</td><td><code>/v1/links/:id/revoke</code></td><td>UUID.</td><td><code>{data: linkDto}</code></td></tr>
+<tr><td>GET</td><td><code>/v1/ramp-profiles</code></td><td>—</td><td><code>{data: rampProfileDto[]}</code></td></tr>
+<tr><td>GET</td><td><code>/v1/wallets</code></td><td>—</td><td><code>{data: walletDto[]}</code></td></tr>
+</tbody>
+</table>
+<h3>Admin</h3>
+<table>
+<thead><tr><th>Método</th><th>Rota</th><th>Função</th></tr></thead>
+<tbody>
+<tr><td>POST/GET</td><td><code>/admin/api/clientes</code></td><td>Cria/lista clientes.</td></tr>
+<tr><td>GET/PATCH</td><td><code>/admin/api/clientes/:id</code></td><td>Detalhe/atualiza cliente.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/clientes/:id/rotate-key</code></td><td>Rotaciona API key/request secret.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/clientes/:id/rotate-webhook-secret</code></td><td>Rotaciona segredo de webhook.</td></tr>
+<tr><td>GET/POST</td><td><code>/admin/api/clientes/:id/wallets</code></td><td>Lista/adiciona carteira allowlisted.</td></tr>
+<tr><td>GET/POST</td><td><code>/admin/api/ramp-profiles</code></td><td>Lista/cria perfil Ramp.</td></tr>
+<tr><td>PATCH</td><td><code>/admin/api/ramp-profiles/:id</code></td><td>Atualiza perfil Ramp.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/links</code></td><td>Lista links.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/links/:id</code></td><td>Detalhe com pagamentos, transfers e webhooks.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/links/:id/revoke</code></td><td>Revoga link.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/webhooks</code></td><td>Lista outbox.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/webhooks/:id/replay</code></td><td>Reenfileira webhook.</td></tr>
+<tr><td>POST</td><td><code>/admin/api/sweeps/:id/submit</code></td><td>Submete raw transaction assinada.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/audit</code></td><td>Lista auditoria.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/alerts</code></td><td>Alertas operacionais e saldo do gas sponsor.</td></tr>
+<tr><td>GET</td><td><code>/admin/api/status</code></td><td>Resumo de clientes, perfis, links e webhooks.</td></tr>
+</tbody>
+</table>
+<h3>Webhooks legados</h3>
+<p>Assinatura e headers iguais aos do motor ativo:</p>
+<pre><code>X-Webhook-Signature: t=&lt;unix&gt;,v1=&lt;hex&gt;
+X-Webhook-Event: link.realizado | link.nao_realizado
+X-Webhook-Delivery: &lt;event_id&gt;
+HMAC-SHA256(webhook_secret, "${timestamp}.${rawBody}")</code></pre>
+<pre><code>{
+  "event": "link.realizado",
+  "event_id": "uuid",
+  "created_at": "...",
+  "data": {
+    "link_id": "uuid",
+    "external_id": "pedido-123",
+    "status": "pago",
+    "motivo_nao_realizado": null,
+    "valor_fiat_centavos": 5000,
+    "moeda_fiat": "BRL",
+    "valor_recebido_base_units": "180000",
+    "chain": "polygon",
+    "asset": "USDC",
+    "wallet_address": "0x...",
+    "expira_em": "...",
+    "liquidacao_ate": "..."
+  }
+}</code></pre>
+
+<h3>DTOs legados principais</h3>
+<pre><code>linkDto = {
+  id, external_id, status, motivo_nao_realizado,
+  valor_fiat_centavos, moeda_fiat, chain, asset,
+  token_contract, decimals, expected_base_units,
+  valor_recebido_base_units, endereco_deposito,
+  wallet_address, expira_em, liquidacao_ate,
+  reembolsado, criado_em, page_url?
+}
+
+walletDto = {
+  id, api_cliente_id, label, chain, address, criado_em
+}
+
+rampProfileDto = {
+  id, label, chain, asset, token_contract, decimals,
+  fiat_currency, base_url, param_style, host_app_name,
+  host_logo_url, ramp_asset_key,
+  taxa_token_por_fiat_base_units, criado_em
+}</code></pre>
+</section>
+
+<section id="modelo-dados">
+<h2>32. Modelo de dados do motor ativo</h2>
+<table>
+<thead><tr><th>Tabela</th><th>Responsabilidade</th></tr></thead>
+<tbody>
+<tr><td><code>api_clients</code></td><td>Lojas, hash da API key, segredos cifrados, escopos, limites, spread, batch.</td></tr>
+<tr><td><code>api_nonces</code></td><td>Nonces HMAC por cliente e expiração.</td></tr>
+<tr><td><code>merchant_wallets</code></td><td>Carteiras BTC de depósito e USDC de liquidação por loja.</td></tr>
+<tr><td><code>merchant_wallet_state</code></td><td>Índice HD e gap limit por carteira BTC.</td></tr>
+<tr><td><code>hd_wallet_state</code></td><td>Estado HD da carteira default e fingerprint do xpub.</td></tr>
+<tr><td><code>hd_addresses</code></td><td>Endereços derivados, intent associada, status.</td></tr>
+<tr><td><code>payment_intents</code></td><td>Cobranças Bitcoin, status, prazos, invoice, valores pagos e vínculo com conversão/payout.</td></tr>
+<tr><td><code>lightning_payments</code></td><td>Invoices, hash, valor, status e payload cru.</td></tr>
+<tr><td><code>onchain_payments</code></td><td>UTXOs observados, confirmações e reorg.</td></tr>
+<tr><td><code>onchain_sweeps</code></td><td>Sweeps, inputs, taxa, PSBT, raw, tentativas e RBF.</td></tr>
+<tr><td><code>webhook_events</code></td><td>Outbox de webhooks para loja, dedupe e retry.</td></tr>
+<tr><td><code>provider_events</code></td><td>Inbox de eventos de provider (THORChain/Lunium) e idempotência.</td></tr>
+<tr><td><code>audit_events</code></td><td>Auditoria de ações internas.</td></tr>
+<tr><td><code>reconciliation_runs</code></td><td>Histórico das reconciliações diárias.</td></tr>
+<tr><td><code>fx_rates</code></td><td>Taxas observadas BTC/BRL e BTC/USD.</td></tr>
+<tr><td><code>fx_quotes</code></td><td>Quotes fiat→BTC com spread, TTL e status.</td></tr>
+<tr><td><code>conversion_orders</code></td><td>Ordens BTC→USDC, provider, quote, inbound, memo e status.</td></tr>
+<tr><td><code>conversion_legs</code></td><td>Pernas da conversão (THORChain/CCTP/payout).</td></tr>
+<tr><td><code>pix_charges</code></td><td>Cobranças PIX, provider, QR, taxas, status e payout.</td></tr>
+<tr><td><code>payouts</code></td><td>Payouts USDC, origem (conversão/PIX), destino, txid, status.</td></tr>
+<tr><td><code>ledger_accounts</code></td><td>Plano de contas por código/ativo/loja.</td></tr>
+<tr><td><code>ledger_transactions</code></td><td>Cabeçalho idempotente de cada transação contábil.</td></tr>
+<tr><td><code>ledger_entries</code></td><td>Débitos e créditos por conta e ativo.</td></tr>
+<tr><td><code>treasury_wallets</code></td><td>Carteiras BTC hot/cold, USDC hot e gas Base.</td></tr>
+<tr><td><code>users</code></td><td>Conta do lojista (e-mail, hash scrypt, status, verificação).</td></tr>
+<tr><td><code>merchant_members</code></td><td>Participação de usuário em lojas (papel owner/admin/member).</td></tr>
+<tr><td><code>sessions</code></td><td>Sessões do portal (hash do token, CSRF, expiração, revogação).</td></tr>
+<tr><td><code>email_verification_tokens</code></td><td>Tokens de verificação de e-mail.</td></tr>
+<tr><td><code>password_reset_tokens</code></td><td>Tokens de recuperação de senha.</td></tr>
+<tr><td><code>subscriptions</code></td><td>Assinaturas recorrentes (valor em sats, ciclo, status, próximo ciclo).</td></tr>
+<tr><td><code>subscription_charges</code></td><td>Ciclos gerados de cada assinatura, ligados à intent.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="config">
+<h2>33. Configuração</h2>
+<p>O serviço ativo falha no boot se faltar variável obrigatória. Use <code>.env.example</code> como base e nunca commite segredos.</p>
+<table>
+<thead><tr><th>Grupo</th><th>Variáveis principais</th></tr></thead>
+<tbody>
+<tr><td>Servidor</td><td><code>NODE_ENV</code>, <code>PORT</code>, <code>HOST</code>, <code>PUBLIC_BASE_URL</code>, <code>ADMIN_TOKEN</code>, <code>CORS_ALLOWED_ORIGINS</code>, <code>TRUST_PROXY</code>, <code>SESSION_TTL_SECONDS</code></td></tr>
+<tr><td>Banco/crypto</td><td><code>DATABASE_URL</code>, <code>DATABASE_SSL</code>, <code>DATA_ENCRYPTION_KEY</code>, <code>KEYRING</code></td></tr>
+<tr><td>Bitcoin</td><td><code>BTC_NETWORK</code>, <code>BTC_XPUB</code>, <code>BTC_DERIVATION_PREFIX</code>, <code>BTC_MAX_INDEX</code>, <code>BTC_GAP_LIMIT</code></td></tr>
+<tr><td>LNbits/Esplora</td><td><code>LNBITS_URL</code>, <code>LNBITS_API_KEY</code>, <code>LNBITS_WEBHOOK_TOKEN</code>, <code>ESPLORA_URL</code></td></tr>
+<tr><td>Sweep/signer</td><td><code>SWEEP_ENABLED</code>, <code>COLD_WALLET_ADDRESS</code>, <code>TREASURY_BTC_ADDRESS</code>, <code>SIGNER_MODE</code>, <code>SIGNER_KEYSTORE_PATH</code>, <code>SIGNER_PASSPHRASE</code>, <code>SIGNER_REMOTE_URL</code></td></tr>
+<tr><td>Conversão</td><td><code>CONVERSION_ENABLED</code>, <code>THORCHAIN_URLS</code>, <code>CONVERSION_MIN_SATS</code>, <code>CONVERSION_SLIPPAGE_BPS</code>, <code>TREASURY_BTC_SIGNER_URL</code></td></tr>
+<tr><td>Payout</td><td><code>PAYOUT_ENABLED</code>, <code>BASE_RPC_URLS</code>, <code>BASE_USDC_ADDRESS</code>, <code>PAYOUT_HOT_ADDRESS</code>, <code>PAYOUT_SIGNER_URL</code>, <code>PAYOUT_MIN_GAS_WEI</code></td></tr>
+<tr><td>PIX</td><td><code>PIX_ENABLED</code>, <code>LUNIUM_API_URL</code>, <code>LUNIUM_API_KEY</code>, <code>LUNIUM_WEBHOOK_SECRET</code>, <code>PIX_MIN_BRL_CENTS</code></td></tr>
+<tr><td>Jobs/webhooks</td><td><code>JOBS_*</code> (inclui <code>JOBS_SUBSCRIPTION_MS</code>), <code>WEBHOOK_TIMEOUT_MS</code>, <code>WEBHOOK_MAX_ATTEMPTS</code></td></tr>
+<tr><td>Observabilidade</td><td><code>METRICS_TOKEN</code>, <code>ALERT_WEBHOOK_URL</code>, <code>ALERT_WEBHOOK_TOKEN</code></td></tr>
+</tbody>
+</table>
+<div class="callout warn"><strong>PIX:</strong> com <code>PIX_ENABLED=true</code>, são obrigatórios <code>LUNIUM_API_KEY</code>, <code>LUNIUM_WEBHOOK_SECRET</code> e uma treasury USDC (<code>TREASURY_USDC_ADDRESS</code> ou <code>PAYOUT_HOT_ADDRESS</code>).</div>
+</section>
+
+<section id="deploy">
+<h2>34. Deploy e topologia</h2>
+<pre><code>Internet
+  -> Caddy / proxy HTTPS
+  -> API btc-payments :4580
+  -> Worker btc-payments
+  -> Postgres
+  -> LNbits
+  -> Esplora/electrs -> Bitcoin Core
+
+Worker/API -> THORChain público
+Worker/API -> Base RPC público
+Worker/API -> Lunium
+Worker -> signer BTC remoto
+Worker/API -> signer de payout Base remoto</code></pre>
+<ul>
+<li>API e worker usam o mesmo Postgres e o mesmo <code>BTC_XPUB</code>.</li>
+<li>O signer BTC e o signer de payout ficam fora da API.</li>
+<li>Em produção, prefira <code>SIGNER_MODE=remote</code> e signer de payout remoto.</li>
+<li><code>TREASURY_BTC_ADDRESS</code>, <code>TREASURY_USDC_ADDRESS</code> e <code>GAS_BASE_ADDRESS</code> viram <code>treasury_wallets</code> no boot.</li>
+<li>O webhook da Lunium exige URL pública HTTPS.</li>
+<li><code>/metrics</code> deve ser exposto só em rede privada, VPN ou com token.</li>
+</ul>
+<h3>Backup e restore</h3>
+<pre><code>cd services/btc-payments
+BACKUP_KEYSTORE=1 npm run backup
+npm run backup:verify -- backups/btc-payments-....sql.gz
+npm run restore -- backups/btc-payments-....sql.gz</code></pre>
+<p>Guarde fora do servidor: dump do Postgres, keystore (se local), <code>BTC_XPUB</code>, mnemonic offline e endereço da carteira fria.</p>
+</section>
+
+<section id="observabilidade">
+<h2>35. Observabilidade</h2>
+<ul>
+<li>Logs Pino com redaction de segredos, CPF/CNPJ, chaves e descritores.</li>
+<li><code>GET /admin/api/status</code> para contagens e saúde.</li>
+<li><code>GET /metrics</code> para Prometheus.</li>
+<li>Alertas para job falho, sweep manual, pagamento duplicado, reorg, conversão/payout preso, PIX incerto/manual e ledger desbalanceado.</li>
+<li>Reconciliação diária em <code>reconciliation_runs</code>.</li>
+</ul>
+<pre><code>select status, count(*) from payment_intents group by status;
+select status, count(*) from pix_charges group by status;
+select status, count(*) from payouts group by status;
+select id, event_type, attempts, next_attempt_at, last_error
+  from webhook_events where status = 'pendente';</code></pre>
+</section>
+
+<section id="runbook">
+<h2>36. Runbook resumido</h2>
+<h3>LNbits indisponível</h3>
+<ul><li><code>/ready</code> fica 503; criação retorna 502; webhooks/conciliação voltam quando LNbits voltar.</li><li>Não marcar intent como paga sem confirmar no LNbits.</li></ul>
+<h3>Esplora indisponível</h3>
+<ul><li><code>onchain-watch</code> e <code>sweep</code> falham e alertam; Lightning continua.</li><li>Não reinicie o banco para “resolver”; ajuste o Esplora.</li></ul>
+<h3>Webhook falhando</h3>
+<pre><code>GET /admin/api/webhooks
+POST /admin/api/webhooks/:id/replay</code></pre>
+<h3>Sweep manual/falhou</h3>
+<ul><li>Se a tx não existe mais, <code>POST /admin/api/sweeps/:id/retry</code>.</li><li>Se está na mempool, espere o RBF; não reenvie manualmente.</li></ul>
+<h3>PIX incerto/manual</h3>
+<ul><li>Consulte <code>GET /admin/api/pix-charges</code>.</li><li>Use <code>POST /admin/api/pix-charges/:id/sync</code> para reconciliar.</li><li>Nunca crie outra cobrança após timeout; use o mesmo <code>external_id</code>.</li></ul>
+<h3>Payout preso</h3>
+<ul><li>Veja gas ETH na Base, allowlist, status e <code>last_error</code>.</li><li>Aprove/retry pelo admin se o estado permitir.</li></ul>
+</section>
+
+<section id="seguranca">
+<h2>37. Segurança</h2>
+<ul>
+<li>API key só é exibida uma vez; o banco guarda o hash.</li>
+<li>Request secret e webhook secret são cifrados em repouso.</li>
+<li>HMAC com timestamp de 300s e nonce único; nonce reutilizado é 401.</li>
+<li>Webhooks de saída assinados com HMAC; payload e assinatura verificáveis pelo cliente.</li>
+<li>Webhook Lunium verifica assinatura sobre raw body e deduplica por <code>event_id</code>.</li>
+<li>CPF/CNPJ do pagador PIX não é persistido em claro; logs têm redaction.</li>
+<li>Allowlist de carteira USDC e snapshot do destino no payout.</li>
+<li>Limites por payout, por dia e carência de carteira nova.</li>
+<li>Signer BTC/payout fora da API; raw transaction validada antes do broadcast.</li>
+<li>Nunca exponha <code>ADMIN_TOKEN</code>, <code>LUNIUM_API_KEY</code>, <code>SIGNER_PASSPHRASE</code> ou keystore.</li>
+<li>Portal: senha com scrypt (N=2^17), sessão por token opaco com hash, CSRF por sessão, throttle de login e isolamento entre lojas (anti-IDOR).</li>
+<li>Webhook URL validado contra SSRF (bloqueia IP privado, link-local e metadata; loopback só fora de produção).</li>
+<li>CPF/CNPJ do PIX usa blind index HMAC (não SHA-256 reversível).</li>
+<li>Em produção, <code>METRICS_TOKEN</code> é obrigatório (a rota <code>/metrics</code> não pode ficar aberta).</li>
+</ul>
+<div class="callout bad"><strong>Atenção operacional:</strong> o Tailscale Funnel usado em testes expõe portas publicamente. Desligue após os testes e mantenha apenas o caminho de webhook necessário.</div>
+</section>
+
+<section id="dev">
+<h2>38. Guia de desenvolvimento</h2>
+<h3>Subir localmente</h3>
+<pre><code>cd services/btc-payments
+cp .env.example .env
+docker compose up -d
+npm ci
+npm run migrate
+npm run dev      # API :4580
+npm run worker   # worker</code></pre>
+<h3>Comandos úteis</h3>
+<pre><code>npm run typecheck
+npm test
+npm run test:integration
+npm run build
+npm run migrate:generate -- --name minha_migration
+npm run wallet:init
+npm run wallet:base:init
+npm run client:create -- --name "Loja" --webhook-url "https://..."
+npm run intent:create</code></pre>
+<h3>Como adicionar um endpoint</h3>
+<ol>
+<li>Adicione schema Zod em <code>src/http/api-routes.ts</code>.</li>
+<li>Implemente o serviço em <code>src/services/</code> com dependências explícitas.</li>
+<li>Se precisar persistir, adicione tabela/colunas em <code>schema.ts</code> e uma migration.</li>
+<li>Adicione método no repositório e teste de integração.</li>
+<li>Adicione rota, escopo e tratamento de erro.</li>
+<li>Atualize <code>docs/API.md</code> e este HTML.</li>
+<li>Rode typecheck, unitários, integração e build.</li>
+</ol>
+<h3>Como adicionar um rail</h3>
+<ol>
+<li>Modele estados e transições em <code>domain/</code>.</li>
+<li>Crie adapter do provider com timeout, retry e erro tipado.</li>
+<li>Crie inbox/outbox idempotente se houver webhook.</li>
+<li>Defina a origem no ledger e o vínculo com payout.</li>
+<li>Adicione feature flag e validação de env.</li>
+<li>Escreva testes com provider fake; depois sandbox e real.</li>
+</ol>
+<h3>Migrations</h3>
+<pre><code>npm run migrate:generate -- --name descricao
+npm run migrate
+# revise o SQL gerado antes de commitar</code></pre>
+</section>
+
+<section id="testes">
+<h2>39. Testes</h2>
+<table>
+<thead><tr><th>Camada</th><th>Comando</th><th>O que cobre</th></tr></thead>
+<tbody>
+<tr><td>Unitários</td><td><code>npm test</code></td><td>Dinheiro, HMAC, config, estados, adapters com fake, ledger, métricas.</td></tr>
+<tr><td>Integração</td><td><code>TEST_DATABASE_URL=... npm run test:integration</code></td><td>Postgres real, API Fastify, webhooks, conversão, payout, PIX, reconciliação, auth/portal (registro, login, isolamento multi-loja).</td></tr>
+<tr><td>Typecheck</td><td><code>npm run typecheck</code></td><td>Tipos e contratos internos.</td></tr>
+<tr><td>Build</td><td><code>npm run build</code></td><td>Compilação de produção.</td></tr>
+<tr><td>Sandbox</td><td>Fluxo manual em <code>etapas-pix.md</code></td><td>Lunium sandbox, webhook, QR, ledger.</td></tr>
+<tr><td>Real</td><td><code>test-real.md</code></td><td>Quote/swap BTC, payout Base, PIX real e drills.</td></tr>
+</tbody>
+</table>
+<p>Última execução conhecida: typecheck OK, 81 testes unitários (22 arquivos), 57 testes de integração (skip sem <code>TEST_DATABASE_URL</code>), build OK.</p>
+</section>
+
+<section id="limitacoes">
+<h2>40. Limitações e pendências</h2>
+<ul>
+<li>Testes com dinheiro real de BTC, payout USDC e PIX ainda pendentes.</li>
+<li>Chave Lunium live depende de aprovação/KYB e dados reais da empresa.</li>
+<li>O swap BTC automático exige signer de treasury; a API não guarda a chave.</li>
+<li>O PIX do MVP não aplica spread próprio; a receita vem da comissão de parceiro da Lunium.</li>
+<li>PIX de saída, custódia BRL e multi-chain ampla estão fora do MVP.</li>
+<li>O motor Polygon/Ramp é legado e não deve receber novas integrações.</li>
+<li>Tailscale Funnel é apenas ferramenta de teste, não arquitetura de produção.</li>
+<li>Reorg de payout PIX/USDC após liquidação exige revisão manual.</li>
+<li>Envio de e-mail (verificação/recuperação) usa <code>NoopEmailSender</code>: o token é devolvido na resposta; plugar SMTP/Resend/SES antes de produção.</li>
+<li>O portal não faz envio de e-mail transacional nem 2FA no MVP.</li>
+</ul>
+</section>
+
+<section id="referencias">
+<h2>41. Referências internas</h2>
+<ul class="toc-inline">
+<li><a href="../README.md">README raiz</a></li>
+<li><a href="../docs/API.md">docs/API.md</a></li>
+<li><a href="../docs/guia.md">docs/guia.md</a></li>
+<li><a href="../services/btc-payments/README.md">README do serviço</a></li>
+<li><a href="../services/btc-payments/docs/api.md">docs/api.md</a></li>
+<li><a href="../services/btc-payments/docs/manual.md">docs/manual.md (manual do lojista)</a></li>
+<li><a href="../services/btc-payments/docs/checkout.md">docs/checkout.md</a></li>
+<li><a href="../services/btc-payments/docs/pix.md">docs/pix.md</a></li>
+<li><a href="../services/btc-payments/docs/webhooks.md">docs/webhooks.md</a></li>
+<li><a href="../services/btc-payments/docs/runbook.md">docs/runbook.md</a></li>
+<li><a href="../services/btc-payments/docs/observability.md">docs/observability.md</a></li>
+<li><a href="../services/btc-payments/docs/deployment.md">docs/deployment.md</a></li>
+<li><a href="../services/btc-payments/docs/onchain.md">docs/onchain.md</a></li>
+<li><a href="../services/btc-payments/docs/failure-drills.md">docs/failure-drills.md</a></li>
+<li><a href="../services/btc-payments/docs/drills-log.md">docs/drills-log.md</a></li>
+<li><a href="../test-real.md">test-real.md</a></li>
+<li><a href="../etapas-pix.md">etapas-pix.md</a></li>
+<li><a href="../etapas-portal.md">etapas-portal.md</a></li>
+<li><a href="../plano-estrutural.md">plano-estrutural.md</a></li>
+<li><a href="../web/docs/index.html">Livro HTML legado</a></li>
+</ul>
+<div class="footer">Documento gerado para uso interno. Se o código e este documento divergirem, considere o código e os testes como fonte de verdade e atualize este arquivo.</div>
+</section>
+</main>
+</div>
+<button class="top" onclick="scrollTo({top:0,behavior:'smooth'})" title="Voltar ao topo">↑</button>
+<script>
+(function(){
+  const input=document.getElementById('search');
+  const links=[...document.querySelectorAll('.nav a')];
+  input.addEventListener('input',()=>{
+    const q=input.value.trim().toLowerCase();
+    links.forEach(a=>{
+      const ok=!q || a.textContent.toLowerCase().includes(q) || (a.getAttribute('href')||'').toLowerCase().includes(q);
+      a.style.display=ok?'':'none';
+    });
+  });
+  input.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){
+      const first=links.find(a=>a.style.display!=='none');
+      if(first){location.hash=first.getAttribute('href'); first.click();}
+    }
+  });
+  document.addEventListener('keydown',e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();input.focus();}
+  });
+  const sections=[...document.querySelectorAll('main section[id]')];
+  const byId=new Map(links.map(a=>[a.getAttribute('href').slice(1),a]));
+  const obs=new IntersectionObserver(entries=>{
+    entries.forEach(en=>{
+      if(en.isIntersecting){
+        links.forEach(a=>a.classList.remove('active'));
+        const a=byId.get(en.target.id); if(a) a.classList.add('active');
+      }
+    });
+  },{rootMargin:'-20% 0px -70% 0px',threshold:0});
+  sections.forEach(s=>obs.observe(s));
+  document.querySelectorAll('pre').forEach(pre=>{
+    const b=document.createElement('button'); b.className='copy'; b.textContent='copiar';
+    b.addEventListener('click',async()=>{
+      try{await navigator.clipboard.writeText(pre.querySelector('code')?.innerText||pre.innerText);b.textContent='copiado';setTimeout(()=>b.textContent='copiar',1200);}catch{b.textContent='falhou';}
+    });
+    pre.appendChild(b);
+  });
+})();
+</script>
+</body>
+</html>
