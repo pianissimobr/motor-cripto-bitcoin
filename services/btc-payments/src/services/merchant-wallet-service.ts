@@ -11,8 +11,8 @@ import {
 } from '../db/schema.js';
 
 export type EnsureDefaultWalletInput = {
-  xpub: string;
-  xpubFingerprint: string;
+  xpub?: string;
+  xpubFingerprint?: string;
   derivationPrefix: string;
   network: string;
   gapLimit: number;
@@ -30,63 +30,66 @@ export type EnsureDefaultWalletInput = {
 export async function ensureDefaultWallets(
   db: Db,
   input: EnsureDefaultWalletInput,
-): Promise<{ btcDepositWalletId: string }> {
+): Promise<{ btcDepositWalletId: string | null }> {
   return db.transaction(async (tx) => {
-    const existingRows = await tx
-      .select({ id: merchantWallets.id })
-      .from(merchantWallets)
-      .where(
-        and(
-          eq(merchantWallets.kind, 'btc_deposit'),
-          isNull(merchantWallets.merchantId),
-        ),
-      )
-      .limit(1);
+    let walletId: string | null = null;
+    if (input.xpub && input.xpubFingerprint) {
+      const existingRows = await tx
+        .select({ id: merchantWallets.id })
+        .from(merchantWallets)
+        .where(
+          and(
+            eq(merchantWallets.kind, 'btc_deposit'),
+            isNull(merchantWallets.merchantId),
+          ),
+        )
+        .limit(1);
 
-    let walletId = existingRows[0]?.id;
-    if (!walletId) {
-      const inserted = await tx
-        .insert(merchantWallets)
+      walletId = existingRows[0]?.id ?? null;
+      if (!walletId) {
+        const inserted = await tx
+          .insert(merchantWallets)
+          .values({
+            merchantId: null,
+            kind: 'btc_deposit',
+            chain: 'bitcoin',
+            network: input.network,
+            address: 'default',
+            xpub: input.xpub,
+            derivationPrefix: input.derivationPrefix,
+            status: 'ativo',
+          })
+          .returning({ id: merchantWallets.id });
+        walletId = inserted[0]?.id ?? null;
+        if (!walletId) throw new Error('falha ao criar carteira BTC default');
+      }
+
+      const stateRows = await tx
+        .select({ nextReceiveIndex: hdWalletState.nextReceiveIndex })
+        .from(hdWalletState)
+        .limit(1);
+      const nextReceiveIndex = stateRows[0]?.nextReceiveIndex ?? 0;
+
+      await tx
+        .insert(merchantWalletState)
         .values({
-          merchantId: null,
-          kind: 'btc_deposit',
-          chain: 'bitcoin',
-          network: input.network,
-          address: 'default',
-          xpub: input.xpub,
-          derivationPrefix: input.derivationPrefix,
-          status: 'ativo',
+          walletId,
+          nextReceiveIndex,
+          gapLimit: input.gapLimit,
+          xpubFingerprint: input.xpubFingerprint,
         })
-        .returning({ id: merchantWallets.id });
-      walletId = inserted[0]?.id;
-      if (!walletId) throw new Error('falha ao criar carteira BTC default');
+        .onConflictDoNothing({ target: merchantWalletState.walletId });
+
+      await tx
+        .update(hdAddresses)
+        .set({ merchantWalletId: walletId })
+        .where(isNull(hdAddresses.merchantWalletId));
+
+      await tx
+        .update(paymentIntents)
+        .set({ merchantWalletId: walletId })
+        .where(isNull(paymentIntents.merchantWalletId));
     }
-
-    const stateRows = await tx
-      .select({ nextReceiveIndex: hdWalletState.nextReceiveIndex })
-      .from(hdWalletState)
-      .limit(1);
-    const nextReceiveIndex = stateRows[0]?.nextReceiveIndex ?? 0;
-
-    await tx
-      .insert(merchantWalletState)
-      .values({
-        walletId,
-        nextReceiveIndex,
-        gapLimit: input.gapLimit,
-        xpubFingerprint: input.xpubFingerprint,
-      })
-      .onConflictDoNothing({ target: merchantWalletState.walletId });
-
-    await tx
-      .update(hdAddresses)
-      .set({ merchantWalletId: walletId })
-      .where(isNull(hdAddresses.merchantWalletId));
-
-    await tx
-      .update(paymentIntents)
-      .set({ merchantWalletId: walletId })
-      .where(isNull(paymentIntents.merchantWalletId));
 
     const treasuryRows: Array<{
       kind: 'btc_hot' | 'btc_cold' | 'usdc_hot' | 'gas_base';

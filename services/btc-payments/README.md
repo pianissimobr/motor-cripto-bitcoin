@@ -37,6 +37,27 @@ Abra `http://localhost:4580/health` e `http://localhost:4580/ready`.
 
 O portal do lojista fica em `http://localhost:4580/portal` (cadastro e login).
 
+### Motores (trilhos)
+
+Você escolhe o que instalar no `.env`:
+
+| Flag | Liga/desliga |
+| --- | --- |
+| `LIGHTNING_ENABLED=true` | invoice Lightning via LNbits |
+| `ONCHAIN_ENABLED=true` | endereço BIP84 + Esplora + sweep |
+| `PIX_ENABLED=true` | cobrança PIX via Lunium |
+
+Com um motor `false`, as variáveis dele podem ficar vazias. O checkout público
+`/pay/:id` mostra **só os trilhos Bitcoin habilitados** (Lightning e/ou
+on-chain). O PIX continua no fluxo próprio (QR da Lunium).
+
+Para configurar de forma guiada:
+
+```bash
+python3 start.py                 # pergunta os motores e grava no .env
+python3 start.py --engines lightning,onchain --up
+```
+
 ### Carteira e sweep
 
 Para ativar o sweep automatico, gere a carteira BIP84 e o keystore cifrado:

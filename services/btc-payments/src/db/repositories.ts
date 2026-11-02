@@ -86,6 +86,7 @@ export type CreateIntentWithAddressInput = {
   currency?: 'BRL' | 'USD';
   amountFiat?: bigint;
   fxQuoteId?: string;
+  initialStatus?: 'criando' | 'pendente';
   deriveAddress: (index: number) => {
     address: string;
     derivationPath: string;
@@ -101,6 +102,18 @@ export type CreateIntentWithWalletAddressInput =
   CreateIntentWithAddressInput & {
     merchantWalletId: string;
   };
+
+export type CreateIntentLightningOnlyInput = Omit<
+  CreateIntentWithAddressInput,
+  'deriveAddress'
+> & {
+  merchantWalletId?: string;
+};
+
+export type CreatedIntent = {
+  intent: PaymentIntent;
+  address: HdAddress | null;
+};
 
 export type SetLightningInvoiceInput = {
   intentId: string;
@@ -637,6 +650,9 @@ export type Repositories = {
   createIntentWithAddress: (
     input: CreateIntentWithAddressInput,
   ) => Promise<CreatedIntentWithAddress>;
+  createIntentLightningOnly: (
+    input: CreateIntentLightningOnlyInput,
+  ) => Promise<CreatedIntent>;
   createIntentWithWalletAddress: (
     input: CreateIntentWithWalletAddressInput,
   ) => Promise<CreatedIntentWithAddress>;
@@ -659,7 +675,7 @@ export type Repositories = {
   setLightningInvoice: (
     input: SetLightningInvoiceInput,
   ) => Promise<PaymentIntent>;
-  markCreationFailed: (intentId: string, addressId: string) => Promise<void>;
+  markCreationFailed: (intentId: string, addressId: string | null) => Promise<void>;
   markIntentPaid: (input: MarkIntentPaidInput) => Promise<PaymentIntent | null>;
   addOnchainToLightningPaidIntent: (
     intentId: string,
@@ -1467,7 +1483,7 @@ export function createRepositories(db: Db): Repositories {
             externalId: input.externalId,
             amountSats: input.amountSats,
             description: input.description,
-            status: 'criando',
+            status: input.initialStatus ?? 'criando',
             expiresAt: input.expiresAt,
             graceUntil: input.graceUntil,
             onchainAddressId: address.id,
@@ -1533,7 +1549,7 @@ export function createRepositories(db: Db): Repositories {
             externalId: input.externalId,
             amountSats: input.amountSats,
             description: input.description,
-            status: 'criando',
+            status: input.initialStatus ?? 'criando',
             expiresAt: input.expiresAt,
             graceUntil: input.graceUntil,
             onchainAddressId: address.id,
@@ -1558,6 +1574,34 @@ export function createRepositories(db: Db): Repositories {
 
         return { intent, address: linkedAddress };
       });
+    },
+
+    async createIntentLightningOnly(input) {
+      const intentRows = await db
+        .insert(paymentIntents)
+        .values({
+          clientId: input.clientId,
+          externalId: input.externalId,
+          amountSats: input.amountSats,
+          description: input.description,
+          status: 'criando',
+          expiresAt: input.expiresAt,
+          graceUntil: input.graceUntil,
+          onchainAddressId: null,
+          ...(input.merchantWalletId
+            ? { merchantWalletId: input.merchantWalletId }
+            : {}),
+          ...(input.currency ? { currency: input.currency } : {}),
+          ...(input.amountFiat !== undefined
+            ? { amountFiat: input.amountFiat }
+            : {}),
+          ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
+          metadata: input.metadata,
+        })
+        .returning();
+      const intent = intentRows[0];
+      if (!intent) throw new Error('falha ao inserir intent');
+      return { intent, address: null };
     },
 
     async findIntentById(id) {
@@ -1721,7 +1765,7 @@ export function createRepositories(db: Db): Repositories {
         await tx
           .update(hdAddresses)
           .set({ status: 'abandonada' })
-          .where(eq(hdAddresses.id, addressId));
+          .where(addressId ? eq(hdAddresses.id, addressId) : sql`false`);
       });
     },
 

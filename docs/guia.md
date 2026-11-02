@@ -312,7 +312,11 @@ Só o token na query. O corpo é ignorado como prova. A prova é o GET no LNbits
 
 O arquivo de exemplo do serviço é `services/btc-payments/.env.example`. O `.env` da raiz do repositório é do motor antigo.
 
-Obrigatórios para a API subir: `ADMIN_TOKEN`, `DATABASE_URL`, `DATA_ENCRYPTION_KEY`, `BTC_NETWORK`, `BTC_XPUB`, `LNBITS_URL`, `LNBITS_API_KEY`, `LNBITS_WEBHOOK_TOKEN`, `ESPLORA_URL`. Com `SWEEP_ENABLED=true`, `COLD_WALLET_ADDRESS` tem de ser um endereço da mesma rede.
+Motores: `LIGHTNING_ENABLED`, `ONCHAIN_ENABLED` e `PIX_ENABLED`. Com um motor
+desligado, as variáveis dele podem ficar vazias. O checkout `/pay/:id` mostra
+só os trilhos Bitcoin habilitados; PIX tem fluxo próprio (QR da Lunium).
+
+Obrigatórios para a API subir: `ADMIN_TOKEN`, `DATABASE_URL`, `DATA_ENCRYPTION_KEY`, `BTC_NETWORK`; e, por motor ligado, `BTC_XPUB` + `ESPLORA_URL` (on-chain) ou `LNBITS_URL` + `LNBITS_API_KEY` + `LNBITS_WEBHOOK_TOKEN` (Lightning). Com `SWEEP_ENABLED=true`, `COLD_WALLET_ADDRESS` tem de ser um endereço da mesma rede.
 
 Em produção, além disso: `ADMIN_TOKEN` longo; signer local exige `SIGNER_PASSPHRASE`; signer remoto exige URL `https://` e `SIGNER_REMOTE_TOKEN`.
 

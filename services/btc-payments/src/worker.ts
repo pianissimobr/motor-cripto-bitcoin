@@ -47,7 +47,10 @@ export async function startWorker(): Promise<WorkerHandle> {
     pretty: !config.service.isProduction,
   });
 
-  const xpub = parseConfiguredXpub(config.btc.xpub, config.btc.network);
+  const xpub =
+    config.onchain.enabled && config.btc.xpub
+      ? parseConfiguredXpub(config.btc.xpub, config.btc.network)
+      : null;
   const treasuryBtcAddress =
     config.treasury.btcAddress ?? config.sweep.coldWalletAddress;
   if (config.sweep.enabled) {
@@ -56,21 +59,24 @@ export async function startWorker(): Promise<WorkerHandle> {
 
   const db = createDb(config.database);
   const repos = createRepositories(db.db);
-  await repos.initHdWalletState({
-    gapLimit: config.btc.gapLimit,
-    xpubFingerprint: xpub.fingerprint,
-  });
-  const state = await repos.getHdWalletState();
-  if (state && state.xpubFingerprint !== xpub.fingerprint) {
-    await db.close();
-    throw new Error(
-      'BTC_XPUB nao corresponde ao fingerprint gravado no banco. ' +
-        'Restaure o xpub original ou faça uma migracao consciente.',
-    );
+  if (xpub) {
+    await repos.initHdWalletState({
+      gapLimit: config.btc.gapLimit,
+      xpubFingerprint: xpub.fingerprint,
+    });
+    const state = await repos.getHdWalletState();
+    if (state && state.xpubFingerprint !== xpub.fingerprint) {
+      await db.close();
+      throw new Error(
+        'BTC_XPUB nao corresponde ao fingerprint gravado no banco. ' +
+          'Restaure o xpub original ou faça uma migracao consciente.',
+      );
+    }
   }
   await ensureDefaultWallets(db.db, {
-    xpub: config.btc.xpub,
-    xpubFingerprint: xpub.fingerprint,
+    ...(xpub && config.btc.xpub
+      ? { xpub: config.btc.xpub, xpubFingerprint: xpub.fingerprint }
+      : {}),
     derivationPrefix: config.btc.derivationPrefix,
     network: config.btc.network,
     gapLimit: config.btc.gapLimit,
@@ -91,17 +97,23 @@ export async function startWorker(): Promise<WorkerHandle> {
       : {}),
   });
 
-  const lnbits = new LnbitsClient({
-    url: config.lightning.url,
-    apiKey: config.lightning.apiKey,
-    timeoutMs: 10_000,
-    logger,
-  });
-  const esplora = new EsploraClient({
-    url: config.esplora.url,
-    timeoutMs: config.esplora.timeoutMs,
-    logger,
-  });
+  const lnbits =
+    config.lightning.enabled && config.lightning.url && config.lightning.apiKey
+      ? new LnbitsClient({
+          url: config.lightning.url,
+          apiKey: config.lightning.apiKey,
+          timeoutMs: 10_000,
+          logger,
+        })
+      : null;
+  const esplora =
+    config.onchain.enabled && config.esplora.url
+      ? new EsploraClient({
+          url: config.esplora.url,
+          timeoutMs: config.esplora.timeoutMs,
+          logger,
+        })
+      : null;
 
   const alerts = new AlertService({ ...config.alerts, logger });
   const paymentIntents = new PaymentIntentService({
@@ -118,13 +130,16 @@ export async function startWorker(): Promise<WorkerHandle> {
     logger,
     alerts,
   });
-  const onchainWatcher = new OnchainWatcher({
-    repos,
-    esplora,
-    config,
-    logger,
-    alerts,
-  });
+  const onchainWatcher =
+    config.onchain.enabled && esplora
+      ? new OnchainWatcher({
+          repos,
+          esplora,
+          config,
+          logger,
+          alerts,
+        })
+      : null;
   const webhookDelivery = new WebhookDeliveryService({
     repos,
     config,
@@ -132,7 +147,7 @@ export async function startWorker(): Promise<WorkerHandle> {
   });
   const ledger = new LedgerService(db.db);
 
-  const conversionService = config.conversion.enabled
+  const conversionService = config.conversion.enabled && config.onchain.enabled
     ? new ConversionService({
         repos,
         ledger,
@@ -148,7 +163,7 @@ export async function startWorker(): Promise<WorkerHandle> {
         alerts,
       })
     : null;
-  const treasuryService = config.conversion.enabled
+  const treasuryService = config.conversion.enabled && config.onchain.enabled
     ? new TreasuryService({
         repos,
         withdrawal: createLightningTreasuryWithdrawal(config),
@@ -206,7 +221,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     : null;
 
   let sweepService: SweepService | null = null;
-  if (config.sweep.enabled) {
+  if (config.sweep.enabled && xpub && esplora) {
     try {
       const signer = createSweepSigner(config);
       signer.verifyMatches?.(xpub, config.btc.network, config.btc.derivationPrefix);
@@ -229,19 +244,9 @@ export async function startWorker(): Promise<WorkerHandle> {
   const batch = config.jobs.batchSize;
   const jobs: Job[] = [
     {
-      name: 'lightning-reconcile',
-      intervalMs: config.jobs.lightningReconcileMs,
-      run: () => paymentIntents.reconcilePendingLightning(batch),
-    },
-    {
       name: 'expiry',
       intervalMs: config.jobs.expiryPollMs,
       run: () => paymentIntents.expireDueIntents(batch),
-    },
-    {
-      name: 'onchain-watch',
-      intervalMs: config.jobs.onchainPollMs,
-      run: () => onchainWatcher.runCycle(batch),
     },
     {
       name: 'webhook-delivery',
@@ -252,12 +257,32 @@ export async function startWorker(): Promise<WorkerHandle> {
         return { ...result, noncesRemovidos };
       },
     },
-    {
+  ];
+
+  if (config.lightning.enabled || config.onchain.enabled) {
+    jobs.push({
       name: 'subscription-charge',
       intervalMs: config.jobs.subscriptionMs,
       run: () => subscriptions.runCycle(batch),
-    },
-  ];
+    });
+  }
+
+  if (config.lightning.enabled) {
+    jobs.push({
+      name: 'lightning-reconcile',
+      intervalMs: config.jobs.lightningReconcileMs,
+      run: () => paymentIntents.reconcilePendingLightning(batch),
+    });
+  }
+
+  if (onchainWatcher) {
+    const watcher = onchainWatcher;
+    jobs.push({
+      name: 'onchain-watch',
+      intervalMs: config.jobs.onchainPollMs,
+      run: () => watcher.runCycle(batch),
+    });
+  }
 
   if (sweepService) {
     const service = sweepService;
@@ -322,7 +347,7 @@ export async function startWorker(): Promise<WorkerHandle> {
   logger.info(
     {
       network: config.btc.network,
-      xpubFingerprint: xpub.fingerprint,
+      xpubFingerprint: xpub?.fingerprint ?? null,
       signerMode: config.signer.mode,
       sweepEnabled: config.sweep.enabled,
       sweepJob: Boolean(sweepService),

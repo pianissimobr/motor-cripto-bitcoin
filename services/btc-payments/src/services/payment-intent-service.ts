@@ -12,6 +12,7 @@ import {
   AppError,
   ConflictError,
   NotFoundError,
+  ServiceUnavailableError,
   UpstreamError,
   ValidationError,
 } from '../domain/errors.js';
@@ -96,9 +97,9 @@ export type LightningWebhookResult = {
 
 export type PaymentIntentServiceDeps = {
   repos: Repositories;
-  lnbits: LnbitsClient;
+  lnbits: LnbitsClient | null;
   config: AppConfig;
-  xpub: AccountXpub;
+  xpub: AccountXpub | null;
   logger: Logger;
   alerts?: AlertService;
   now?: () => Date;
@@ -117,6 +118,12 @@ export class PaymentIntentService {
       throw new ValidationError('expires_in_seconds deve estar entre 30 e 86400');
     }
 
+    const lightningEnabled = this.deps.config.lightning.enabled;
+    const onchainEnabled = this.deps.config.onchain.enabled;
+    if (!lightningEnabled && !onchainEnabled) {
+      throw new ServiceUnavailableError('nenhum trilho Bitcoin habilitado');
+    }
+
     const existing = await this.deps.repos.findIntentByClientAndExternalId(
       input.clientId,
       input.externalId,
@@ -131,48 +138,77 @@ export class PaymentIntentService {
     const description = input.description?.trim() || null;
     const metadata = input.metadata ?? null;
 
-    const wallet = await this.resolveWallet(input.clientId, input.walletId);
-    const accountXpub = wallet
-      ? parseAccountXpub(wallet.xpub!, this.deps.config.btc.network)
-      : this.deps.xpub;
-    const derivationPrefix =
-      wallet?.derivationPrefix ?? this.deps.config.btc.derivationPrefix;
+    let wallet: MerchantWallet | null = null;
+    let accountXpub: AccountXpub | null = this.deps.xpub;
+    let derivationPrefix = this.deps.config.btc.derivationPrefix;
+    if (onchainEnabled) {
+      wallet = await this.resolveWallet(input.clientId, input.walletId);
+      accountXpub = wallet
+        ? parseAccountXpub(wallet.xpub!, this.deps.config.btc.network)
+        : this.deps.xpub;
+      if (!accountXpub) {
+        throw new ServiceUnavailableError('BTC_XPUB ausente para o on-chain');
+      }
+      derivationPrefix =
+        wallet?.derivationPrefix ?? this.deps.config.btc.derivationPrefix;
+    }
 
     let created;
     try {
-      const createInput = {
-        clientId: input.clientId,
-        externalId: input.externalId,
-        amountSats: input.amountSats,
-        description,
-        metadata,
-        expiresAt,
-        graceUntil,
-        maxIndex: this.deps.config.btc.maxIndex,
-        ...(input.currency ? { currency: input.currency } : {}),
-        ...(input.amountFiat !== undefined
-          ? { amountFiat: input.amountFiat }
-          : {}),
-        ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
-        deriveAddress: (index: number) => {
-          const derived = deriveAddress(
-            accountXpub,
-            index,
-            this.deps.config.btc.network,
-            derivationPrefix,
-          );
-          return {
-            address: derived.address,
-            derivationPath: derived.path,
-          };
-        },
-      };
-      created = wallet
-        ? await this.deps.repos.createIntentWithWalletAddress({
-            ...createInput,
-            merchantWalletId: wallet.id,
-          })
-        : await this.deps.repos.createIntentWithAddress(createInput);
+      if (onchainEnabled) {
+        const createInput = {
+          clientId: input.clientId,
+          externalId: input.externalId,
+          amountSats: input.amountSats,
+          description,
+          metadata,
+          expiresAt,
+          graceUntil,
+          maxIndex: this.deps.config.btc.maxIndex,
+          initialStatus: lightningEnabled
+            ? ('criando' as const)
+            : ('pendente' as const),
+          ...(input.currency ? { currency: input.currency } : {}),
+          ...(input.amountFiat !== undefined
+            ? { amountFiat: input.amountFiat }
+            : {}),
+          ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
+          deriveAddress: (index: number) => {
+            const derived = deriveAddress(
+              accountXpub!,
+              index,
+              this.deps.config.btc.network,
+              derivationPrefix,
+            );
+            return {
+              address: derived.address,
+              derivationPath: derived.path,
+            };
+          },
+        };
+        created = wallet
+          ? await this.deps.repos.createIntentWithWalletAddress({
+              ...createInput,
+              merchantWalletId: wallet.id,
+            })
+          : await this.deps.repos.createIntentWithAddress(createInput);
+      } else {
+        created = await this.deps.repos.createIntentLightningOnly({
+          clientId: input.clientId,
+          externalId: input.externalId,
+          amountSats: input.amountSats,
+          description,
+          metadata,
+          expiresAt,
+          graceUntil,
+          maxIndex: this.deps.config.btc.maxIndex,
+          ...(input.currency ? { currency: input.currency } : {}),
+          ...(input.amountFiat !== undefined
+            ? { amountFiat: input.amountFiat }
+            : {}),
+          ...(input.fxQuoteId ? { fxQuoteId: input.fxQuoteId } : {}),
+        });
+      }
     } catch (err) {
       const raced = await this.deps.repos.findIntentByClientAndExternalId(
         input.clientId,
@@ -191,14 +227,47 @@ export class PaymentIntentService {
       });
     }
 
+    if (!lightningEnabled) {
+      await this.deps.repos.insertAuditEvent({
+        actor: 'api',
+        action: 'intent.created',
+        entity: 'payment_intent',
+        entityId: created.intent.id,
+        metadata: {
+          externalId: created.intent.externalId,
+          amountSats: created.intent.amountSats.toString(),
+          rails: 'onchain',
+        },
+      });
+      this.deps.logger.info(
+        {
+          intentId: created.intent.id,
+          externalId: created.intent.externalId,
+          amountSats: created.intent.amountSats.toString(),
+          onchainOnly: true,
+        },
+        'cobranca criada',
+      );
+      return { dto: await this.toDto(created.intent), reused: false };
+    }
+
     const memo = (description ?? `Pedido ${input.externalId}`).slice(0, 200);
+    const webhookToken = this.deps.config.lightning.webhookToken;
+    const lnbits = this.deps.lnbits;
+    if (!lnbits || !webhookToken) {
+      await this.deps.repos.markCreationFailed(
+        created.intent.id,
+        created.address?.id ?? null,
+      );
+      throw new ServiceUnavailableError('LNbits indisponivel');
+    }
     const webhookUrl = buildLnbitsWebhookUrl(
       this.deps.config.lightning.webhookBaseUrl,
-      this.deps.config.lightning.webhookToken,
+      webhookToken,
     );
 
     try {
-      const invoice = await this.deps.lnbits.createInvoice({
+      const invoice = await lnbits.createInvoice({
         amountSats: input.amountSats,
         memo,
         expiry: ttl,
@@ -228,7 +297,7 @@ export class PaymentIntentService {
       return { dto: await this.toDto(updated), reused: false };
     } catch (err) {
       await this.deps.repos
-        .markCreationFailed(created.intent.id, created.address.id)
+        .markCreationFailed(created.intent.id, created.address?.id ?? null)
         .catch((markErr) => {
           this.deps.logger.error(
             { err: markErr, intentId: created.intent.id },
@@ -296,6 +365,10 @@ export class PaymentIntentService {
   async applyLightningPayment(
     paymentHash: string,
   ): Promise<LightningWebhookResult> {
+    const lnbits = this.deps.lnbits;
+    if (!this.deps.config.lightning.enabled || !lnbits) {
+      return { status: 'ignorado' };
+    }
     const intent = await this.deps.repos.findIntentByLightningPaymentHash(
       paymentHash,
     );
@@ -304,7 +377,7 @@ export class PaymentIntentService {
       return { status: 'ja_processado', id_transacao: intent.externalId };
     }
 
-    const payment = await this.deps.lnbits.getPayment(paymentHash);
+    const payment = await lnbits.getPayment(paymentHash);
     if (!payment.paid) return { status: 'ignorado' };
 
     const resolved = resolvePaidSats({
@@ -479,6 +552,9 @@ export class PaymentIntentService {
     paid: number;
     errors: number;
   }> {
+    if (!this.deps.config.lightning.enabled || !this.deps.lnbits) {
+      return { checked: 0, paid: 0, errors: 0 };
+    }
     const intents = await this.deps.repos.listPendingLightningIntents(limit);
     let paid = 0;
     let errors = 0;
@@ -648,6 +724,10 @@ export class PaymentIntentService {
         : Promise.resolve(null),
     ]);
 
+    const lightningUri = intent.lightningInvoice
+      ? `lightning:${intent.lightningInvoice}`
+      : null;
+
     let onchain: PaymentIntentOnchainDto | null = null;
     let qrSvg: string | null = null;
     if (address) {
@@ -665,6 +745,13 @@ export class PaymentIntentService {
         bip21,
       };
       qrSvg = await QRCode.toString(bip21, {
+        type: 'svg',
+        width: 320,
+        margin: 1,
+        errorCorrectionLevel: 'M',
+      });
+    } else if (lightningUri) {
+      qrSvg = await QRCode.toString(lightningUri, {
         type: 'svg',
         width: 320,
         margin: 1,
@@ -704,7 +791,7 @@ export class PaymentIntentService {
             }
           : null,
       onchain,
-      payment_uri: onchain?.bip21 ?? null,
+      payment_uri: onchain?.bip21 ?? lightningUri,
       qr_svg: qrSvg,
       created_at: intent.createdAt.toISOString(),
       updated_at: intent.updatedAt.toISOString(),

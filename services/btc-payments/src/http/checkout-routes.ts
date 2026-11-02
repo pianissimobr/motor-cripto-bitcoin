@@ -31,6 +31,14 @@ export function checkoutHtml(dto: Awaited<ReturnType<PaymentIntentService['getPu
   const uri = dto.payment_uri ?? '';
   const address = dto.onchain?.address ?? null;
   const invoice = dto.lightning?.invoice ?? null;
+  const railLabel =
+    address && invoice
+      ? 'Lightning ou on-chain'
+      : invoice
+        ? 'Lightning'
+        : address
+          ? 'On-chain'
+          : '';
 
   return `<!doctype html>
 <html lang="pt-BR">
@@ -46,6 +54,7 @@ export function checkoutHtml(dto: Awaited<ReturnType<PaymentIntentService['getPu
 <div class="card narrow" style="text-align:center">
   <h1>Pagamento</h1>
   <div class="muted">${escapeHtml(dto.description ?? '')}</div>
+  ${railLabel ? `<div class="muted">${escapeHtml(railLabel)}</div>` : ''}
   <div class="kpi"><div class="value">${escapeHtml(value)}</div><div class="label" id="status">${escapeHtml(status)}</div></div>
   ${qr ? `<div class="qr" style="margin:16px auto">${qr}</div>` : ''}
   ${uri ? `<pre class="creds" id="uri">${escapeHtml(uri)}</pre>` : ''}

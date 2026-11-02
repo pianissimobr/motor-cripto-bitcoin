@@ -39,7 +39,10 @@ export async function main(): Promise<void> {
     pretty: !config.service.isProduction,
   });
 
-  const xpub = parseConfiguredXpub(config.btc.xpub, config.btc.network);
+  const xpub =
+    config.onchain.enabled && config.btc.xpub
+      ? parseConfiguredXpub(config.btc.xpub, config.btc.network)
+      : null;
   const treasuryBtcAddress =
     config.treasury.btcAddress ?? config.sweep.coldWalletAddress;
   if (config.sweep.enabled) {
@@ -50,20 +53,23 @@ export async function main(): Promise<void> {
   const repos = createRepositories(db.db);
 
   try {
-    await repos.initHdWalletState({
-      gapLimit: config.btc.gapLimit,
-      xpubFingerprint: xpub.fingerprint,
-    });
-    const state = await repos.getHdWalletState();
-    if (state && state.xpubFingerprint !== xpub.fingerprint) {
-      throw new Error(
-        'BTC_XPUB nao corresponde ao fingerprint gravado no banco. ' +
-          'Restaure o xpub original ou faça uma migracao consciente.',
-      );
+    if (xpub) {
+      await repos.initHdWalletState({
+        gapLimit: config.btc.gapLimit,
+        xpubFingerprint: xpub.fingerprint,
+      });
+      const state = await repos.getHdWalletState();
+      if (state && state.xpubFingerprint !== xpub.fingerprint) {
+        throw new Error(
+          'BTC_XPUB nao corresponde ao fingerprint gravado no banco. ' +
+            'Restaure o xpub original ou faça uma migracao consciente.',
+        );
+      }
     }
     await ensureDefaultWallets(db.db, {
-      xpub: config.btc.xpub,
-      xpubFingerprint: xpub.fingerprint,
+      ...(xpub && config.btc.xpub
+        ? { xpub: config.btc.xpub, xpubFingerprint: xpub.fingerprint }
+        : {}),
       derivationPrefix: config.btc.derivationPrefix,
       network: config.btc.network,
       gapLimit: config.btc.gapLimit,
@@ -84,17 +90,25 @@ export async function main(): Promise<void> {
         : {}),
     });
 
-    const lnbits = new LnbitsClient({
-      url: config.lightning.url,
-      apiKey: config.lightning.apiKey,
-      timeoutMs: 10_000,
-      logger,
-    });
-    const esplora = new EsploraClient({
-      url: config.esplora.url,
-      timeoutMs: config.esplora.timeoutMs,
-      logger,
-    });
+    const lnbits =
+      config.lightning.enabled &&
+      config.lightning.url &&
+      config.lightning.apiKey
+        ? new LnbitsClient({
+            url: config.lightning.url,
+            apiKey: config.lightning.apiKey,
+            timeoutMs: 10_000,
+            logger,
+          })
+        : null;
+    const esplora =
+      config.onchain.enabled && config.esplora.url
+        ? new EsploraClient({
+            url: config.esplora.url,
+            timeoutMs: config.esplora.timeoutMs,
+            logger,
+          })
+        : null;
 
     const lunium =
       config.pix.enabled && config.pix.luniumApiKey
@@ -110,7 +124,7 @@ export async function main(): Promise<void> {
 
     const readiness = createReadiness({
       network: config.btc.network,
-      xpub,
+      ...(xpub ? { xpub } : {}),
       ...(config.treasury.btcAddress ?? config.sweep.coldWalletAddress
         ? {
             coldWalletAddress:
@@ -118,9 +132,11 @@ export async function main(): Promise<void> {
           }
         : {}),
       sweepEnabled: config.sweep.enabled,
+      lightningEnabled: config.lightning.enabled,
+      onchainEnabled: config.onchain.enabled,
       repos,
-      lnbits,
-      esplora,
+      ...(lnbits ? { lnbits } : {}),
+      ...(esplora ? { esplora } : {}),
       ...(lunium ? { lunium } : {}),
     });
 
@@ -141,7 +157,7 @@ export async function main(): Promise<void> {
     const wallets = new MerchantWalletService(db.db);
     const metrics = new MetricsService({ repos, ledger });
     const reports = new ReportService({ db: db.db });
-    const conversions = config.conversion.enabled
+    const conversions = config.conversion.enabled && config.onchain.enabled
       ? new ConversionService({
           repos,
           ledger,
@@ -223,12 +239,12 @@ export async function main(): Promise<void> {
         ...(payouts ? { payouts } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
-        esplora,
+        ...(esplora ? { esplora } : {}),
         getStatus: async () => {
           const [counts, lnbitsHealth, esploraHealth] = await Promise.all([
             repos.getStatusCounts(),
-            lnbits.health(),
-            esplora.health(),
+            lnbits ? lnbits.health() : Promise.resolve(null),
+            esplora ? esplora.health() : Promise.resolve(null),
           ]);
           return {
             ok: true,
@@ -236,7 +252,7 @@ export async function main(): Promise<void> {
             lnbits: lnbitsHealth,
             esplora: esploraHealth,
             network: config.btc.network,
-            xpubFingerprint: xpub.fingerprint,
+            xpubFingerprint: xpub?.fingerprint ?? null,
             signerMode: config.signer.mode,
             sweepEnabled: config.sweep.enabled,
             uptimeSeconds: Math.round(process.uptime()),
@@ -251,7 +267,7 @@ export async function main(): Promise<void> {
         port: config.server.port,
         host: config.server.host,
         network: config.btc.network,
-        xpubFingerprint: xpub.fingerprint,
+        xpubFingerprint: xpub?.fingerprint ?? null,
         sweepEnabled: config.sweep.enabled,
       },
       'btc-payments API no ar',

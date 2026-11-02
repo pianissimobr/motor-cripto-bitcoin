@@ -658,13 +658,12 @@ export function registerApiRoutes(
    * sempre confirmado em GET /api/v1/payments/{payment_hash}.
    */
   app.post('/webhooks/lnbits', async (request) => {
+    const token = services.config.lightning.webhookToken;
+    if (!services.config.lightning.enabled || !token) {
+      throw new ServiceUnavailableError('Lightning desabilitado');
+    }
     const query = parse(webhookQuerySchema, request.query, 'token');
-    if (
-      !timingSafeEqualString(
-        query.token,
-        services.config.lightning.webhookToken,
-      )
-    ) {
+    if (!timingSafeEqualString(query.token, token)) {
       throw new UnauthorizedError('token de webhook invalido');
     }
 

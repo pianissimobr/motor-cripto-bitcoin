@@ -82,7 +82,10 @@ const EnvSchema = z
     DATA_LEGACY_KID: z.string().optional(),
 
     BTC_NETWORK: BtcNetworkName.default('bitcoin'),
-    BTC_XPUB: z.string().min(1, 'BTC_XPUB obrigatorio (xpub de conta BIP84)'),
+    BTC_XPUB: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1, 'BTC_XPUB obrigatorio (xpub de conta BIP84)').optional(),
+    ),
     BTC_DERIVATION_PREFIX: z
       .string()
       .default('0')
@@ -98,21 +101,33 @@ const EnvSchema = z
     INTENT_GRACE_SECONDS: intFromEnv(86_400, 0),
     FX_QUOTE_TTL_SECONDS: intFromEnv(600, 30, 86_400),
 
+    ONCHAIN_ENABLED: boolFromEnv(true),
     ONCHAIN_CONFIRMATIONS: intFromEnv(1, 1),
     ONCHAIN_HIGH_VALUE_SATS: bigintFromEnv('1000000'),
     ONCHAIN_HIGH_VALUE_CONFIRMATIONS: intFromEnv(3, 1),
 
-    LNBITS_URL: httpUrl('LNBITS_URL invalida'),
-    LNBITS_API_KEY: z.string().min(1, 'LNBITS_API_KEY obrigatorio'),
-    LNBITS_WEBHOOK_TOKEN: z
-      .string()
-      .min(8, 'LNBITS_WEBHOOK_TOKEN precisa ter ao menos 8 caracteres'),
+    LIGHTNING_ENABLED: boolFromEnv(true),
+    LNBITS_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('LNBITS_URL invalida').optional(),
+    ),
+    LNBITS_API_KEY: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1, 'LNBITS_API_KEY obrigatorio').optional(),
+    ),
+    LNBITS_WEBHOOK_TOKEN: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(8, 'LNBITS_WEBHOOK_TOKEN precisa ter ao menos 8 caracteres').optional(),
+    ),
     LNBITS_WEBHOOK_BASE_URL: z.preprocess(
       (v) => (v === '' ? undefined : v),
       httpUrl('LNBITS_WEBHOOK_BASE_URL invalida').optional(),
     ),
 
-    ESPLORA_URL: httpUrl('ESPLORA_URL invalida'),
+    ESPLORA_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('ESPLORA_URL invalida').optional(),
+    ),
     ESPLORA_TIMEOUT_MS: intFromEnv(10_000, 1_000),
 
     SWEEP_ENABLED: boolFromEnv(true),
@@ -264,7 +279,34 @@ const EnvSchema = z
     ),
   })
   .superRefine((env, ctx) => {
-    if (env.SWEEP_ENABLED && !env.COLD_WALLET_ADDRESS && !env.TREASURY_BTC_ADDRESS) {
+    if (!env.LIGHTNING_ENABLED && !env.ONCHAIN_ENABLED && !env.PIX_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PIX_ENABLED'],
+        message:
+          'habilite ao menos um motor: LIGHTNING_ENABLED, ONCHAIN_ENABLED ou PIX_ENABLED',
+      });
+    }
+    if (env.LIGHTNING_ENABLED) {
+      if (!env.LNBITS_URL) {
+        ctx.addIssue({ code: 'custom', path: ['LNBITS_URL'], message: 'obrigatorio quando LIGHTNING_ENABLED=true' });
+      }
+      if (!env.LNBITS_API_KEY) {
+        ctx.addIssue({ code: 'custom', path: ['LNBITS_API_KEY'], message: 'obrigatorio quando LIGHTNING_ENABLED=true' });
+      }
+      if (!env.LNBITS_WEBHOOK_TOKEN) {
+        ctx.addIssue({ code: 'custom', path: ['LNBITS_WEBHOOK_TOKEN'], message: 'obrigatorio quando LIGHTNING_ENABLED=true' });
+      }
+    }
+    if (env.ONCHAIN_ENABLED) {
+      if (!env.BTC_XPUB) {
+        ctx.addIssue({ code: 'custom', path: ['BTC_XPUB'], message: 'obrigatorio quando ONCHAIN_ENABLED=true' });
+      }
+      if (!env.ESPLORA_URL) {
+        ctx.addIssue({ code: 'custom', path: ['ESPLORA_URL'], message: 'obrigatorio quando ONCHAIN_ENABLED=true' });
+      }
+    }
+    if (env.ONCHAIN_ENABLED && env.SWEEP_ENABLED && !env.COLD_WALLET_ADDRESS && !env.TREASURY_BTC_ADDRESS) {
       ctx.addIssue({
         code: 'custom',
         path: ['COLD_WALLET_ADDRESS'],
@@ -319,7 +361,7 @@ const EnvSchema = z
         message: 'em producao a rota /metrics nao pode ficar aberta',
       });
     }
-    if (env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
+    if (env.ONCHAIN_ENABLED && env.SWEEP_ENABLED && env.SIGNER_MODE === 'local' && !env.SIGNER_PASSPHRASE) {
       ctx.addIssue({
         code: 'custom',
         path: ['SIGNER_PASSPHRASE'],
@@ -388,20 +430,22 @@ export type AppConfig = {
     quoteTtlSeconds: number;
   };
   onchain: {
+    enabled: boolean;
     confirmations: number;
     highValueSats: bigint;
     highValueConfirmations: number;
     graceSeconds: number;
   };
   lightning: {
-    url: string;
-    apiKey: string;
-    webhookToken: string;
+    enabled: boolean;
+    url?: string;
+    apiKey?: string;
+    webhookToken?: string;
     webhookBaseUrl: string;
     ttlSeconds: number;
   };
   esplora: {
-    url: string;
+    url?: string;
     timeoutMs: number;
   };
   treasury: {
@@ -612,7 +656,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
     crypto,
     btc: {
       network: env.BTC_NETWORK,
-      xpub: env.BTC_XPUB,
+      xpub: env.BTC_XPUB ?? '',
       derivationPrefix: env.BTC_DERIVATION_PREFIX,
       maxIndex: env.BTC_MAX_INDEX,
       gapLimit: env.BTC_GAP_LIMIT,
@@ -621,15 +665,19 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       quoteTtlSeconds: env.FX_QUOTE_TTL_SECONDS,
     },
     onchain: {
+      enabled: env.ONCHAIN_ENABLED,
       confirmations: env.ONCHAIN_CONFIRMATIONS,
       highValueSats: env.ONCHAIN_HIGH_VALUE_SATS,
       highValueConfirmations: env.ONCHAIN_HIGH_VALUE_CONFIRMATIONS,
       graceSeconds: env.INTENT_GRACE_SECONDS,
     },
     lightning: {
-      url: env.LNBITS_URL.replace(/\/+$/, ''),
-      apiKey: env.LNBITS_API_KEY,
-      webhookToken: env.LNBITS_WEBHOOK_TOKEN,
+      enabled: env.LIGHTNING_ENABLED,
+      ...(env.LNBITS_URL ? { url: env.LNBITS_URL.replace(/\+$/, '') } : {}),
+      ...(env.LNBITS_API_KEY ? { apiKey: env.LNBITS_API_KEY } : {}),
+      ...(env.LNBITS_WEBHOOK_TOKEN
+        ? { webhookToken: env.LNBITS_WEBHOOK_TOKEN }
+        : {}),
       webhookBaseUrl: (env.LNBITS_WEBHOOK_BASE_URL ?? env.PUBLIC_BASE_URL).replace(
         /\/+$/,
         '',
@@ -637,7 +685,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       ttlSeconds: env.INTENT_TTL_SECONDS,
     },
     esplora: {
-      url: env.ESPLORA_URL.replace(/\/+$/, ''),
+      ...(env.ESPLORA_URL ? { url: env.ESPLORA_URL.replace(/\/+$/, '') } : {}),
       timeoutMs: env.ESPLORA_TIMEOUT_MS,
     },
     treasury: {
@@ -650,7 +698,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.GAS_BASE_ADDRESS ? { gasBaseAddress: env.GAS_BASE_ADDRESS } : {}),
     },
     sweep: {
-      enabled: env.SWEEP_ENABLED,
+      enabled: env.SWEEP_ENABLED && env.ONCHAIN_ENABLED,
       ...(env.COLD_WALLET_ADDRESS
         ? { coldWalletAddress: env.COLD_WALLET_ADDRESS }
         : {}),

@@ -43,12 +43,14 @@ worker ◄─────────────────┘
 
 ```bash
 cd services/btc-payments
-cp .env.example .env
+python3 start.py          # escolhe Lightning/on-chain/PIX e cria/valida o .env
 docker compose up -d
 npm install
 npm run migrate
 npm run dev
 ```
+
+`python3 start.py --up` já sobe o compose e aplica as migrations.
 
 Em outro terminal:
 
