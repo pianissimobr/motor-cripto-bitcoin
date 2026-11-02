@@ -89,6 +89,8 @@ th { color: var(--muted); font-weight: 600; }
 .erro { color: var(--bad); font-size: 13px; min-height: 18px; }
 .qr { max-width: 260px; }
 .hidden { display: none; }
+label.inline { display: flex; align-items: center; gap: 6px; }
+label.inline input { width: auto; margin: 0; }
 pre.creds {
   background: var(--bg);
   border: 1px solid var(--line);

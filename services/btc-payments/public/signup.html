@@ -17,7 +17,10 @@
     <h1>Criar conta</h1>
     <form id="signup-form">
       <label>E-mail<input id="email" type="email" autocomplete="username" required></label>
-      <label>Senha<input id="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Crie uma senha (mínimo 8 caracteres)<input id="password" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label>Repita a senha<input id="password2" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label class="inline"><input id="show-password" type="checkbox"> Mostrar senha</label>
+      <p class="muted">É com este e-mail e esta senha que você entra no portal.</p>
       <label>Nome da loja (opcional)<input id="merchant" maxlength="80" placeholder="Minha loja"></label>
       <button type="submit">Cadastrar</button>
     </form>

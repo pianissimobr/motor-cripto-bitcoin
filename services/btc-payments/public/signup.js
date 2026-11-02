@@ -4,6 +4,23 @@ const form = document.getElementById('signup-form');
 const erro = document.getElementById('erro');
 const resultado = document.getElementById('resultado');
 
+// As duas senhas precisam bater; "Mostrar senha" revela as duas.
+function wirePasswords() {
+  const a = document.getElementById('password');
+  const b = document.getElementById('password2');
+  document.getElementById('show-password')?.addEventListener('change', (e) => {
+    const type = e.target.checked ? 'text' : 'password';
+    a.type = type;
+    b.type = type;
+  });
+  return () => {
+    if (a.value.length < 8) return 'A senha precisa ter pelo menos 8 caracteres.';
+    if (a.value !== b.value) return 'As duas senhas não são iguais.';
+    return '';
+  };
+}
+const checkPasswords = wirePasswords();
+
 function escapeHtml(s) {
   return String(s)
     .replaceAll('&', '&amp;')
@@ -42,6 +59,11 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   erro.textContent = '';
   resultado.textContent = '';
+  const problema = checkPasswords();
+  if (problema) {
+    erro.textContent = problema;
+    return;
+  }
   const button = form.querySelector('button[type=submit]');
   button.disabled = true;
   try {
