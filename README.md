@@ -1,39 +1,45 @@
 # Motor Cripto
 
-Motor de pagamentos **Bitcoin**: Lightning via LNbits e on-chain watch-only
-(xpub BIP84 + Esplora). A loja cria uma cobrança, mostra o QR e recebe um
-webhook quando o pagamento chega a um estado final. O valor on-chain é varrido
-para a carteira fria do operador.
+Pagamentos em **Bitcoin** (Lightning e on-chain) e **PIX**, com liquidação em
+**USDC na Base** para a carteira que o lojista cadastra.
 
-A documentação técnica interna completa, em HTML navegável, está em
-[docs/index.html](docs/index.html). O livro de quem integra e de quem opera
-está em [web/docs/index.html](web/docs/index.html). O mapa do repositório, com
-o caminho de um pagamento, está em [docs/guia.md](docs/guia.md). O contrato
-HTTP, com corpos e códigos, está em [docs/API.md](docs/API.md).
+O produto é o serviço em [`services/btc-payments`](services/btc-payments): uma
+API HTTP, um worker e um portal do lojista. Ele cria a cobrança, mostra o QR,
+prova o pagamento na fonte (LNbits, Esplora ou Lunium) e avisa a loja por
+webhook. O motor Polygon/Ramp que ainda está na raiz é **legado** e não faz
+parte do contrato atual.
 
+## O que ele faz
+
+| Trilho | Entrada | Como prova | Liquidação |
+| --- | --- | --- | --- |
+| Lightning | invoice no LNbits (`lnbc...`) | `GET /api/v1/payments/{hash}` no LNbits | conversão THORChain → USDC na Base |
+| On-chain BTC | endereço BIP84 derivado do xpub + Esplora | UTXOs/confirmações no Esplora; sweep opcional | conversão THORChain → USDC na Base |
+| PIX | cobrança na Lunium (`qr_copypaste`) | webhook + consulta canônica na Lunium | treasury USDC → payout na Base |
+
+- **Portal do lojista**: `/login`, `/signup`, `/portal`, carteiras, relatórios e assinaturas.
+- **Checkout público**: `/pay/:id` e o snippet `/checkout.js`.
+- **Settlement**: o dinheiro cai na carteira `usdc_settlement` (`0x...` na Base) que a loja cadastra. O motor **não guarda** os dólares.
+- **API**: `/v1/*` com API key + HMAC; `/admin/api/*` com `ADMIN_TOKEN`.
+- **Worker**: conciliação Lightning, expiração, on-chain, webhooks, sweep, conversão, payout, PIX, assinaturas e reconciliação.
+
+## Arquitetura
+
+```text
+loja/API ──HMAC──► btc-payments (4580) ──► Postgres
+                         │
+                         ├──► LNbits ──► LND ──► rede Lightning
+                         ├──► Esplora (on-chain BTC)
+                         └──► Lunium (PIX)
+                         │
+worker ◄─────────────────┘
+   ├── prova o pagamento na fonte
+   ├── converte BTC → USDC (THORChain)
+   ├── payout USDC na Base (PAYOUT_ENABLED)
+   └── webhook assinado para a loja
 ```
-cliente da API
-   POST /v1/payment-intents  ->  invoice + endereço + QR
-                                      |
-                         Lightning (LNbits) ou on-chain (Esplora)
-                                      |
-                    pago / pago_tardio / expirado / parcial
-                                      |
-                                   webhook
-                                      |
-                    sweep on-chain para COLD_WALLET_ADDRESS
-```
 
-A API deste serviço escuta na porta **4580**. Além da API HMAC, hoje ele
-também hospeda:
-
-- o **portal do lojista** (`/login`, `/signup`, `/portal`);
-- a **página pública de checkout** (`/pay/:id`) e o snippet `checkout.js`;
-- **relatórios** e **assinaturas recorrentes** (`/v1/portal/...`).
-
-Ele não fala com a Ramp (isso é do motor antigo `src/`, porta 4578).
-
-## Subida local
+## Começar (local)
 
 ```bash
 cd services/btc-payments
@@ -50,26 +56,61 @@ Em outro terminal:
 npm run worker
 ```
 
-Abra `http://localhost:4580/health` e `http://localhost:4580/ready`.
+- `http://localhost:4580/health`
+- `http://localhost:4580/ready`
+- `http://localhost:4580/portal`
 
 Para o sweep, `npm run wallet:init` mostra o mnemonic uma vez e o `BTC_XPUB`.
-O xprv fica só no keystore. Detalhe de produção, backup e alertas:
-[services/btc-payments/docs/runbook.md](services/btc-payments/docs/runbook.md).
+O `xprv` fica só no keystore do worker.
 
-## Contrato em uma página
+## Produção
 
-| Quem | Auth | O que faz |
-|---|---|---|
-| Loja | API key + HMAC | `POST /v1/payment-intents` |
-| Operador | `ADMIN_TOKEN` | cria cliente, vê sweep e reenvia webhook |
-| LNbits | token na query | avisa invoice paga; o motor confirma na API do LNbits |
+O deploy de produção está documentado em
+[`services/btc-payments/docs/deployment.md`](services/btc-payments/docs/deployment.md)
+e no [`docker-compose.prod.yml`](services/btc-payments/docker-compose.prod.yml):
 
-Valor em satoshis, string inteira. Prazo padrão da invoice: 10 minutos.
-Carência on-chain: 24 horas. Confirmações: 1, ou 3 a partir de 1.000.000 sats.
+```bash
+cd services/btc-payments
+cp .env.production.example .env.production
+# edite DOMAIN, POSTGRES_*, ADMIN_TOKEN, DATA_ENCRYPTION_KEY, BTC_XPUB,
+# COLD_WALLET_ADDRESS, LNBITS_*, ESPLORA_URL, CONVERSION_*, PAYOUT_* e SIGNER_*
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml up -d --build
+```
 
-## Motor anterior
+O compose de produção usa Caddy para 80/443. Em host compartilhado que já tem
+nginx nessas portas, mantenha o nginx como borda e faça proxy para a API em
+`4580` (ver [runbook](services/btc-payments/docs/runbook.md)).
 
-`src/`, a porta 4578 e os arquivos `PLANO.md`, `projetoo.md` e
-`ENDURECIMENTO.md` descrevem o motor antigo de stablecoin na Polygon, com
-página Ramp. Esse código continua no repositório. Não é o contrato do livro
-nem o da API em `services/btc-payments`.
+## Repositório
+
+```text
+motor-cripto-bitcoin/
+├── services/btc-payments/   # o produto: API, worker, portal, migrations, docs
+├── docs/                    # contrato HTTP (API.md), mapa (guia.md) e livro HTML
+├── web/docs/                # livro HTML de integração e operação
+├── src/, db/, web/admin/    # motor Polygon/Ramp (legado)
+└── start.py, PLANO.md, ...  # bootstrap e decisões do motor legado
+```
+
+O motor **Polygon/Ramp** (`src/`, `db/`, `web/admin/`, `start.py`,
+`docker-compose.yml`, `PLANO.md`, `projetoo.md`, `ENDURECIMENTO.md`) é legado:
+não implementa `/v1/payment-intents` nem o fluxo atual. Ele está na raiz por
+enquanto e será movido para `legacy/` na próxima etapa da repaginada.
+
+## Documentação
+
+- [Serviço btc-payments](services/btc-payments/README.md) — subir, carteiras, API e worker.
+- [Manual do lojista](services/btc-payments/docs/manual.md) — integrar e operar.
+- [Contrato HTTP](docs/API.md) — corpos, códigos e autenticação.
+- [Mapa do repositório](docs/guia.md) — como o dinheiro anda no código.
+- [Deployment](services/btc-payments/docs/deployment.md) e [runbook](services/btc-payments/docs/runbook.md).
+- [PIX → USDC](services/btc-payments/docs/pix.md), [checkout](services/btc-payments/docs/checkout.md) e [webhooks](services/btc-payments/docs/webhooks.md).
+- Livro HTML: [docs/index.html](docs/index.html) e [web/docs/index.html](web/docs/index.html).
+
+## Segurança
+
+- A API não guarda seed nem `xprv`. O `xprv` do sweep fica no keystore do worker ou num signer remoto.
+- Segredos da loja são cifrados com AES-256-GCM.
+- Webhooks de entrada nunca são prova: o motor sempre confere na fonte (LNbits ou Lunium).
+- `ADMIN_TOKEN`, `METRICS_TOKEN`, `DATA_ENCRYPTION_KEY` e chaves de payout ficam só no `.env`/secret manager.

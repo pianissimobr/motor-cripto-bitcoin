@@ -2,14 +2,15 @@
 
 Este texto descreve o repositório inteiro: o que cada pasta faz, como um pagamento Bitcoin anda de ponta a ponta, onde cada regra mora no código e o que o serviço recusa fazer. O contrato HTTP, com corpos e códigos, está em [API.md](API.md). O mesmo conteúdo, no formato do livro, está em [web/docs/index.html](../web/docs/index.html).
 
-Há dois motores neste repositório. Só um é o contrato atual.
+Há dois motores neste repositório. Só `services/btc-payments` é o contrato
+atual; o Polygon/Ramp é **legado** e serve apenas de referência histórica.
 
-| Motor | Onde | Porta | O que faz |
-| --- | --- | --- | --- |
-| Bitcoin | `services/btc-payments` | 4580 | Cobrança em sats, Lightning (LNbits) e on-chain (xpub BIP84 + Esplora), webhook para a loja, sweep para uma carteira fria única |
-| Polygon / Ramp | `src/`, `web/admin/` | 4578 | Motor anterior de stablecoin. Página `/p/:token`, perfil de on-ramp, carteira allowlisted por cliente. Continua no git. Não implementa `/v1/payment-intents` |
+| Motor | Onde | Porta | Situação | O que faz |
+| --- | --- | --- | --- | --- |
+| Bitcoin + PIX | `services/btc-payments` | 4580 | **Atual** | Cobrança em sats (Lightning + on-chain), PIX, portal do lojista, checkout `/pay/:id`, conversão THORChain e payout USDC na Base |
+| Polygon / Ramp | `src/`, `web/admin/` | 4578 | **Legado** | Motor anterior de stablecoin. Página `/p/:token`, perfil de on-ramp, carteira allowlisted por cliente. Não implementa `/v1/payment-intents` |
 
-`PLANO.md`, `projetoo.md` e `ENDURECIMENTO.md` registram decisões daquele motor antigo. O banner no topo de cada um avisa isso. Não use esses arquivos para integrar a API Bitcoin.
+`PLANO.md`, `projetoo.md` e `ENDURECIMENTO.md` registram decisões daquele motor antigo. O banner no topo de cada um avisa isso. Não use esses arquivos para integrar a API atual.
 
 ---
 
@@ -17,19 +18,20 @@ Há dois motores neste repositório. Só um é o contrato atual.
 
 ```
 motor-cripto-bitcoin/
-├── services/btc-payments/     serviço Bitcoin (API, worker, schema, testes)
+├── services/btc-payments/     o produto: API, worker, portal, schema, testes
 │   ├── src/                   código TypeScript que sobe em produção
+│   ├── public/                portal, login, signup e snippet checkout.js
 │   ├── tests/                 unitários e integração (Postgres)
 │   ├── migrations/            SQL do Drizzle
-│   ├── docs/                  runbook, on-chain, webhooks, contrato curto
+│   ├── docs/                  manual, PIX, checkout, runbook, on-chain, webhooks
 │   ├── scripts/               seed de cliente, criar intent, init da carteira
-│   └── docker-compose.yml     Postgres e LNbits locais
-├── web/docs/                  livro HTML servido em /docs/ pelo processo antigo
-├── web/admin/                 painel do motor Polygon. Não opera o Bitcoin
+│   └── docker-compose.yml     Postgres, LNbits e bitcoind locais
+├── web/docs/                  livro HTML de integração e operação
 ├── docs/                      este guia e a referência de API
-├── src/                       motor Polygon (não é a API 4580)
-├── db/                        schema do motor Polygon
-└── start.py                   sobe o processo da porta 4578
+├── web/admin/                 painel do motor Polygon (legado)
+├── src/                       motor Polygon (legado; não é a API 4580)
+├── db/                        schema do motor Polygon (legado)
+└── start.py                   sobe o processo da porta 4578 (legado)
 ```
 
 Dentro de `services/btc-payments/src/`:
@@ -66,7 +68,13 @@ Quem paga pode usar Lightning ou a rede. O worker relê a fonte de cada trilho a
 
 O valor on-chain confirmado é varrido para `COLD_WALLET_ADDRESS`, uma carteira fria global. Não há carteira fria por loja. O que a operação enxerga de mistura é a soma de `paid_amount_sats` por cliente e por trilho, em `GET /admin/api/status`.
 
-Não há página de checkout hospedada. A loja mostra o QR no sistema dela.
+O serviço também hospeda a **página pública de checkout** em `/pay/:id` e o
+snippet `/checkout.js`. A loja pode mostrar o QR no próprio sistema ou abrir
+essa página.
+
+Além do Bitcoin, o serviço atende **PIX**: a cobrança é criada na Lunium e o
+valor é liquidado em **USDC na Base** na carteira `usdc_settlement` que a loja
+cadastra. O motor não guarda os dólares.
 
 ---
 
@@ -336,10 +344,10 @@ Testes: `npm test` não precisa de banco. `npm run test:integration` precisa de 
 
 ## 11. O que este serviço não faz
 
-- Não hospeda checkout e não tem `/p/:token`.
-- Não cotação em reais, não USDC, não gas em POL, não Ramp, não Transak.
-- Não separa a custódia por loja. A carteira fria e a wallet Lightning são únicas. A soma por cliente é relatório, não uma segunda carteira.
+- Não fala com Ramp/Transak. Isso é do motor Polygon legado (`src/`, porta 4578).
+- Não guarda os dólares do lojista: o settlement em USDC cai na carteira `usdc_settlement` cadastrada por ele.
+- A carteira fria BTC e a wallet Lightning são globais; o ledger separa `merchant:<id>:*` e o payout USDC é por loja.
 - Não varre um índice que o banco nunca alocou.
 - Não devolve sozinho um Lightning pago depois do cancelamento.
 - Não segue redirect no webhook de saída.
-- O painel em `web/admin/` fala com o motor da porta 4578, não com este.
+- O painel em `web/admin/` fala com o motor da porta 4578 (legado), não com este serviço.
