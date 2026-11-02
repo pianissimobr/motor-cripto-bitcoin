@@ -1,6 +1,6 @@
 # Como o repositório funciona
 
-Este texto descreve o repositório inteiro: o que cada pasta faz, como um pagamento Bitcoin anda de ponta a ponta, onde cada regra mora no código e o que o serviço recusa fazer. O contrato HTTP, com corpos e códigos, está em [API.md](API.md). O mesmo conteúdo, no formato do livro, está em [web/docs/index.html](../web/docs/index.html).
+Este texto descreve o repositório inteiro: o que cada pasta faz, como um pagamento Bitcoin anda de ponta a ponta, onde cada regra mora no código e o que o serviço recusa fazer. O contrato HTTP, com corpos e códigos, está em [API.md](API.md). O livro HTML, com a mesma matéria, está em [index.html](index.html).
 
 Há dois motores neste repositório. Só `services/btc-payments` é o contrato
 atual; o Polygon/Ramp é **legado** e serve apenas de referência histórica.
@@ -26,7 +26,6 @@ motor-cripto-bitcoin/
 │   ├── docs/                  manual, PIX, checkout, runbook, on-chain, webhooks
 │   ├── scripts/               seed de cliente, criar intent, init da carteira
 │   └── docker-compose.yml     Postgres, LNbits e bitcoind locais
-├── web/docs/                  livro HTML de integração e operação
 ├── docs/                      este guia e a referência de API
 ├── legacy/web/admin/          painel do motor Polygon (legado)
 ├── legacy/src/                motor Polygon (legado; não é a API 4580)

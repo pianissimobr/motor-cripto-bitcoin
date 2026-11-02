@@ -2,7 +2,7 @@
 
 Base local: `http://localhost:4580`. Em produção, `PUBLIC_BASE_URL` do `services/btc-payments/.env`.
 
-Este documento é o contrato. O mapa do código e o caminho de um pagamento estão em [guia.md](guia.md). O livro HTML, com a mesma matéria, começa em [web/docs/index.html](../web/docs/index.html).
+Este documento é o contrato. O mapa do código e o caminho de um pagamento estão em [guia.md](guia.md). O livro HTML, com a mesma matéria, está em [index.html](index.html).
 
 Datas saem em ISO-8601 UTC. Satoshis saem como string decimal sem ponto. Nada neste contrato usa float.
 
@@ -500,4 +500,4 @@ Não existem, e devolvem 404:
 - `/admin/api/ramp-profiles`
 - qualquer rota de cotação, carteira allowlisted ou centavos de real
 
-Essas rotas são do motor em `src/`, porta 4578. O livro em `web/docs/` pode ser servido por aquele processo em `/docs/`, mas o conteúdo do livro é este serviço, na porta 4580.
+Essas rotas são do motor legado em `legacy/src/`, porta 4578. O livro atual está em `docs/index.html`.

@@ -1,7 +1,7 @@
 # Endurecimento do Motor Cripto
 
 > Histórico. As frentes abaixo são do motor Polygon/Ramp em `src/`.
-> O serviço atual de Bitcoin está em `services/btc-payments`. O livro dele é `web/docs/index.html`.
+> O serviço atual de Bitcoin está em `services/btc-payments`. O livro dele é `../docs/index.html`.
 
 > Plano de ataque às classes de bugs reveladas pela primeira entrega e
 > às limitações registradas no `README.md`. Frentes ordenadas por risco

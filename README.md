@@ -88,7 +88,6 @@ nginx nessas portas, mantenha o nginx como borda e faça proxy para a API em
 motor-cripto-bitcoin/
 ├── services/btc-payments/   # o produto: API, worker, portal, migrations, docs
 ├── docs/                    # contrato, mapa, livro HTML, planejamento e referências
-├── web/docs/                # livro HTML de integração e operação
 └── legacy/                  # motor Polygon/Ramp arquivado (não é o contrato atual)
 ```
 
@@ -105,7 +104,7 @@ O motor **Polygon/Ramp** (`legacy/src/`, `legacy/db/`, `legacy/web/admin/`,
 - [Mapa do repositório](docs/guia.md) — como o dinheiro anda no código.
 - [Deployment](services/btc-payments/docs/deployment.md) e [runbook](services/btc-payments/docs/runbook.md).
 - [PIX → USDC](services/btc-payments/docs/pix.md), [checkout](services/btc-payments/docs/checkout.md) e [webhooks](services/btc-payments/docs/webhooks.md).
-- Livro HTML: [docs/index.html](docs/index.html) e [web/docs/index.html](web/docs/index.html).
+- Livro HTML: [docs/index.html](docs/index.html).
 
 ## Segurança
 

@@ -1,7 +1,7 @@
 # Descrição Executiva – Sistema de Pagamentos com Ramp (Link Pessoal) + HD Wallet + Automação On-Chain
 
 > Histórico. Este texto é o desenho do motor Polygon/Ramp, não do serviço Bitcoin.
-> O serviço atual está em `services/btc-payments`. O livro dele é `web/docs/index.html`.
+> O serviço atual está em `services/btc-payments`. O livro dele é `../docs/index.html`.
 
 ## 1. Objetivo
 
