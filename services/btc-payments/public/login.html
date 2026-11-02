@@ -21,6 +21,15 @@
       <button type="submit">Entrar</button>
     </form>
     <p id="erro" class="erro"></p>
+    <div id="verify-box" class="hidden">
+      <p class="muted">Enviamos um código de 6 dígitos para o seu e-mail no cadastro. Se ele expirou ou não chegou, peça outro.</p>
+      <button type="button" id="resend" class="ghost">Reenviar código</button>
+      <form id="verify-form">
+        <label>Código<input id="verify-code" inputmode="numeric" maxlength="6" required></label>
+        <button type="submit">Confirmar e entrar</button>
+      </form>
+      <p id="verify-status" class="muted"></p>
+    </div>
     <p class="muted">Não tem conta? <a href="/signup.html">Cadastre-se</a> · <a href="/forgot.html">Esqueci a senha</a></p>
   </section>
 </main>

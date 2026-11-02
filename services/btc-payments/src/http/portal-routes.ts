@@ -341,6 +341,19 @@ export function registerPortalRoutes(
     return { ok: true };
   });
 
+  // Gera as tres credenciais da loja (API key, request secret, webhook
+  // secret) e as mostra uma unica vez. As anteriores deixam de valer.
+  app.post('/v1/portal/merchants/:id/credentials', async (request) => {
+    const { id } = parse(idParamsSchema, request.params, 'params');
+    const userId = await memberOrThrow(request, id, true);
+    const created = await deps.clients.rotateCredentials(id, `portal:${userId}`);
+    return {
+      api_key: created.apiKey,
+      request_secret: created.requestSecret,
+      webhook_secret: created.webhookSecret,
+    };
+  });
+
   app.post('/v1/portal/merchants/:id/api-key/rotate', async (request) => {
     const { id } = parse(idParamsSchema, request.params, 'params');
     await memberOrThrow(request, id, true);

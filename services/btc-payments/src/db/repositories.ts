@@ -431,7 +431,12 @@ export type Repositories = {
 
   rotateClientKey: (
     id: string,
-    input: { apiKeyHash: string; apiKeyPrefix: string; requestSecretEnc: string },
+    input: {
+      apiKeyHash: string;
+      apiKeyPrefix: string;
+      requestSecretEnc: string;
+      webhookSecretEnc?: string;
+    },
   ) => Promise<ApiClient | null>;
 
   listIntentsForClient: (clientId: string, limit: number) => Promise<PaymentIntent[]>;
@@ -1147,6 +1152,7 @@ export function createRepositories(db: Db): Repositories {
           apiKeyHash: input.apiKeyHash,
           apiKeyPrefix: input.apiKeyPrefix,
           requestSecretEnc: input.requestSecretEnc,
+          ...(input.webhookSecretEnc ? { webhookSecretEnc: input.webhookSecretEnc } : {}),
           updatedAt: new Date(),
         })
         .where(eq(apiClients.id, id))

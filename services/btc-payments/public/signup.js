@@ -29,9 +29,12 @@ async function confirmCode(email, requestId) {
       }),
     });
     const body = await res.json().catch(() => ({}));
-    status.textContent = res.ok
-      ? 'E-mail confirmado. Já pode entrar.'
-      : (body?.error?.message ?? 'Código inválido');
+    if (res.ok) {
+      status.innerHTML = 'E-mail confirmado. <a href="/login.html">Entrar no portal</a>';
+      document.getElementById('verify-form').classList.add('hidden');
+      return;
+    }
+    status.textContent = body?.error?.message ?? 'Código inválido';
   });
 }
 
@@ -59,13 +62,14 @@ form.addEventListener('submit', async (e) => {
       erro.textContent = body?.error?.message ?? 'Falha ao cadastrar';
       return;
     }
+    // Nenhuma credencial aqui: elas sao geradas no portal, depois que o
+    // e-mail estiver confirmado.
+    form.classList.add('hidden');
     resultado.innerHTML =
-      'Conta criada. Guarde suas credenciais da API (são mostradas uma única vez).<br>' +
-      `<pre class="creds">${escapeHtml(JSON.stringify(body.merchant, null, 2))}</pre>` +
+      'Conta criada. Confirme o seu e-mail para entrar; as credenciais da API são geradas dentro do portal.' +
       (body.verification_token
-        ? `Token de verificação (dev): <code>${escapeHtml(body.verification_token)}</code>. `
-        : '') +
-      '<a href="/login.html">Ir para o login</a>';
+        ? `<br>Token de verificação (dev): <code>${escapeHtml(body.verification_token)}</code>`
+        : '');
     if (body.verification_request_id) {
       await confirmCode(email, body.verification_request_id);
     }

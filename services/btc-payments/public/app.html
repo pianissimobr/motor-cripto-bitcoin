@@ -68,6 +68,14 @@
   </div>
 
   <div class="card">
+    <h2>Credenciais da API</h2>
+    <p class="muted">Para integrar o seu site (API key + HMAC). Os segredos aparecem uma única vez, quando você gera; gerar de novo invalida os anteriores na hora.</p>
+    <p class="muted">API key atual: <code id="api-key-prefix">—</code></p>
+    <button type="button" id="gen-credentials">Gerar credenciais</button>
+    <pre id="credentials-out" class="creds hidden"></pre>
+  </div>
+
+  <div class="card">
     <h2>Webhook da loja</h2>
     <p class="muted">URL que recebe os avisos de pagamento e de liquidação (<code>payment_intent.*</code>, <code>pix_charge.*</code>). Sem ela, os eventos são descartados.</p>
     <form id="webhook-form" class="row">
@@ -111,7 +119,7 @@
     </details>
     <details>
       <summary>Onde estão a API key e os secrets?</summary>
-      <p class="muted">Eles aparecem uma única vez, na criação da loja. Depois você só enxerga o prefixo. Perdeu? Use "Rotacionar API key".</p>
+      <p class="muted">Você gera as três (API key, request secret e webhook secret) em "Credenciais da API", depois de confirmar o e-mail. Elas aparecem uma única vez; perdeu, gere de novo (as anteriores param de valer).</p>
     </details>
     <details>
       <summary>O que é o xpub de depósito?</summary>

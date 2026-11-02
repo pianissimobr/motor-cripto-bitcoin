@@ -79,10 +79,15 @@ maybeDescribe('portal com authO (integration)', () => {
     ).rejects.toThrow();
     await auth.verifyEmailCode({ email: 'a@ex.com', requestId: 'req-1', code: '123456' });
     expect((await repos.findUserByEmail('a@ex.com'))?.status).toBe('ativo');
+    // Segundo envio do mesmo codigo (duplo clique) nao vira erro.
+    await expect(
+      auth.verifyEmailCode({ email: 'a@ex.com', requestId: 'req-1', code: '123456' }),
+    ).resolves.toEqual({ ok: true });
   });
 
   it('esqueci a senha responde igual com ou sem conta e troca a senha pelo codigo', async () => {
-    await auth.register({ email: 'b@ex.com', password: 'senha-forte-123', altcha: 'ok' });
+    const reg = await auth.register({ email: 'b@ex.com', password: 'senha-forte-123', altcha: 'ok' });
+    await auth.verifyEmailCode({ email: 'b@ex.com', requestId: reg.verificationRequestId!, code: '123456' });
 
     const ghost = await auth.forgotPassword('ninguem@ex.com', 'ok');
     expect(Object.keys(ghost).sort()).toEqual(['ok', 'requestId']);
@@ -111,6 +116,18 @@ maybeDescribe('portal com authO (integration)', () => {
         password: 'senha-nova-456',
       }),
     ).rejects.toThrow(/codigo invalido/);
+  });
+
+  it('reenvia o codigo de confirmacao sem revelar quem tem conta pendente', async () => {
+    await auth.register({ email: 'd@ex.com', password: 'senha-forte-123', altcha: 'ok' });
+    await expect(auth.login('d@ex.com', 'senha-forte-123')).rejects.toMatchObject({
+      code: 'email_not_verified',
+    });
+    const again = await auth.resendVerification('d@ex.com', 'ok');
+    const ghost = await auth.resendVerification('ninguem@ex.com', 'ok');
+    expect(Object.keys(again).sort()).toEqual(Object.keys(ghost).sort());
+    await auth.verifyEmailCode({ email: 'd@ex.com', requestId: again.requestId!, code: '123456' });
+    expect((await auth.login('d@ex.com', 'senha-forte-123')).sessionToken).toBeTruthy();
   });
 
   it('login exige anti-robo quando o authO esta ligado', async () => {

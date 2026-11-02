@@ -72,8 +72,31 @@ async function refresh() {
   ]);
 }
 
+async function generateCredentials() {
+  const ok = window.confirm(
+    'Gerar novas credenciais? As atuais deixam de funcionar na hora e o seu site precisará das novas.',
+  );
+  if (!ok) return;
+  el('erro').textContent = '';
+  try {
+    const data = await api('POST', `/v1/portal/merchants/${state.merchantId}/credentials`, {});
+    const out = el('credentials-out');
+    out.textContent =
+      `API key:         ${data.api_key}\n` +
+      `Request secret:  ${data.request_secret}\n` +
+      `Webhook secret:  ${data.webhook_secret}\n\n` +
+      'Guarde agora: estes segredos não serão mostrados de novo.';
+    out.classList.remove('hidden');
+    el('api-key-prefix').textContent = `${data.api_key.slice(0, 20)}…`;
+  } catch (err) {
+    showError(err);
+  }
+}
+
 async function loadWebhook() {
   const data = await api('GET', `/v1/portal/merchants/${state.merchantId}`);
+  el('api-key-prefix').textContent = data.api_key_prefix ? `${data.api_key_prefix}…` : '—';
+  el('credentials-out').classList.add('hidden');
   el('webhook-url').value = data.webhook_url ?? '';
   el('webhook-status').textContent = data.webhook_url
     ? 'Webhook configurado.'
@@ -289,6 +312,7 @@ async function init() {
   el('wallet-form').addEventListener('submit', submitWallet);
   el('subscription-form').addEventListener('submit', submitSubscription);
   el('webhook-form').addEventListener('submit', submitWebhook);
+  el('gen-credentials').addEventListener('click', () => void generateCredentials());
   el('wallet-kind').addEventListener('change', toggleWalletKind);
   toggleWalletKind();
   try {

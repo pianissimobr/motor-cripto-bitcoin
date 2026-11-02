@@ -189,6 +189,39 @@ export class ClientService {
     return this.summary(client);
   }
 
+  /**
+   * Gera (ou regenera) as tres credenciais da loja e as devolve uma unica
+   * vez: API key, request secret e webhook secret. As anteriores deixam de
+   * valer na hora. E o unico momento em que os segredos sao mostrados.
+   */
+  async rotateCredentials(
+    id: string,
+    actor = 'portal',
+  ): Promise<{ apiKey: string; requestSecret: string; webhookSecret: string }> {
+    const client = await this.deps.repos.findClientById(id);
+    if (!client) throw new NotFoundError('cliente nao encontrado');
+    const apiKey = `mk_btc_live_${randomBytes(32).toString('base64url')}`;
+    const requestSecret = randomBytes(32).toString('base64url');
+    const webhookSecret = randomBytes(32).toString('base64url');
+    const kid = this.deps.config.crypto.activeKid;
+    const key = this.deps.config.crypto.keyring[kid];
+    if (!key) throw new Error('chave ativa de cifragem ausente');
+    await this.deps.repos.rotateClientKey(id, {
+      apiKeyHash: sha256Hex(apiKey),
+      apiKeyPrefix: apiKey.slice(0, 20),
+      requestSecretEnc: encryptSecret(requestSecret, key, kid, id),
+      webhookSecretEnc: encryptSecret(webhookSecret, key, kid, id),
+    });
+    await this.deps.repos.insertAuditEvent({
+      actor,
+      action: 'client.credentials_rotated',
+      entity: 'api_client',
+      entityId: id,
+    });
+    this.deps.logger.info({ clientId: id, actor }, 'credenciais da loja geradas');
+    return { apiKey, requestSecret, webhookSecret };
+  }
+
   async rotateApiKey(
     id: string,
     actor = 'portal',

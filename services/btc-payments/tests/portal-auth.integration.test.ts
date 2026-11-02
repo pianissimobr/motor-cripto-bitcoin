@@ -106,12 +106,21 @@ maybeDescribe('portal auth (integration)', () => {
     });
   }
 
-  async function register(app: ReturnType<typeof makeApp>, email: string) {
-    return app.inject({
+  /** Cadastra e ja confirma o e-mail (o login so funciona confirmado). */
+  async function register(app: ReturnType<typeof makeApp>, email: string, confirm = true) {
+    const reg = await app.inject({
       method: 'POST',
       url: '/auth/register',
       payload: { email, password: 'senha-forte-123', merchant_name: 'loja' },
     });
+    if (confirm && reg.statusCode === 201) {
+      await app.inject({
+        method: 'POST',
+        url: '/auth/verify-email',
+        payload: { token: (reg.json() as { verification_token: string }).verification_token },
+      });
+    }
+    return reg;
   }
 
   async function login(app: ReturnType<typeof makeApp>, email: string) {
@@ -124,11 +133,17 @@ maybeDescribe('portal auth (integration)', () => {
 
   it('registra, verifica e faz login com sessao', async () => {
     const app = makeApp();
-    const reg = await register(app, 'a@example.com');
+    const reg = await register(app, 'a@example.com', false);
     expect(reg.statusCode).toBe(201);
-    const body = reg.json() as { verification_token: string; merchant: { apiKey: string } };
-    expect(body.merchant.apiKey).toMatch(/^mk_btc_live_/);
+    const body = reg.json() as { verification_token: string; merchant: Record<string, unknown> };
+    // O cadastro nao entrega nenhuma credencial.
+    expect(Object.keys(body.merchant).sort()).toEqual(['id', 'name']);
     expect(body.verification_token).toBeTruthy();
+
+    // Sem confirmar o e-mail, nao entra.
+    const early = await login(app, 'a@example.com');
+    expect(early.statusCode).toBe(403);
+    expect(early.json().error.code).toBe('email_not_verified');
 
     const verify = await app.inject({
       method: 'POST',
@@ -151,6 +166,23 @@ maybeDescribe('portal auth (integration)', () => {
     expect(me.statusCode).toBe(200);
     const meBody = me.json() as { merchants: Array<{ id: string }> };
     expect(meBody.merchants.length).toBe(1);
+
+    // As credenciais so saem no portal, logado, uma vez por geracao.
+    const csrf = cookieOf(cookies, 'portal_csrf')!;
+    const merchantId = meBody.merchants[0]!.id;
+    const gen = await app.inject({
+      method: 'POST',
+      url: `/v1/portal/merchants/${merchantId}/credentials`,
+      headers: { cookie: `portal_sid=${sid}; portal_csrf=${csrf}`, 'x-csrf-token': csrf },
+      payload: {},
+    });
+    expect(gen.statusCode).toBe(200);
+    const creds = gen.json() as { api_key: string; request_secret: string; webhook_secret: string };
+    expect(creds.api_key).toMatch(/^mk_btc_live_/);
+    expect(creds.request_secret).toBeTruthy();
+    expect(creds.webhook_secret).toBeTruthy();
+    const client = await repos.findClientById(merchantId);
+    expect(client?.apiKeyPrefix).toBe(creds.api_key.slice(0, 20));
   });
 
   it('nao revela api key/request secret no perfil (so prefixo)', async () => {

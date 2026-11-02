@@ -9,6 +9,7 @@ import {
 import { generateOpaqueToken, hashOpaqueToken } from '../crypto/token.js';
 import type { Repositories } from '../db/repositories.js';
 import {
+  AppError,
   ConflictError,
   NotFoundError,
   UnauthorizedError,
@@ -113,7 +114,8 @@ export class AuthService {
     altcha?: string;
   }): Promise<{
     user: SafeUser;
-    merchant: { id: string; name: string; apiKey: string; requestSecret: string; webhookSecret: string };
+    /** Sem segredos: as credenciais so saem no portal, depois do e-mail confirmado. */
+    merchant: { id: string; name: string };
     verificationToken?: string;
     verificationRequestId?: string;
   }> {
@@ -186,13 +188,9 @@ export class AuthService {
 
     return {
       user: safeUser(user),
-      merchant: {
-        id: merchant.id,
-        name: merchant.name,
-        apiKey: merchant.apiKey,
-        requestSecret: merchant.requestSecret,
-        webhookSecret: merchant.webhookSecret,
-      },
+      // Os segredos gerados aqui nunca sao mostrados: o lojista gera as
+      // credenciais no portal, ja com o e-mail confirmado.
+      merchant: { id: merchant.id, name: merchant.name },
       // Fora de producao o token volta para facilitar o teste; em producao so
       // sai pelo EmailSender. Com o authO, o codigo vai por e-mail.
       ...(verificationToken && !this.deps.config.service.isProduction
@@ -232,6 +230,9 @@ export class AuthService {
     const email = this.normalizeEmail(input.email);
     const user = await this.deps.repos.findUserByEmail(email);
     if (!user) throw new ValidationError('codigo invalido');
+    // Ja confirmado (ex.: duplo clique): o codigo ja foi consumido no authO,
+    // entao nao conferimos de novo nem mostramos "codigo invalido".
+    if (user.emailVerifiedAt) return { ok: true };
     const verified = await this.deps.autho.verifyCode({
       requestId: input.requestId,
       subject: this.subjectFor(email),
@@ -245,6 +246,41 @@ export class AuthService {
     }
     this.deps.logger.info({ userId: user.id }, 'email verificado (authO)');
     return { ok: true };
+  }
+
+  /**
+   * Reenvia o codigo de confirmacao. Mesma resposta exista ou nao uma conta
+   * pendente com esse e-mail.
+   */
+  async resendVerification(
+    email: string,
+    altcha?: string,
+  ): Promise<{ ok: true; requestId?: string; verificationToken?: string }> {
+    const normalized = this.normalizeEmail(email);
+    const user = await this.deps.repos.findUserByEmail(normalized);
+    const pending = user && user.status === 'pendente_email' ? user : null;
+    if (this.deps.autho) {
+      if (!pending) {
+        await this.deps.autho.verifyHuman(this.requireAltcha(altcha));
+        return { ok: true, requestId: randomUUID() };
+      }
+      const issued = await this.deps.autho.issueCode({
+        subject: this.subjectFor(normalized),
+        email: normalized,
+        purpose: 'email_verification',
+        altcha: this.requireAltcha(altcha),
+      });
+      return { ok: true, requestId: issued.requestId };
+    }
+    if (!pending) return { ok: true };
+    const verificationToken = generateOpaqueToken();
+    await this.deps.repos.createEmailVerificationToken({
+      userId: pending.id,
+      tokenHash: hashOpaqueToken(verificationToken),
+      expiresAt: new Date(this.now().getTime() + VERIFY_TOKEN_TTL_MS),
+    });
+    await this.deps.emailSender.sendVerificationEmail({ to: normalized, token: verificationToken });
+    return this.deps.config.service.isProduction ? { ok: true } : { ok: true, verificationToken };
   }
 
   /** Anti-robo do login, quando o authO esta ligado. */
@@ -265,6 +301,13 @@ export class AuthService {
 
     if (!user || user.status === 'bloqueado') throw invalid();
     if (!verifyPassword(password, user.passwordHash)) throw invalid();
+    // So depois da senha certa, para nao revelar quem tem conta pendente.
+    if (user.status === 'pendente_email') {
+      throw new AppError('confirme seu e-mail antes de entrar', {
+        code: 'email_not_verified',
+        statusCode: 403,
+      });
+    }
 
     const sessionToken = generateOpaqueToken();
     const csrfToken = generateOpaqueToken();

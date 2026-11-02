@@ -169,6 +169,16 @@ export function registerAuthRoutes(
     });
   });
 
+  app.post('/auth/resend-verification', async (request) => {
+    const body = parse(emailSchema, request.body ?? {}, 'corpo');
+    const result = await deps.auth.resendVerification(body.email, body.altcha);
+    return {
+      ok: true,
+      ...(result.requestId ? { request_id: result.requestId } : {}),
+      ...(result.verificationToken ? { verification_token: result.verificationToken } : {}),
+    };
+  });
+
   app.post('/auth/verify-email', async (request) => {
     const body = parse(verifySchema, request.body ?? {}, 'corpo');
     if ('token' in body) return deps.auth.verifyEmail(body.token);
