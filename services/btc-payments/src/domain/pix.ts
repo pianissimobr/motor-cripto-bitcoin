@@ -54,6 +54,11 @@ export function mapLuniumStatus(
   if (settlement === 'failed') return 'falhou';
   if (status === 'paid' && settlement === 'sent') return 'liquidado';
   if (status === 'paid') return 'pago';
+  // `under_review` e a Lunium em conferencia (divergencia de documento do
+  // pagador, por exemplo). Nao e pendencia normal: o dinheiro esta no
+  // provedor e a entrega nao vai acontecer sozinha. Vira `manual` para o
+  // motor avisar e o|time decidir.
+  if (status === 'under_review') return 'manual';
   return 'pendente';
 }
 

@@ -471,6 +471,21 @@ export class PixChargeService {
     if (!updated) throw new Error('falha ao atualizar cobranca PIX');
 
     if (canMove) {
+      if (mapped === 'manual') {
+        // A Lunium esta em conferencia (divergencia de documento do pagador,
+        // por exemplo): o Pix pode ter sido pago e nao entrega. O dinheiro esta
+        // no provedor e a entrega nao vem sozinha — o time precisa decidir.
+        await this.deps.alerts?.send({
+          level: 'warn',
+          title: 'cobranca PIX em conferencia na Lunium',
+          message: `provider=${providerStatus ?? 'desconhecido'} settlement=${providerSettlement ?? 'desconhecido'}`,
+          metadata: {
+            pixChargeId: local.id,
+            externalId: local.externalId,
+            providerChargeId: charge.cashin_id,
+          },
+        });
+      }
       const eventType =
         mapped === 'pago'
           ? 'pix_charge.paid'
