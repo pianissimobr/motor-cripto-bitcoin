@@ -379,6 +379,12 @@ O motor fatia o limite de 60 entre os dois processos (`LUNIUM_RATE_LIMIT_API_MAX
 | Produção: trilho rápido do cash-out = **USDT/polygon, USDC/polygon** e DEPIX/liquid | USDC/Polygon é válido nos dois sentidos (D9/D17) |
 | Produção: cash-in entrega USDC/polygon (mín. R$ 6,90, saque 0,018) e USDC/base (mín. R$ 7,30, saque 0,1) | Polygon é o trilho mais barato |
 | **Sandbox: o catálogo do cash-out só tem USDT/polygon** — USDC/polygon é recusado (`asset_invalido`) | O app com USDC/Polygon **não fecha cash-out no sandbox** até a LuniumPay incluir USDC/polygon no catálogo de teste |
+| **Produção: o cash-in não manda `asset_amount`** — o entregue vem em `delivery_accounting.aSacar` (1,55802042 para R$ 10,00) | O motor lê o `aSacar`; o `usdt_amount` (1,5820698) é o **comprado**, e usá-lo como mínima reprovaria a entrega |
+| **As taxas (`fee_total_cents`, `net_cents`) só vêm dentro de `delivery_accounting`** | O extrato do app precisa ler de lá |
+| **`under_review` entre o Pix pago e a entrega** (~2 min): a Lunium confere o pagador | Virou `manual` no motor (com alerta) — não é pendência |
+| **Produção: a entrega usa o USDC nativo da Polygon** (`0x3c499c54…`), `Transfer` de 1,558020 USDC | Confirmado on-chain; o bridged segue na lista por robustez |
+| **A chave de produção tem `chain: polygon`; o motor falava Base** | Corrigido: `PIX_CHAIN=polygon`, `POLYGON_*` |
+| **Os limites do cash-in do motor divergiam da chave** (2500–25.000.000 vs 102–600.000) | Corrigido: o default agora é o da chave |
 | Cash-out: `deposit_address` só vem no `accept`; `deposit_tag` é `null` na Polygon | O trilho é viável: não há memo na Polygon |
 | Cash-in: `settlement_status` vira `sent` alguns segundos depois do pagamento | `pago` e `liquidado` são estados diferentes; o app não pode Treating "pago" como "entregue" |
 | Sandbox: `asset_amount` não vem, só o legado `usdt_amount` | O motor aceita os dois (usa o legado quando `sandbox=true`) |
@@ -392,7 +398,24 @@ ou bridged `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`). Até la, a
 verificação do motor deve aceitar **as duas** (lista de endereços), para a
 primeira entrega real não travar em `manual`.
 
-## 8. Fases (ordem de ataque)
+## 8. Estado em 2026-11-03
+
+| Fase | Situação |
+|---|---|
+| F0 (contrato e schema) | ✅ este documento |
+| F1 (cash-out no motor + Polygon) | 🟡 a **chain** e a verificação on-chain estão prontas e validadas em produção; falta a tabela `cashout_charges` e o serviço de cash-out |
+| F2 (cliente de device + prova de posse + rate limiter) | 🟡 o **rate limiter** está pronto (60 req/min fatiados entre API e worker); faltam o cliente de device (`/v1/user/clients`) e a prova de posse |
+| F3 (checkout PIX público + extrato) | ⬜ |
+| F4 (site: cadastro da loja com o endereço do app) | ⬜ |
+| F5 (app: gateway abstrato) | ⬜ |
+| F6 (app: perfil pessoal) | ⬜ |
+| F7 (operação: e-mail, alertas, conformidade) | 🟡 limite e conciliação prontos; falta ligar o e-mail (SMTP) e decidir a questão regulatória |
+
+**Validação de ponta a ponta em produção:** uma cobrança de R$ 10,00 paga de
+verdade, conferida on-chain (`liquidado`), com E2E do Banco Central e o
+`settlement_tx_hash` registrado.
+
+## 9. Fases (ordem de ataque)
 
 | Fase | Entrega | Critério de aceite |
 |---|---|---|
@@ -405,13 +428,26 @@ primeira entrega real não travar em `manual`.
 | F6 | app: perfil pessoal (extrato, pagar, receber, QR de posse) | E2E do app contra o motor |
 | F7 | operação: uma chave, um limite, runbook, conformidade | alertas unificados |
 
-## 9. Em aberto
+## 10. Em aberto
 
-1. O contrato de USDC na Polygon (nativo ou bridged) — resolver na primeira
-   entrega real; até lá, verificar as duas.
-2. `settlement_tx_hash` como id interno (corretora) — o motor precisa de um
-   caminho de liquidação sem hash on-chain.
-3. Sandbox sem USDC/polygon no catálogo de cash-out — pedir à LuniumPay.
-4. Prova de posse no site: QR obrigatório ou colar o endereço?
-5. `external_id` do app = `external_id` do motor (idempotência ponta a ponta) —
-   confirmar que a Lunium aceita o mesmo id nos dois lugares.
+**Resolvidos em 2026-11-03** (mediros, não presumidos):
+
+1. ✅ Contrato de USDC na Polygon: **nativo** (`0x3c499c54…`).
+2. ✅ `deposit_tag` na Polygon: `null` — o trilho é viável.
+3. ✅ A chave de produção tem `chain: polygon` — o motor migrou.
+4. ✅ Os limites do cash-in: `GET /keys/me` → `limits.cashin` = 102–600000.
+
+**Ainda em aberto:**
+
+5. 🔶 `settlement_tx_hash` como id interno (entrega pela corretora) — o motor
+   precisa de um caminho de liquidação sem hash on-chain. Na entrega real veio
+   hash de verdade, mas a API não garante.
+6. 🔶 Sandbox sem USDC/polygon no catálogo de cash-out — pedir à LuniumPay
+   (a produção tem o par).
+7. 🔶 Prova de posse no site: QR obrigatório ou colar o endereço?
+8. 🔶 `external_id` do app = `external_id` do motor (idempotência ponta a
+   ponta) — a Lunium aceita o mesmo id nos dois lugares, mas precisa
+   confirmar.
+9. 🔶 E-mail do motor sem relay SMTP: sem ele, ninguém redefine senha.
+10. 🔶 Os limites da chave não são relidos em runtime: se a Lunium mudar a
+    faixa, o motor descobre no erro.

@@ -1,7 +1,7 @@
 # Runbook operacional
 
 O motor não guarda dinheiro: Lightning cai na wallet LNbits de cada lojista,
-on-chain nos endereços do xpub dele e PIX vira USDC na carteira Base dele. A
+on-chain nos endereços do xpub dele e PIX vira USDC na carteira Polygon dele. A
 operação cuida de cobranças, provas de pagamento e webhooks, não de fundos.
 
 ## Deploy inicial
@@ -36,7 +36,13 @@ curl -X POST https://$DOMAIN/admin/api/clients \
 ```
 
 6. O lojista cadastra as carteiras no portal: wallet LNbits (URL + Invoice
-   key), xpub on-chain e endereço USDC na Base para o PIX.
+   key), xpub on-chain e endereço USDC na Polygon para o PIX.
+7. Confira os limites da chave da Lunium no `.env.production`
+   (`PIX_MIN_BRL_CENTS=102`, `PIX_MAX_BRL_CENTS=600000` — leia de
+   `GET /keys/me` → `limits.cashin`; o default antigo recusava R$ 10 que a
+   Lunium aceita).
+8. A rede de liquidação é a mesma de `PIX_CHAIN` (`polygon`): `PIX_CHAIN`,
+   `POLYGON_RPC_URLS`, `POLYGON_CHAIN_ID` e `POLYGON_USDC_ADDRESSES`.
 
 ## Monitoramento
 
@@ -84,7 +90,52 @@ gravados no banco não abrem. Não há seed, keystore nem carteira da plataforma
 Restore: pare API e worker, restaure o banco, rode as migrations pendentes
 (`docker compose ... run --rm migrate`) e suba de novo.
 
+## Deploy
+
+O código chega na VPS por `git archive` (a VPS não clona o repositório):
+
+```bash
+cd services/btc-payments
+./scripts/deploy.sh            # deploy do HEAD
+./scripts/deploy.sh <commit>   # deploy de um commit específico
+```
+
+O script extrai o código, confere o `REVISION` no servidor e sobe
+`migrate`, `api` e `worker`. **Se o `REVISION` não bater, o código não foi
+extraído** — o serviço sobe com a versão antiga (foi o que aconteceu na
+primeira vez: o caminho do `git archive` apontava um nível acima e nada
+mudava na VPS).
+
+Depois do deploy, sempre:
+
+```bash
+curl -s https://$DOMAIN/ready     # db e Lunium precisam estar ok
+```
+
 ## Incidentes
+
+### Cobrança PIX travada em `manual` (conferência da Lunium)
+
+- Sintoma: a cobrança está em `manual` com `provider_status = under_review`.
+  A Lunium recebeu o Pix e está conferindo o pagador.
+- **Espere**: em uma operação real isso levou ~2 minutos e liberou sozinho
+  (o `pix-reconcile` roda a cada 30 s).
+- Se passar de 30 min, conferiu o CPF/CNPJ informado com o de quem pagou
+  (`GET /cashin/limits?payer_tax=` mostra a régua do pagador).
+- Documento divergente: a Lunium devolve o valor e a cobrança vai para
+  `reembolsado`. **Não crie outra cobrança com o mesmo `external_id`.**
+- Alerta: "cobranca PIX em conferencia na Lunium".
+
+### Cobrança PIX em `manual` com "settlement sem asset_amount valido"
+
+- Causa real (medido em 03/11/2026): a Lunium **não** manda `asset_amount` no
+  cash-in; o valor entregue vem em `delivery_accounting.aSacar`, e o
+  `usdt_amount` é o valor **comprado** (antes da taxa de saque). Usar o
+  `usdt_amount` como mínima da conferência on-chain reprova uma entrega
+  válida.
+- O motor já lê o `aSacar` (truncado nas 6 casas do token). Se o erro
+  aparecer, é sinal de que a Lunium mudou o payload — conferir o
+  `provider_payload` gravado na cobrança.
 
 ### Wallet LNbits de um lojista fora do ar
 

@@ -29,7 +29,7 @@ carteiras que você cadastrar.
 - O motor **prova** o pagamento e te avisa por **webhook**.
 - O dinheiro cai **direto nas suas carteiras**, na moeda em que foi pago:
   Lightning na sua wallet LNbits, on-chain no seu xpub e PIX como USDC na sua
-  carteira Base. Nada é convertido.
+  carteira Polygon. Nada é convertido.
 
 ---
 
@@ -60,7 +60,7 @@ converte nada:
 | --- | --- | --- |
 | `lightning_lnbits` | receber Lightning direto na sua wallet LNbits | URL do seu LNbits + **Invoice key** (nunca a Admin key) |
 | `btc_deposit` | receber on-chain em endereços derivados do seu xpub | `xpub` de **conta** BIP84 (`m/84'/0'/0'`), **nunca** `xprv`/seed |
-| `usdc_settlement` | receber o PIX, já em USDC (a Lunium entrega direto) | endereço `0x...` na Base |
+| `usdc_settlement` | receber o PIX, já em USDC (a Lunium entrega direto) | endereço `0x...` na Polygon |
 
 No dashboard: **Carteiras → Adicionar**. O endereço USDC é único por loja; o
 mesmo endereço em outra loja é recusado (409).
@@ -267,7 +267,8 @@ function ok(secret, header, rawBody) {
 
 ## PIX → USDC
 
-Se habilitado, `POST /v1/pix-charges` cria um PIX que entrega USDC na Base:
+Se habilitado, `POST /v1/pix-charges` cria um PIX que entrega USDC **na
+Polygon** (a rede que a chave da Lunium usa):
 
 ```json
 {
@@ -281,6 +282,30 @@ Se habilitado, `POST /v1/pix-charges` cria um PIX que entrega USDC na Base:
 
 A resposta traz `pix.qr_copypaste`, `pix.qr_image_url` (ou `qr_svg`). O
 CPF/CNPJ é exigido pela provedora (PIX) e **não** é guardado em texto claro.
+
+**A carteira `usdc_settlement` é obrigatória**: sem ela a cobrança não é criada
+(409 `settlement_wallet_required`). A Lunium entrega o USDC **direto** nela —
+a plataforma não custodia esse valor.
+
+### O que o pagador vai ver
+
+O QR é da Lunium (é quem recebe o Pix e quem entrega o USDC). O pagador paga
+o valor exato; a Lunium confere o CPF/CNPJ informado antes de entregar, e pode
+levar alguns minutos para liberar (estado `under_review`). Se o documento
+divergir do pagador, o valor é devolvido e nada é creditado.
+
+### Limites (leia da chave, nunca fixe)
+
+| Limite | Valor na chave de produção |
+|---|---|
+| Cash-in por cobrança | R$ 1,02 – R$ 6.000,00 |
+| Cash-in mínimo na rota USDC/Polygon | R$ 6,90 |
+| Cash-out por transação | R$ 6,00 – R$ 250.000,00 (sem teto diário) |
+| Cash-in do pagador (1ª transação) | R$ 100,00 |
+
+`GET /keys/me` → `limits` e `GET /cashin/limits?payer_tax=` trazem os valores
+vigentes. Uma operação real de R$ 10,00 entregou **1,558020 USDC** (taxa de
+R$ 1,30) cerca de 4 minutos depois do Pix cair.
 
 ---
 

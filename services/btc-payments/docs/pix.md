@@ -123,6 +123,55 @@ O que o sandbox ensina (medido em 2026-11-03):
 O E2E fecha no caminho normal: com o worker no ar, a cobranca chega em
 `liquidado` sem nenhuma chamada de sincronizacao.
 
+## Validado em producao (2026-11-03)
+
+Uma cobranca real de R$ 10,00 na chave de producao, do QR ao saldo:
+
+| Momento | O que aconteceu |
+|---|---|
+| 15:37:40 | cobranca criada (`ci_1cf5df92f6c0f6cf0fb91073`) |
+| 15:43:56 | Pix recebido -> a Lunium segura em `under_review` (confere o pagador) |
+| 15:45:43 | liberado -> `paid` (E2E `E20855875202611031543SX9I9XU27IJ`) |
+| 15:45:47 | compra do USDC e pedido de saque |
+| 15:47:49 | entregue: tx `0xb80bf950079fe715cbe7c7291fbc76cd5bcaf5bf6a1151cd691ad4578f6c223b` |
+
+O motor marcou `liquidado` depois de conferir on-chain o `Transfer`.
+
+### O que o payload de producao traz (e o sandbox nao)
+
+| Campo | Producao | Sandbox |
+|---|---|---|
+| `asset_amount` | **ausente** | presente |
+| `delivery_accounting.aSacar` | 1.55802042 (o que chega na carteira) | ausente |
+| `usdt_amount` | 1.5820698 (o que foi **comprado**, antes da taxa de saque) | o valor entregue |
+| `fee_total_cents` / `net_cents` | dentro de `delivery_accounting` (130 / 870) | no topo |
+| `settlement_tx_hash` | hash on-chain real | `sandbox:<hash>` (falso) |
+| `settlement_proof` | `confirmed` | `simulated` |
+
+Por isso o motor le a quantidade entregue de `asset_amount` -> `aSacar`
+(sandbox: `usdt_amount`) e **trunca nas 6 casas do token**: o `Transfer` da
+rede foi de 1.558020 (1.558020 USDC), e o `aSacar` tem 8 casas.
+
+### O contrato de USDC entregue (medido)
+
+A primeira entrega real usou o **USDC nativo da Polygon**:
+
+```text
+0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359   (Circle, nativo)
+```
+
+O bridged (`0x2791Bca1…`) continua na lista de aceitação por robustez: a
+verificacao on-chain aceita qualquer um dos dois e nao reprova uma entrega
+valida. A API da Lunium nao diz qual ela usa — so a primeira entrega real
+revela.
+
+### O que a Lunium segura em `under_review`
+
+Entre o Pix cair e a entrega, a Lunium confere o pagador (em uma operacao real,
+~2 min). O motor trata isso como `manual` (com alerta), nao como pendencia:
+o dinheiro esta no provedor e a entrega nao vem sozinha. Divergencia de
+documento pode virar devolucao.
+
 ## API
 
 ### Criar cobrança
@@ -190,6 +239,17 @@ Lunium:
 status: pending | delayed | under_review | paid | expired | refunded | failed
 settlement_status: pending | sending | entregando | sent | incerto | failed
 ```
+
+Traducao para o estado local (`src/domain/pix.ts`):
+
+| Lunium | Local | Nota |
+|---|---|---|
+| `paid` + `sent` | `liquidado` | o dinheiro chegou: conferido on-chain |
+| `paid` | `pago` | o Pix caiu, a entrega ainda nao |
+| **`under_review`** | **`manual`** | a Lunium esta conferindo o pagador: nao e pendencia, e precisa de decisao (e tem alerta) |
+| `delayed` | `pendente` | retencao do provedor |
+| `expired` / `refunded` / `failed` | `expirado` / `reembolsado` / `falhou` | finais (o `reembolsado` nao volta) |
+| `settlement_status = incerto` | `incerto` | exige conciliacao |
 
 ## Webhooks de saída
 
