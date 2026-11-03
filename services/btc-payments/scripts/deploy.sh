@@ -10,7 +10,8 @@
 # O SSH vai por kombitech (Tailscale) e dai para vps-tarsila.
 set -euo pipefail
 
-REPO_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+# scripts/ -> btc-payments/ -> services/ -> raiz do repositorio
+REPO_ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 REV=${1:-HEAD}
 JUMP=${JUMP:-kombi@kombitech}
 TARGET=${TARGET:-vps-tarsila}
@@ -23,6 +24,11 @@ echo "deploy de $COMMIT ($REV) para $TARGET:$DEST"
 # O arquivo vai por stdin; a senha do admin nao passa pelo shell.
 git archive --format=tar "$COMMIT" | ssh -o BatchMode=yes "$JUMP" \
   "ssh -o BatchMode=yes $TARGET 'tar xf - -C $DEST && echo $COMMIT > $DEST/REVISION'"
+
+# Confere que o codigo chegou: sem isso, um caminho errado no archive deixa a
+# VPS com a versao antiga e o servico sobe com codigo velho.
+ssh -o BatchMode=yes "$JUMP" "ssh -o BatchMode=yes $TARGET \
+  'grep -q "$COMMIT" $DEST/REVISION || { echo REVISION nao atualizado; exit 1; }'"
 
 ssh -o BatchMode=yes "$JUMP" "ssh -o BatchMode=yes $TARGET 'cd $DEST/services/btc-payments && \
   docker compose -p motor-cripto --env-file .env.production \

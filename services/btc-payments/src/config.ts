@@ -176,8 +176,11 @@ const EnvSchema = z
      * saque (0,018 contra 0,1 na Base).
      */
     PIX_CHAIN: z.enum(['base', 'polygon']).default('polygon'),
-    PIX_MIN_BRL_CENTS: bigintFromEnv('2500'),
-    PIX_MAX_BRL_CENTS: bigintFromEnv('25000000'),
+    // Faixa do cash-in da LuniumPay (leia de GET /keys/me -> limits.cashin:
+    // 102 a 600000 centavos na chave de producao). O default antigo (2500) era
+    // mais estreito e recusava cobrancas de R$ 10 que a Lunium aceita.
+    PIX_MIN_BRL_CENTS: bigintFromEnv('102'),
+    PIX_MAX_BRL_CENTS: bigintFromEnv('600000'),
     PIX_VERIFY_SETTLEMENT_TX: boolFromEnv(true),
 
     RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),

@@ -23,6 +23,7 @@
     "client:create": "tsx scripts/seed-client.ts",
     "merchant:pix:seed": "tsx scripts/seed-pix-merchant.ts",
     "pix:e2e": "tsx scripts/pix-sandbox-e2e.ts",
+    "pix:live": "tsx scripts/pix-live-charge.ts",
     "intent:create": "tsx scripts/create-intent.ts",
     "wallet:base:init": "tsx scripts/init-base-wallet.ts",
     "backup": "bash scripts/backup.sh",
