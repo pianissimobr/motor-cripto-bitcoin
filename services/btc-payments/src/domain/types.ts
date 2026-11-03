@@ -1,3 +1,12 @@
+/**
+ * Rede de liquidacao do PIX (a mesma em que a Lunium entrega o USDC).
+ *
+ * `polygon` e o trilho escolhido: e o que a chave de producao da LuniumPay
+ * usa e o que tem o menor custo de saque. `base` continua suportado para as
+ * cobrancas ja criadas.
+ */
+export type SettlementChain = 'base' | 'polygon';
+
 export type PaymentIntentStatus =
   | 'criando'
   | 'pendente'
@@ -151,7 +160,7 @@ export type ApiClient = {
   scopes: ApiScope[];
   baseCurrency: 'BRL' | 'USD';
   settlementAsset: 'USDC';
-  settlementChain: 'base';
+  settlementChain: SettlementChain;
   spreadBps: number;
   autoPayoutLimitBrl: bigint;
   autoPayoutLimitUsd: bigint;
@@ -367,7 +376,7 @@ export type Payout = {
   pixChargeId: string | null;
   walletId: string | null;
   asset: 'USDC';
-  chain: 'base';
+  chain: SettlementChain;
   amountMinor: bigint;
   feeMinor: bigint | null;
   status: PayoutStatus;
@@ -394,7 +403,7 @@ export type PixCharge = {
   settlementStatus: SettlementStatus;
   amountBrlCents: bigint;
   asset: 'USDC';
-  chain: 'base';
+  chain: SettlementChain;
   destinationAddress: string | null;
   qrCopypaste: string | null;
   qrImageUrl: string | null;

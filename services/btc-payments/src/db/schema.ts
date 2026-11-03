@@ -52,7 +52,7 @@ export const apiClients = pgTable(
       .default(sql`'["payments:write","payments:read","wallets:read","wallets:write","balances:read","conversions:read","payouts:read"]'::jsonb`),
     baseCurrency: text('base_currency').$type<'BRL' | 'USD'>().notNull().default('BRL'),
     settlementAsset: text('settlement_asset').$type<'USDC'>().notNull().default('USDC'),
-    settlementChain: text('settlement_chain').$type<'base'>().notNull().default('base'),
+    settlementChain: text('settlement_chain').$type<'base' | 'polygon'>().notNull().default('base'),
     spreadBps: integer('spread_bps').notNull().default(100),
     autoPayoutLimitBrl: bigint('auto_payout_limit_brl', { mode: 'bigint' })
       .notNull()
@@ -752,7 +752,7 @@ export const pixCharges = pgTable(
       .default('nao_iniciado'),
     amountBrlCents: bigint('amount_brl_cents', { mode: 'bigint' }).notNull(),
     asset: text('asset').$type<'USDC'>().notNull().default('USDC'),
-    chain: text('chain').$type<'base'>().notNull().default('base'),
+    chain: text('chain').$type<'base' | 'polygon'>().notNull().default('base'),
     destinationAddress: text('destination_address'),
     qrCopypaste: text('qr_copypaste'),
     qrImageUrl: text('qr_image_url'),
@@ -820,7 +820,7 @@ export const pixCharges = pgTable(
     check('pix_charges_amount_chk', sql`${table.amountBrlCents} > 0`),
     check(
       'pix_charges_asset_chk',
-      sql`${table.asset} in ('USDC') and ${table.chain} in ('base')`,
+      sql`${table.asset} in ('USDC') and ${table.chain} in ('base','polygon')`,
     ),
   ],
 );
@@ -842,7 +842,7 @@ export const payouts = pgTable(
       onDelete: 'restrict',
     }),
     asset: text('asset').$type<'USDC'>().notNull().default('USDC'),
-    chain: text('chain').$type<'base'>().notNull().default('base'),
+    chain: text('chain').$type<'base' | 'polygon'>().notNull().default('base'),
     amountMinor: bigint('amount_minor', { mode: 'bigint' }).notNull(),
     feeMinor: bigint('fee_minor', { mode: 'bigint' }),
     status: text('status')
@@ -881,7 +881,7 @@ export const payouts = pgTable(
     ),
     check(
       'payouts_asset_chk',
-      sql`${table.asset} in ('USDC') and ${table.chain} in ('base')`,
+      sql`${table.asset} in ('USDC') and ${table.chain} in ('base','polygon')`,
     ),
     check('payouts_amount_chk', sql`${table.amountMinor} > 0`),
   ],

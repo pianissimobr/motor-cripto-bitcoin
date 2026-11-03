@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import QRCode from 'qrcode';
 import type { AppConfig } from '../config.js';
 import { LuniumError, type LuniumCharge, type LuniumClient } from '../adapters/lunium/client.js';
-import { verifyUsdcSettlement } from '../adapters/chain/base-usdc-verify.js';
+import { verifyUsdcSettlement } from '../adapters/chain/usdc-settlement-verify.js';
 import { blindIndex } from '../crypto/hmac.js';
 import type { Repositories } from '../db/repositories.js';
 import {
@@ -22,6 +22,7 @@ import {
 import {
   parseDecimalToMinor,
   type PixCharge,
+  type SettlementChain,
   type SettlementStatus,
 } from '../domain/types.js';
 import type { LedgerService } from '../ledger/ledger-service.js';
@@ -48,7 +49,7 @@ export type PixChargeDto = {
   settlement_status: PixCharge['settlementStatus'];
   amount_brl_cents: string;
   asset: 'USDC';
-  chain: 'base';
+  chain: SettlementChain;
   pix: {
     qr_copypaste: string | null;
     qr_image_url: string | null;
@@ -221,6 +222,9 @@ export class PixChargeService {
       externalId: input.externalId,
       providerExternalId,
       amountBrlCents: input.amountBrlCents,
+      // A chain precisa ser a mesma que a Lunium vai liquidar: a verificacao
+      // on-chain procura a entrega nesta rede.
+      chain: this.deps.config.pix.chain,
       destinationAddress: destination,
       payerTaxHash,
       payerTaxLast4,
@@ -349,7 +353,7 @@ export class PixChargeService {
     // A Lunium recusou por limite: o limitador esta em cooldown. Reconciliar
     // agora so gastaria a fila e pioraria a situacao; o proximo ciclo tenta
     // de novo.
-    const cooldown = this.deps.lunium.rateLimiter.cooldownRemaining();
+    const cooldown = this.deps.lunium.rateLimiter?.cooldownRemaining() ?? 0;
     if (cooldown > 0) {
       this.deps.logger.warn(
         { cooldownMs: cooldown },
@@ -508,9 +512,10 @@ export class PixChargeService {
     if (!update.settlementTxHash) return 'pending';
     if (!local.destinationAddress) return 'invalid';
     const result = await verifyUsdcSettlement({
-      rpcUrls: this.deps.config.base.rpcUrls,
-      chainId: this.deps.config.base.chainId,
-      usdcAddress: this.deps.config.base.usdcAddress,
+      rpcUrls: this.deps.config.settlement.rpcUrls,
+      chainId: this.deps.config.settlement.chainId,
+      usdcAddresses: this.deps.config.settlement.usdcAddresses,
+      chainLabel: this.deps.config.settlement.chain,
       txHash: update.settlementTxHash,
       recipient: local.destinationAddress,
       minAmountMinor: update.assetAmountMinor ?? 0n,

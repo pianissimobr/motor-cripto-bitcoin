@@ -273,6 +273,23 @@ maybeDescribe('PIX -> USDC (integration)', () => {
     expect((await pixCharges.sync(failed.dto.id)).status).toBe('falhou');
   });
 
+  it('grava a chain configurada na cobranca', async () => {
+    // Regressao: a cobranca era gravada sempre como `base`, mesmo com o PIX
+    // configurado em polygon. A verificacao on-chain procura a entrega na
+    // rede da cobranca, então a chain errada joga tudo em `manual`.
+    const clientId = await createMerchant('loja chain pix');
+    const created = await pixCharges.create({
+      clientId,
+      externalId: 'pix-chain',
+      amountBrlCents: 2_500n,
+      payerTaxNumber: '00000000191',
+    });
+
+    expect(created.dto.chain).toBe(config.pix.chain);
+    const stored = await repos.findPixChargeById(created.dto.id);
+    expect(stored?.chain).toBe(config.pix.chain);
+  });
+
   it('reconcilia cobranca paga sem webhook', async () => {
     const clientId = await createMerchant('loja reconcile pix');
     const created = await pixCharges.create({

@@ -31,6 +31,7 @@ import type {
   PayoutStatus,
   PaymentIntentStatus,
   Session,
+  SettlementChain,
   Subscription,
   SubscriptionCharge,
   SweepInput,
@@ -311,7 +312,7 @@ export type CreatePixChargeInput = {
   providerExternalId: string;
   amountBrlCents: bigint;
   asset?: 'USDC';
-  chain?: 'base';
+  chain?: SettlementChain;
   destinationAddress?: string | null;
   payerTaxHash?: string | null;
   payerTaxLast4?: string | null;

@@ -1,8 +1,11 @@
-# PIX -> USDC na Base (Lunium)
+# PIX -> USDC na Polygon (Lunium)
 
 Fluxo paralelo ao Bitcoin: quem paga faz um PIX e a Lunium entrega USDC
-nativo na Base **direto na carteira `usdc_settlement` do lojista**. A
-plataforma nao custodia o USDC, nao usa carteira quente e nao paga gas.
+**direto na carteira `usdc_settlement` do lojista**. A plataforma nao custodia
+o USDC, nao usa carteira quente e nao paga gas.
+
+A rede de liquidacao e a mesma de `PIX_CHAIN` (producao: `polygon`). A Base
+continua suportada para as cobrancas ja criadas.
 
 ## Fluxo
 
@@ -10,7 +13,7 @@ plataforma nao custodia o USDC, nao usa carteira quente e nao paga gas.
 Checkout
   -> POST /v1/pix-charges (exige carteira usdc_settlement ativa na loja)
   -> Lunium POST /cashin/charge
-       destino=cripto, asset=usdc, chain=base,
+       destino=cripto, asset=usdc, chain=polygon,
        payout_address=<carteira usdc_settlement do lojista>
   <- qr_copypaste + qr_image_url + expires_at
 
@@ -19,7 +22,7 @@ Lunium
   -> inbox durável (provider_events)
   -> worker consulta GET /cashin/{cashin_id}/status
   -> paid           -> pix_charge.paid (a loja pode liberar o pedido)
-  -> paid + sent    -> confere na Base que o USDC chegou ao lojista
+  -> paid + sent    -> confere on-chain que o USDC chegou ao lojista
                     -> status liquidado, settlement_status pago
                     -> pix_charge.settled
 ```
@@ -29,16 +32,33 @@ Lunium
 - Taxa Lunium: 3,3% + R$ 1,00 por cobranca (mais a comissao de parceiro, se
   houver). O valor em USDC que chega e o `asset_amount` da Lunium.
 
-## Carteira Base de teste
+## Carteira de liquidacao da loja
+
+A carteira e um endereco EVM qualquer que a loja controla: a Lunium entrega o
+USDC direto nele. Para o teste local:
 
 ```bash
 cd services/btc-payments
-npm run wallet:base:init          # ou: -- --json
+npm run merchant:pix:seed -- --address 0x... --name "Loja teste"
 ```
 
-O script imprime `MERCHANT_USDC_ADDRESS` e `MERCHANT_PRIVATE_KEY`. Cadastre o
-endereco como `usdc_settlement` da loja de teste. Nao precisa de ETH para
-receber USDC. Nunca commite a chave.
+O script cria a loja e a carteira `usdc_settlement` na chain configurada e
+imprime `api_key` e `request_secret` (nao sao exibidos de novo).
+
+## Rede e contratos do USDC
+
+```env
+PIX_CHAIN=polygon
+POLYGON_RPC_URLS=https://polygon-rpc.com,https://polygon-bor-rpc.publicnode.com
+POLYGON_CHAIN_ID=137
+POLYGON_USDC_ADDRESSES=0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359,0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
+```
+
+A lista de contratos aceita o USDC **nativo** (Circle) e o **bridged**
+(USDC.e): a Lunium nao revela qual dos dois ela entrega no cash-in, e uma
+verificacao on-chain com o endereco errado joga a cobranca em `manual` mesmo
+com o dinheiro entregue. Depois do primeiro hash real, deixar so o contrato
+certo (o `detail` do erro de verificacao lista os enderecos conferidos).
 
 ## Configuração
 
@@ -49,7 +69,7 @@ LUNIUM_API_KEY=
 LUNIUM_WEBHOOK_SECRET=
 LUNIUM_TIMEOUT_MS=15000
 PIX_ASSET=usdc
-PIX_CHAIN=base
+PIX_CHAIN=polygon
 PIX_MIN_BRL_CENTS=2500
 PIX_MAX_BRL_CENTS=25000000
 PIX_VERIFY_SETTLEMENT_TX=false
@@ -133,7 +153,7 @@ Resposta `201` (ou `200` em retry idempotente):
   "settlement_status": "nao_iniciado",
   "amount_brl_cents": "5000",
   "asset": "USDC",
-  "chain": "base",
+  "chain": "polygon",
   "pix": {
     "qr_copypaste": "000201...",
     "qr_image_url": "https://...",

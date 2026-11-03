@@ -8,6 +8,7 @@ import {
   LuniumRateLimiter,
   type RateLimitPriority,
 } from './rate-limiter.js';
+import type { SettlementChain } from '../../domain/types.js';
 import { TtlCache } from './ttl-cache.js';
 
 export type LuniumCharge = {
@@ -134,7 +135,7 @@ export type CreateLuniumChargeInput = {
   externalId: string;
   customerRef?: string | null;
   asset: 'usdc';
-  chain: 'base';
+  chain: SettlementChain;
   payoutAddress: string;
   sandboxScenario?: string | null;
 };
@@ -327,7 +328,7 @@ export class LuniumClient {
   async preview(input: {
     amountCents: bigint;
     asset: 'usdc';
-    chain: 'base';
+    chain: SettlementChain;
   }): Promise<LuniumPreview> {
     return this.request<LuniumPreview>(
       'POST',

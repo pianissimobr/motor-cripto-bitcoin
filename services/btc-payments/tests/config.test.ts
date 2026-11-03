@@ -51,6 +51,43 @@ describe('config', () => {
     expect(config.pix.enabled).toBe(true);
   });
 
+  it('a rede de liquidacao segue a chain do PIX', () => {
+    const pix = {
+      ...BASE_ENV,
+      PIX_ENABLED: 'true',
+      LUNIUM_API_KEY: 'lun_test_x',
+      LUNIUM_WEBHOOK_SECRET: 'segredo-123',
+    };
+
+    const polygon = loadConfig({ ...pix, PIX_CHAIN: 'polygon' });
+    expect(polygon.pix.chain).toBe('polygon');
+    expect(polygon.settlement.chain).toBe('polygon');
+    expect(polygon.settlement.chainId).toBe(137);
+    expect(polygon.settlement.nativeSymbol).toBe('POL');
+    expect(polygon.settlement.rpcUrls.length).toBeGreaterThan(0);
+    // nativo (Circle) e bridged (USDC.e): a Lunium nao diz qual entrega.
+    expect(polygon.settlement.usdcAddresses).toHaveLength(2);
+    expect(polygon.settlement.usdcAddresses[0]).toMatch(/^0x[0-9a-f]{40}$/i);
+
+    const base = loadConfig({ ...pix, PIX_CHAIN: 'base' });
+    expect(base.settlement.chain).toBe('base');
+    expect(base.settlement.chainId).toBe(8453);
+    expect(base.settlement.nativeSymbol).toBe('ETH');
+    expect(base.settlement.usdcAddresses).toHaveLength(1);
+  });
+
+  it('rejeita lista de contratos de USDC invalida', () => {
+    const env = {
+      ...BASE_ENV,
+      PIX_ENABLED: 'true',
+      LUNIUM_API_KEY: 'lun_test_x',
+      LUNIUM_WEBHOOK_SECRET: 'segredo-123',
+      PIX_CHAIN: 'polygon',
+      POLYGON_USDC_ADDRESSES: 'nao-e-endereco',
+    };
+    expect(() => loadConfig(env)).toThrow(/POLYGON_USDC_ADDRESSES/);
+  });
+
   it('rejeita prefixo hardened', () => {
     const env = { ...BASE_ENV, BTC_DERIVATION_PREFIX: "0'" };
     expect(() => loadConfig(env)).toThrow();

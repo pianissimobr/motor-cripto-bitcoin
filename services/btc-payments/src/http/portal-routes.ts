@@ -293,7 +293,7 @@ export function registerPortalRoutes(
     const body = parse(createWalletSchema, request.body ?? {}, 'corpo');
     if (body.kind === 'usdc_settlement') {
       const existing = await deps.repos.findMerchantWalletByChainAddress(
-        'base',
+        deps.config.pix.chain,
         body.address,
       );
       if (existing) {
@@ -305,8 +305,8 @@ export function registerPortalRoutes(
       const wallet = await deps.wallets.createUsdcSettlement({
         merchantId: id,
         address: body.address,
-        chain: 'base',
-        network: 'base',
+        chain: deps.config.pix.chain,
+        network: deps.config.pix.chain,
       });
       const created = await deps.repos.findMerchantWalletById(wallet.id);
       if (!created) throw new NotFoundError('carteira nao encontrada');

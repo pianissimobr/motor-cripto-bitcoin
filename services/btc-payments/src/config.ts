@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { z } from 'zod';
+import type { SettlementChain } from './domain/types.js';
 
 export const SERVICE_NAME = 'btc-payments';
 export const SERVICE_VERSION = '0.1.0';
@@ -120,12 +121,25 @@ const EnvSchema = z
     WEBHOOK_TIMEOUT_MS: intFromEnv(10_000, 1_000),
     WEBHOOK_MAX_ATTEMPTS: intFromEnv(6, 1),
 
+    // --- Rede de liquidacao (a mesma do PIX) ---
+    // O RPC so serve para conferir a entrega do USDC na rede.
     BASE_RPC_URLS: z.string().default('https://mainnet.base.org,https://base-rpc.publicnode.com'),
     BASE_CHAIN_ID: intFromEnv(8453, 1),
-    BASE_USDC_ADDRESS: z
+    BASE_USDC_ADDRESSES: z
       .string()
-      .regex(/^0x[a-fA-F0-9]{40}$/, 'BASE_USDC_ADDRESS invalido')
       .default('0x833589fCD6EDB6E08F4C7C32D4f71b54BDA02913'),
+
+    POLYGON_RPC_URLS: z.string().default('https://polygon-rpc.com,https://polygon-bor-rpc.publicnode.com'),
+    POLYGON_CHAIN_ID: intFromEnv(137, 1),
+    // A Lunium entrega o USDC nativo (Circle) ou o bridged (USDC.e) na
+    // Polygon? A API nao diz. A verificacao on-chain aceita os dois para a
+    // primeira entrega real nao cair em `manual` por adivinhacao; depois do
+    // primeiro hash real, deixa so o contrato certo.
+    POLYGON_USDC_ADDRESSES: z
+      .string()
+      .default(
+        '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359,0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+      ),
 
     PIX_ENABLED: boolFromEnv(false),
     LUNIUM_API_URL: httpUrl('LUNIUM_API_URL invalida').default(
@@ -154,7 +168,14 @@ const EnvSchema = z
     LUNIUM_CATALOG_CACHE_MS: intFromEnv(300_000, 0),
     LUNIUM_LIMITS_CACHE_MS: intFromEnv(20_000, 0),
     PIX_ASSET: z.literal('usdc').default('usdc'),
-    PIX_CHAIN: z.literal('base').default('base'),
+    /**
+     * Rede em que a Lunium entrega o USDC do PIX.
+     *
+     * `polygon` e o trilho de producao: a chave da LuniumPay esta com
+     * `chain: polygon` e o cash-in de USDC/polygon tem o menor custo de
+     * saque (0,018 contra 0,1 na Base).
+     */
+    PIX_CHAIN: z.enum(['base', 'polygon']).default('polygon'),
     PIX_MIN_BRL_CENTS: bigintFromEnv('2500'),
     PIX_MAX_BRL_CENTS: bigintFromEnv('25000000'),
     PIX_VERIFY_SETTLEMENT_TX: boolFromEnv(true),
@@ -272,6 +293,22 @@ const EnvSchema = z
         });
       }
     }
+    if (env.PIX_ENABLED) {
+      const raw = env.PIX_CHAIN === 'polygon' ? env.POLYGON_USDC_ADDRESSES : env.BASE_USDC_ADDRESSES;
+      const addresses = raw
+        .split(',')
+        .map((address) => address.trim())
+        .filter((address) => /^0x[a-fA-F0-9]{40}$/.test(address));
+      if (addresses.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [
+            env.PIX_CHAIN === 'polygon' ? 'POLYGON_USDC_ADDRESSES' : 'BASE_USDC_ADDRESSES',
+          ],
+          message: 'informe ao menos um contrato de USDC valido',
+        });
+      }
+    }
     if (env.PIX_ENABLED && !env.LUNIUM_API_KEY) {
       ctx.addIssue({
         code: 'custom',
@@ -371,10 +408,17 @@ export type AppConfig = {
     url?: string;
     timeoutMs: number;
   };
-  base: {
+  /**
+   * Rede em que a liquidacao do USDC acontece: a mesma do PIX. O RPC serve
+   * so para conferir a entrega on-chain.
+   */
+  settlement: {
+    chain: SettlementChain;
     rpcUrls: string[];
     chainId: number;
-    usdcAddress: string;
+    /** Contratos aceitos como USDC na rede (nativo e bridged). */
+    usdcAddresses: string[];
+    nativeSymbol: string;
   };
   pix: {
     enabled: boolean;
@@ -383,7 +427,7 @@ export type AppConfig = {
     luniumWebhookSecret?: string;
     timeoutMs: number;
     asset: 'usdc';
-    chain: 'base';
+    chain: SettlementChain;
     minBrlCents: bigint;
     maxBrlCents: bigint;
     verifySettlementTx: boolean;
@@ -512,6 +556,34 @@ function buildCorsOrigins(env: Env): string[] {
 }
 
 /**
+ * Configura a rede de liquidacao de acordo com a chain do PIX.
+ *
+ * A lista de contratos de USDC aceita mais de um endereco porque a Lunium
+ * pode entregar o token nativo ou o bridged: a API nao revela qual, e uma
+ * verificacao on-chain com o endereco errado joga a cobranca para `manual`
+ * mesmo com o dinheiro entregue.
+ */
+function buildSettlement(env: Env): AppConfig['settlement'] {
+  const polygon = env.PIX_CHAIN === 'polygon';
+  const rpcUrls = (polygon ? env.POLYGON_RPC_URLS : env.BASE_RPC_URLS)
+    .split(',')
+    .map((url) => url.trim().replace(/\/+$/, ''))
+    .filter((url) => url.length > 0);
+  const raw = polygon ? env.POLYGON_USDC_ADDRESSES : env.BASE_USDC_ADDRESSES;
+  const usdcAddresses = raw
+    .split(',')
+    .map((address) => address.trim())
+    .filter((address) => /^0x[a-fA-F0-9]{40}$/.test(address));
+  return {
+    chain: env.PIX_CHAIN,
+    rpcUrls,
+    chainId: polygon ? env.POLYGON_CHAIN_ID : env.BASE_CHAIN_ID,
+    usdcAddresses,
+    nativeSymbol: polygon ? 'POL' : 'ETH',
+  };
+}
+
+/**
  * Valida o ambiente e falha cedo. Nenhum segredo e derivado para log.
  */
 export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -586,13 +658,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.ESPLORA_URL ? { url: env.ESPLORA_URL.replace(/\/+$/, '') } : {}),
       timeoutMs: env.ESPLORA_TIMEOUT_MS,
     },
-    base: {
-      rpcUrls: env.BASE_RPC_URLS.split(',')
-        .map((url) => url.trim().replace(/\/+$/, ''))
-        .filter((url) => url.length > 0),
-      chainId: env.BASE_CHAIN_ID,
-      usdcAddress: env.BASE_USDC_ADDRESS,
-    },
+    settlement: buildSettlement(env),
     pix: {
       enabled: env.PIX_ENABLED,
       luniumApiUrl: env.LUNIUM_API_URL.replace(/\/+$/, ''),

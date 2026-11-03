@@ -85,7 +85,7 @@ const createIntentSchema = z
     settlement: z
       .object({
         asset: z.literal('USDC'),
-        chain: z.literal('base'),
+        chain: z.enum(['base', 'polygon']),
         wallet_id: z.string().uuid().optional(),
       })
       .strict()
@@ -600,7 +600,7 @@ export function registerApiRoutes(
       }
       if (body.kind === 'usdc_settlement') {
         const existing = await services.repos.findMerchantWalletByChainAddress(
-          'base',
+          services.config.pix.chain,
           body.address,
         );
         if (existing) {
@@ -612,8 +612,8 @@ export function registerApiRoutes(
         const wallet = await services.wallets.createUsdcSettlement({
           merchantId: client.id,
           address: body.address,
-          chain: 'base',
-          network: 'base',
+          chain: services.config.pix.chain,
+          network: services.config.pix.chain,
         });
         const created = await services.repos.findMerchantWalletById(wallet.id);
         if (!created) throw new NotFoundError('carteira nao encontrada');
