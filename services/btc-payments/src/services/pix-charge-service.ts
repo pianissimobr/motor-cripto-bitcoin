@@ -98,6 +98,40 @@ function isUncertainProviderError(err: unknown): boolean {
   return err.statusCode === 429 || err.statusCode >= 500;
 }
 
+/**
+ * Quantidade de USDC que **chega na carteira** do cliente.
+ *
+ * Medido na primeira entrega real (2026-11-03): a Lunium nao manda `asset_amount`
+ * nesse fluxo. O valor entregue vem em `delivery_accounting.aSacar` (1.55802042
+ * para R$ 10,00); o `usdt_amount` (1.5820698) e o que foi *comprado* no
+ * mercado, antes da taxa de saque da rede (0.018) — usar esse numero como
+ * minima da verificacao on-chain reprovaria uma entrega valida.
+ *
+ * A comparacao on-chain e em unidades minimas do token (6 casas): o
+ * `aSacar` tem 8 casas e truncado bate com o `Transfer` da rede.
+ */
+export function deliveredAmountMinor(
+  charge: LuniumCharge,
+  current: bigint | null,
+): bigint | null {
+  const candidates = [
+    charge.asset_amount,
+    charge.delivery_accounting?.aSacar,
+    // No sandbox so vem o campo legado.
+    charge.sandbox ? charge.usdt_amount : null,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) continue;
+    try {
+      const parsed = parseDecimalToMinor(candidate, 6);
+      if (parsed > 0n) return parsed;
+    } catch {
+      // Valor inesperado: tenta o proximo candidato.
+    }
+  }
+  return current;
+}
+
 function settlementStatusFor(mapped: PixCharge['status']): SettlementStatus {
   if (mapped === 'pago') return 'aguardando_confirmacao';
   if (mapped === 'liquidado') return 'pago';
@@ -419,11 +453,7 @@ export class PixChargeService {
         charge.net_cents !== undefined && charge.net_cents !== null
           ? BigInt(charge.net_cents)
           : local.netCents,
-      assetAmountMinor: charge.asset_amount
-        ? parseDecimalToMinor(charge.asset_amount, 6)
-        : charge.sandbox && charge.usdt_amount
-          ? parseDecimalToMinor(charge.usdt_amount, 6)
-          : local.assetAmountMinor,
+      assetAmountMinor: deliveredAmountMinor(charge, local.assetAmountMinor),
       withdrawFee: charge.withdraw_fee ?? local.withdrawFee,
       settlementTxHash: charge.settlement_tx_hash ?? local.settlementTxHash,
       settlementTxUrl: charge.settlement_tx_url ?? local.settlementTxUrl,

@@ -11,6 +11,19 @@ import {
 import type { SettlementChain } from '../../domain/types.js';
 import { TtlCache } from './ttl-cache.js';
 
+export type LuniumDeliveryAccounting = {
+  /** Ativo entregue (ex.: `USDC`). */
+  asset?: string | null;
+  /** Quantidade que sai para a carteira do cliente (ja sem a taxa de saque). */
+  aSacar?: string | null;
+  /** Quantidade comprada no mercado (antes da taxa de saque da rede). */
+  usdtGasto?: string | null;
+  taxaSaque?: string | null;
+  net_cents?: number | null;
+  fee_total_cents?: number | null;
+  [key: string]: unknown;
+};
+
 export type LuniumCharge = {
   cashin_id: string;
   status: PixProviderStatus;
@@ -33,6 +46,8 @@ export type LuniumCharge = {
   net_cents?: number | null;
   asset_amount?: string | null;
   usdt_amount?: string | null;
+  /** Contabilidade da entrega (producao): `aSacar` e o que chega na carteira. */
+  delivery_accounting?: LuniumDeliveryAccounting | null;
   sandbox?: boolean;
   withdraw_fee?: string | null;
   settlement_tx_hash?: string | null;
