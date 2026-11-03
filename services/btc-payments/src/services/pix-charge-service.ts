@@ -110,6 +110,18 @@ function isUncertainProviderError(err: unknown): boolean {
  * A comparacao on-chain e em unidades minimas do token (6 casas): o
  * `aSacar` tem 8 casas e truncado bate com o `Transfer` da rede.
  */
+/** Primeiro valor inteiro presente na lista (o fallback local vem por ultimo). */
+function firstNumber(
+  ...values: Array<number | null | undefined | bigint | null>
+): bigint | null {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'bigint') return value;
+    if (Number.isFinite(value)) return BigInt(Math.trunc(value));
+  }
+  return null;
+}
+
 export function deliveredAmountMinor(
   charge: LuniumCharge,
   current: bigint | null,
@@ -445,14 +457,18 @@ export class PixChargeService {
           ? BigInt(charge.lunium_fee_fixed_cents)
           : local.feeLuniumFixedCents,
       feePartnerBps: charge.partner_fee_bps ?? local.feePartnerBps,
-      feeTotalCents:
-        charge.fee_total_cents !== undefined && charge.fee_total_cents !== null
-          ? BigInt(charge.fee_total_cents)
-          : local.feeTotalCents,
-      netCents:
-        charge.net_cents !== undefined && charge.net_cents !== null
-          ? BigInt(charge.net_cents)
-          : local.netCents,
+      // Medido na entrega real: no cash-in as taxas vem dentro de
+      // `delivery_accounting`, nao no topo da resposta.
+      feeTotalCents: firstNumber(
+        charge.fee_total_cents,
+        charge.delivery_accounting?.fee_total_cents,
+        local.feeTotalCents,
+      ),
+      netCents: firstNumber(
+        charge.net_cents,
+        charge.delivery_accounting?.net_cents,
+        local.netCents,
+      ),
       assetAmountMinor: deliveredAmountMinor(charge, local.assetAmountMinor),
       withdrawFee: charge.withdraw_fee ?? local.withdrawFee,
       settlementTxHash: charge.settlement_tx_hash ?? local.settlementTxHash,
