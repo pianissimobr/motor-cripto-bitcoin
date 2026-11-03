@@ -60,7 +60,7 @@ export class MerchantWalletService {
   async createUsdcSettlement(input: {
     merchantId: string;
     address: string;
-    chain: 'base';
+    chain: 'base' | 'polygon';
     network: string;
   }): Promise<{ id: string; address: string }> {
     if (!/^0x[a-fA-F0-9]{40}$/.test(input.address)) {
