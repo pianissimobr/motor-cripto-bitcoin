@@ -4,6 +4,7 @@ const form = document.getElementById('login-form');
 const erro = document.getElementById('erro');
 const verifyBox = document.getElementById('verify-box');
 const verifyStatus = document.getElementById('verify-status');
+const verifyTokenForm = document.getElementById('verify-token-form');
 let requestId = null;
 
 function email() {
@@ -88,3 +89,28 @@ document.getElementById('verify-form').addEventListener('submit', async (e) => {
   verifyStatus.textContent = 'E-mail confirmado. Entrando...';
   await login();
 });
+
+// Token que veio no link do e-mail (quando o authO nao esta ligado).
+verifyTokenForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const token = document.getElementById('verify-token').value.trim();
+  if (!token) {
+    verifyStatus.textContent = 'Cole o token que chegou no e-mail.';
+    return;
+  }
+  const { res, body } = await post('/auth/verify-email', { token });
+  if (!res.ok) {
+    verifyStatus.textContent = body?.error?.message ?? 'Token inválido';
+    return;
+  }
+  verifyStatus.textContent = 'E-mail confirmado. Entre com a sua senha.';
+});
+
+const tokenDaUrl = new URLSearchParams(window.location.search).get('verify_token');
+if (tokenDaUrl) {
+  verifyBox.classList.remove('hidden');
+  verifyTokenForm.classList.remove('hidden');
+  document.getElementById('verify-token').value = tokenDaUrl;
+  verifyStatus.textContent = 'Confirmando o e-mail pelo link...';
+  verifyTokenForm.requestSubmit();
+}

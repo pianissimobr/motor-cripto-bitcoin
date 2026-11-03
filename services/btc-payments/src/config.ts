@@ -198,6 +198,30 @@ const EnvSchema = z
       (v) => (v === '' ? undefined : v),
       z.string().min(1).optional(),
     ),
+
+    // --- E-mail ---
+    // smtp = relay configurado; noop = nada sai (so desenvolvimento).
+    EMAIL_SENDER: z.enum(['smtp', 'noop']).default('noop'),
+    EMAIL_FROM: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(3).optional(),
+    ),
+    SMTP_HOST: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    SMTP_PORT: intFromEnv(587, 1, 65_535),
+    SMTP_SECURE: boolFromEnv(false),
+    SMTP_STARTTLS: boolFromEnv(true),
+    SMTP_USER: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    SMTP_PASS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    SMTP_TIMEOUT_MS: intFromEnv(15_000, 1_000),
   })
   .superRefine((env, ctx) => {
     if (!env.LIGHTNING_ENABLED && !env.ONCHAIN_ENABLED && !env.PIX_ENABLED) {
@@ -224,6 +248,29 @@ const EnvSchema = z
         path: ['AUTHO_ISSUER_SECRET'],
         message: 'obrigatorio quando AUTHO_ISSUER_URL esta definido',
       });
+    }
+    if (env.EMAIL_SENDER === 'smtp') {
+      if (!env.SMTP_HOST) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMTP_HOST'],
+          message: 'obrigatorio quando EMAIL_SENDER=smtp',
+        });
+      }
+      if (!env.EMAIL_FROM) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['EMAIL_FROM'],
+          message: 'obrigatorio quando EMAIL_SENDER=smtp',
+        });
+      }
+      if (!env.SMTP_USER && env.SMTP_PASS) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SMTP_USER'],
+          message: 'SMTP_PASS exige SMTP_USER',
+        });
+      }
     }
     if (env.PIX_ENABLED && !env.LUNIUM_API_KEY) {
       ctx.addIssue({
@@ -377,6 +424,19 @@ export type AppConfig = {
     webhookUrl?: string;
     token?: string;
     timeoutMs: number;
+  };
+  email: {
+    sender: 'smtp' | 'noop';
+    from?: string;
+    smtp?: {
+      host: string;
+      port: number;
+      secure: boolean;
+      starttls: boolean;
+      user?: string;
+      pass?: string;
+      timeoutMs: number;
+    };
   };
   env: Env;
 };
@@ -587,6 +647,23 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.ALERT_WEBHOOK_URL ? { webhookUrl: env.ALERT_WEBHOOK_URL } : {}),
       ...(env.ALERT_WEBHOOK_TOKEN ? { token: env.ALERT_WEBHOOK_TOKEN } : {}),
       timeoutMs: 5_000,
+    },
+    email: {
+      sender: env.EMAIL_SENDER,
+      ...(env.EMAIL_FROM ? { from: env.EMAIL_FROM } : {}),
+      ...(env.EMAIL_SENDER === 'smtp' && env.SMTP_HOST
+        ? {
+            smtp: {
+              host: env.SMTP_HOST,
+              port: env.SMTP_PORT,
+              secure: env.SMTP_SECURE,
+              starttls: env.SMTP_STARTTLS,
+              ...(env.SMTP_USER ? { user: env.SMTP_USER } : {}),
+              ...(env.SMTP_PASS ? { pass: env.SMTP_PASS } : {}),
+              timeoutMs: env.SMTP_TIMEOUT_MS,
+            },
+          }
+        : {}),
     },
     env,
   };

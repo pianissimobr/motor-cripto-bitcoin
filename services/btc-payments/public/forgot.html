@@ -21,7 +21,8 @@
     </form>
     <p id="info" class="muted"></p>
     <form id="reset-form" class="hidden">
-      <label>Código (6 dígitos)<input id="code" inputmode="numeric" maxlength="6" required></label>
+      <label>Código (6 dígitos)<input id="code" inputmode="numeric" maxlength="6"></label>
+      <label>Ou o token do e-mail<input id="token" autocomplete="one-time-code"></label>
       <label>Nova senha (mínimo 8 caracteres)<input id="password" type="password" autocomplete="new-password" minlength="8" required></label>
       <label>Repita a nova senha<input id="password2" type="password" autocomplete="new-password" minlength="8" required></label>
       <label class="inline"><input id="show-password" type="checkbox"> Mostrar senha</label>

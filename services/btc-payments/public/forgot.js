@@ -62,15 +62,20 @@ resetForm.addEventListener('submit', async (e) => {
     erro.textContent = problema;
     return;
   }
+  // Token (link do e-mail) tem precedencia sobre o codigo de 6 digitos.
+  const token = document.getElementById('token').value.trim();
+  const payload = token
+    ? { token, password: document.getElementById('password').value }
+    : {
+        email,
+        request_id: requestId,
+        code: document.getElementById('code').value.trim(),
+        password: document.getElementById('password').value,
+      };
   const res = await fetch('/auth/reset-password', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      email,
-      request_id: requestId,
-      code: document.getElementById('code').value.trim(),
-      password: document.getElementById('password').value,
-    }),
+    body: JSON.stringify(payload),
   });
   const body = await res.json().catch(() => ({}));
   if (res.ok) {
@@ -80,3 +85,11 @@ resetForm.addEventListener('submit', async (e) => {
   }
   erro.textContent = body?.error?.message ?? 'Código inválido';
 });
+
+// Link que veio no e-mail: ja traz o token e a tela nova senha.
+const tokenDaUrl = new URLSearchParams(window.location.search).get('reset_token');
+if (tokenDaUrl) {
+  resetForm.classList.remove('hidden');
+  document.getElementById('token').value = tokenDaUrl;
+  info.textContent = 'Digite a nova senha para trocar.';
+}

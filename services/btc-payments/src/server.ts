@@ -11,6 +11,7 @@ import { ClientService } from './services/client-service.js';
 import { AlertService } from './services/alert-service.js';
 import { AuthService } from './services/auth-service.js';
 import { NoopEmailSender } from './services/email-sender.js';
+import { SmtpEmailSender } from './services/smtp-email-sender.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { FxService } from './services/fx-service.js';
 import { MarketService } from './services/market-service.js';
@@ -81,7 +82,21 @@ export async function main(): Promise<void> {
 
     const clients = new ClientService({ repos, config, logger });
     const alerts = new AlertService({ ...config.alerts, logger });
-    const emailSender = new NoopEmailSender(logger);
+    const emailSender =
+      config.email.sender === 'smtp' && config.email.smtp && config.email.from
+        ? new SmtpEmailSender({
+            smtp: config.email.smtp,
+            from: config.email.from,
+            publicBaseUrl: config.service.publicBaseUrl,
+            logger,
+          })
+        : new NoopEmailSender(logger);
+    if (config.email.sender === 'noop') {
+      logger.warn(
+        {},
+        'e-mail desativado (EMAIL_SENDER=noop): token de redefinicao de senha e aviso de troca de carteira nao chegam ao lojista',
+      );
+    }
     // authO issuer: codigos por e-mail e anti-robo. Sem ele, o portal usa
     // tokens locais (so desenvolvimento).
     const autho = config.autho ? new AuthoIssuerClient(config.autho) : undefined;
