@@ -246,7 +246,43 @@ POST /v1/user/clients
 
 O nonce é de uso único, expira em 10 minutos e é gravado (replay é recusado).
 
-### C13 — Cadastro da loja com o mesmo endereço
+### C13 — Gas: a política e a "gas station" (novo)
+
+O gas **não é automático**: pagar um Pix é uma transferência ERC-20 comum e o
+gas sai da carteira de quem paga. A LuniumPay paga o gas do *sweep* dela e do
+Pix, não o seu envio.
+
+Medido na Polygon (2026-11-03): **61.001 gas** por envio = 0,0169 POL a
+277 gwei (0,0244 a 400 gwei).
+
+**No app** (`blue_modules/lunium/gas-policy.ts`):
+
+| Conceito | Valor |
+|---|---|
+| custo | `gasLimit x precoBase` |
+| pior caso (o que o app aceita assinar) | `custo x 2` |
+| alvo do saldo nativo | `min(0,05 POL, pior caso x 2 envios)` |
+| reposição | `alvo - saldo` (ou seja, o que a última operação consumiu) |
+
+**No motor** (a automatização de verdade): uma *gas station* — o motor tem uma
+tesouraria de POL e reembolsa o gas:
+
+```http
+POST /v1/user/gas/topup
+{ "address": "0xABC...", "chain": "polygon" }
+→ { "amount": "0.05", "tx_hash": "0x...", "reason": "gas_reserve" }
+```
+
+- o motor envia POL da tesouraria para a carteira do usuário;
+- o gas efetivamente gasto (lido da tx) é **creditado em USDC** no extrato do
+  usuário: o estoque de POL volta ao alvo e não encolhe;
+- a tesouraria é um segredo novo em produção (`GAS_STATION_PRIVATE_KEY`), com
+  o mesmo cuidado do `DATA_ENCRYPTION_KEY` (chave isolada, sem outros usos).
+
+Sem a gas station, o app mostra o endereço e o valor a repor (o que já está
+implementado) e o usuário manda o POL de fora.
+
+### C14 — Cadastro da loja com o mesmo endereço
 
 ```http
 POST /v1/portal/merchants/:id/wallets
@@ -384,6 +420,9 @@ O motor fatia o limite de 60 entre os dois processos (`LUNIUM_RATE_LIMIT_API_MAX
 | **`under_review` entre o Pix pago e a entrega** (~2 min): a Lunium confere o pagador | Virou `manual` no motor (com alerta) — não é pendência |
 | **Produção: a entrega usa o USDC nativo da Polygon** (`0x3c499c54…`), `Transfer` de 1,558020 USDC | Confirmado on-chain; o bridged segue na lista por robustez |
 | **A chave de produção tem `chain: polygon`; o motor falava Base** | Corrigido: `PIX_CHAIN=polygon`, `POLYGON_*` |
+| **O cash-out não manda `asset_amount` e o `usdt_amount` é o valor comprado** | Idem: o valor entregue vem de `delivery_accounting.aSacar` |
+| **O gas do cash-out sai da carteira de quem paga** (61.001 gas = 0,0169 POL) | Política de gas no app + gas station no motor (C13) |
+| **O `cash-out` não exige o documento do recebedor** (a documentação diz que exige, para chave de e-mail) | A API aceitou a ordem e o aceite sem `tax_number`; o risco fica no provedor do Pix |
 | **Os limites do cash-in do motor divergiam da chave** (2500–25.000.000 vs 102–600.000) | Corrigido: o default agora é o da chave |
 | Cash-out: `deposit_address` só vem no `accept`; `deposit_tag` é `null` na Polygon | O trilho é viável: não há memo na Polygon |
 | Cash-in: `settlement_status` vira `sent` alguns segundos depois do pagamento | `pago` e `liquidado` são estados diferentes; o app não pode Treating "pago" como "entregue" |
