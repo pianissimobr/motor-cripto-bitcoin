@@ -48,6 +48,10 @@ curl -X POST https://$DOMAIN/admin/api/clients \
 - PIX: `GET /admin/api/pix-charges`; para forçar sincronização use
   `POST /admin/api/pix-charges/:id/sync`. Em timeout de criação a cobrança fica
   `incerto`; nunca crie outra cobrança com o mesmo `external_id`.
+- Limite da Lunium (60 req/min por chave): o motor segura em `LUNIUM_RATE_LIMIT_*`
+  (fatia da API + fatia do worker, soma abaixo do teto). Em 429 o limitador
+  pausa, reduz a taxa e a reconciliação adia o ciclo. Veja
+  `btc_payments_lunium_rate_limit_*` em `/metrics`.
 - Alertas opcionais em `ALERT_WEBHOOK_URL`: job falhou, pagamento duplicado,
   reorg, valor Lightning divergente, cobrança PIX incerta/manual.
 
@@ -112,6 +116,19 @@ curl -X POST https://$DOMAIN/admin/api/webhooks/<id>/replay \
   lojista; o estorno ao cliente é com ele.
 - Reorg: aguarde reconfirmação; o watcher reavalia. O lojista gastar o BTC da
   própria carteira não é reorg: o depósito continua confirmado.
+
+### E-mail não sai (token de senha, aviso de carteira)
+
+- Sintoma: o lojista não recebe o código/token nem o aviso de troca de
+  carteira; o log mostra `e-mail desativado (EMAIL_SENDER=noop)` no boot ou
+  `falha ao enviar aviso de carteira`.
+- `EMAIL_SENDER=noop` significa que nada sai: **ninguém consegue redefinir a
+  senha**. Configure o relay (`EMAIL_SENDER=smtp`, `SMTP_HOST`, `SMTP_PORT`,
+  `EMAIL_FROM`, e `SMTP_USER`/`SMTP_PASS` se o relay exigir autenticação) e
+  reinicie a API.
+- O log do relay fica fora do container; se o `docker compose logs api` mostrar
+  erro de SMTP, o problema é do relay (porta, credencial, `SMTP_SECURE` para a
+  465 e `SMTP_STARTTLS` para a 587).
 
 ### Rotação de chaves
 

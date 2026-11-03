@@ -40,8 +40,10 @@ carteiras que você cadastrar.
 2. O cadastro cria sua **primeira loja** e devolve **uma única vez**: API key,
    `request_secret` e `webhook_secret`. Copie e guarde.
 3. Em desenvolvimento/local, o e-mail de verificação não sai: o token é exibido
-   na tela. Copie e use no passo de verificação. Em produção, plugue um provedor
-   de e-mail (SMTP/Resend/SES) — fale com quem opera o serviço.
+   na tela. Copie e use no passo de verificação. Em produção, o serviço precisa
+   de um relay SMTP configurado (`EMAIL_SENDER=smtp`, `SMTP_HOST`, `EMAIL_FROM`);
+   sem isso o token de redefinição de senha e o aviso de troca de carteira não
+   chegam — fale com quem opera o serviço.
 
 Depois de logado, o `https://SEU-DOMINIO/portal` é o seu **dashboard**: troca de
 loja, carteiras, criar QR, relatórios e assinaturas.

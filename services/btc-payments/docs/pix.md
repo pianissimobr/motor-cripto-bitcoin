@@ -62,6 +62,47 @@ JOBS_PIX_POLL_MS=30000
 - O CPF/CNPJ do pagador e obrigatorio pela Lunium e nao e persistido em texto
   claro; guardamos apenas hash e ultimos 4 digitos.
 
+### Limite de requisicoes
+
+A Lunium aceita 60 req/min por chave. O motor segura isso em `LUNIUM_RATE_LIMIT_*`:
+a API e o worker sao processos separados, cada um com a sua fatia
+(`LUNIUM_RATE_LIMIT_API_MAX` + `LUNIUM_RATE_LIMIT_WORKER_MAX`, soma abaixo de
+`LUNIUM_RATE_LIMIT_MAX`). Em 429 o limitador pausa pelo `retry-after`, reduz a
+taxa efetiva e a reconciliacao adia o ciclo.
+
+O catalogo (`GET /catalog`) e os limites do pagador (`GET /cashin/limits`) ficam
+em cache (`LUNIUM_CATALOG_CACHE_MS`, `LUNIUM_LIMITS_CACHE_MS`): sem isso, um
+pico de cobrancas gasta o limite da Lunium so com consultas de limite.
+
+## Teste ponta a ponta no sandbox
+
+```bash
+cd services/btc-payments
+npm run migrate
+npm run merchant:pix:seed -- --address 0x2222222222222222222222222222222222222222
+# guarda o JSON com api_key e request_secret
+npm run dev
+npm run worker
+npm run pix:e2e -- --api-key mk_... --request-secret ... \
+  --admin-token "$ADMIN_TOKEN" --lunium-api-key lun_test_...
+```
+
+O script cria a cobranca pelo motor, paga no simulador da Lunium
+(`POST /sandbox/cashin/{id}/pay`) e sincroniza ate a liquidacao.
+
+O que o sandbox ensina (medido em 2026-11-03):
+
+| Achado | Consequencia no motor |
+|---|---|
+| `qr_copypaste` vem como `SANDBOX:NAO_PAGAVEL:<cashin_id>`, nao e BR Code | o QR local nao substitui o `qr_image_url` da Lunium |
+| `asset_amount` nao vem; so o legado `usdt_amount` | o motor usa `usdt_amount` quando `sandbox=true` |
+| `settlement_tx_hash` e `sandbox:<hash>` (nao existe on-chain) | no sandbox, `PIX_VERIFY_SETTLEMENT_TX=false` |
+| `settlement_status` vira `sent` alguns segundos depois do pagamento | o `pix-reconcile` (30 s) pega sozinho; nao sincronizar na mao |
+| `settlement_status: pending` e `status: paid` no mesmo instante | `pago` vem antes de `liquidado`: sao dois estados, nao um |
+
+O E2E fecha no caminho normal: com o worker no ar, a cobranca chega em
+`liquidado` sem nenhuma chamada de sincronizacao.
+
 ## API
 
 ### Criar cobrança
