@@ -140,6 +140,19 @@ const EnvSchema = z
       z.string().min(8).optional(),
     ),
     LUNIUM_TIMEOUT_MS: intFromEnv(15_000, 1_000),
+    // A Lunium aceita 60 req/min por chave. O motor fica abaixo do teto para
+    // sobrar folga e reage a 429 reduzindo o limite efetivo.
+    // `api` e `worker` sao processos separados: cada um segura a sua fatia
+    // (API = chamadas interativas, worker = reconciliacao) e a soma das duas
+    // nao pode passar do total.
+    LUNIUM_RATE_LIMIT_MAX: intFromEnv(50, 1, 60),
+    LUNIUM_RATE_LIMIT_API_MAX: intFromEnv(20, 1, 60),
+    LUNIUM_RATE_LIMIT_WORKER_MAX: intFromEnv(25, 1, 60),
+    LUNIUM_RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),
+    LUNIUM_RATE_LIMIT_MAX_QUEUE: intFromEnv(100, 1, 1_000),
+    // Catalogo muda raremente; limites do pagador mudam por uso.
+    LUNIUM_CATALOG_CACHE_MS: intFromEnv(300_000, 0),
+    LUNIUM_LIMITS_CACHE_MS: intFromEnv(20_000, 0),
     PIX_ASSET: z.literal('usdc').default('usdc'),
     PIX_CHAIN: z.literal('base').default('base'),
     PIX_MIN_BRL_CENTS: bigintFromEnv('2500'),
@@ -167,6 +180,7 @@ const EnvSchema = z
     JOBS_ONCHAIN_POLL_MS: intFromEnv(15_000, 1_000),
     JOBS_WEBHOOK_POLL_MS: intFromEnv(10_000, 1_000),
     JOBS_PIX_POLL_MS: intFromEnv(30_000, 1_000),
+    JOBS_PIX_BATCH_SIZE: intFromEnv(30, 1, 1_000),
     JOBS_SUBSCRIPTION_MS: intFromEnv(60_000, 1_000),
     JOBS_RECONCILIATION_MS: intFromEnv(86_400_000, 60_000),
     JOBS_BATCH_SIZE: intFromEnv(50, 1, 1_000),
@@ -223,6 +237,17 @@ const EnvSchema = z
         code: 'custom',
         path: ['LUNIUM_WEBHOOK_SECRET'],
         message: 'obrigatorio quando PIX_ENABLED=true',
+      });
+    }
+    if (
+      env.LUNIUM_RATE_LIMIT_API_MAX + env.LUNIUM_RATE_LIMIT_WORKER_MAX >
+      env.LUNIUM_RATE_LIMIT_MAX
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LUNIUM_RATE_LIMIT_WORKER_MAX'],
+        message:
+          'LUNIUM_RATE_LIMIT_API_MAX + LUNIUM_RATE_LIMIT_WORKER_MAX nao pode passar de LUNIUM_RATE_LIMIT_MAX',
       });
     }
     if (env.NODE_ENV !== 'production') return;
@@ -315,6 +340,15 @@ export type AppConfig = {
     minBrlCents: bigint;
     maxBrlCents: bigint;
     verifySettlementTx: boolean;
+    rateLimit: {
+      totalMax: number;
+      apiMax: number;
+      workerMax: number;
+      windowMs: number;
+      maxQueue: number;
+    };
+    catalogCacheMs: number;
+    limitsCacheMs: number;
   };
   webhook: {
     timeoutMs: number;
@@ -326,6 +360,7 @@ export type AppConfig = {
     onchainPollMs: number;
     webhookPollMs: number;
     pixPollMs: number;
+    pixBatchSize: number;
     subscriptionMs: number;
     reconciliationMs: number;
     batchSize: number;
@@ -511,6 +546,15 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       minBrlCents: env.PIX_MIN_BRL_CENTS,
       maxBrlCents: env.PIX_MAX_BRL_CENTS,
       verifySettlementTx: env.PIX_VERIFY_SETTLEMENT_TX,
+      rateLimit: {
+        totalMax: env.LUNIUM_RATE_LIMIT_MAX,
+        apiMax: env.LUNIUM_RATE_LIMIT_API_MAX,
+        workerMax: env.LUNIUM_RATE_LIMIT_WORKER_MAX,
+        windowMs: env.LUNIUM_RATE_LIMIT_WINDOW_MS,
+        maxQueue: env.LUNIUM_RATE_LIMIT_MAX_QUEUE,
+      },
+      catalogCacheMs: env.LUNIUM_CATALOG_CACHE_MS,
+      limitsCacheMs: env.LUNIUM_LIMITS_CACHE_MS,
     },
     webhook: {
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,
@@ -522,6 +566,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       onchainPollMs: env.JOBS_ONCHAIN_POLL_MS,
       webhookPollMs: env.JOBS_WEBHOOK_POLL_MS,
       pixPollMs: env.JOBS_PIX_POLL_MS,
+      pixBatchSize: env.JOBS_PIX_BATCH_SIZE,
       subscriptionMs: env.JOBS_SUBSCRIPTION_MS,
       reconciliationMs: env.JOBS_RECONCILIATION_MS,
       batchSize: env.JOBS_BATCH_SIZE,

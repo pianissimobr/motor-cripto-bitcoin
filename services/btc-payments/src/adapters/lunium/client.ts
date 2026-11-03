@@ -4,6 +4,11 @@ import type {
   PixProviderSettlementStatus,
   PixProviderStatus,
 } from '../../domain/types.js';
+import {
+  LuniumRateLimiter,
+  type RateLimitPriority,
+} from './rate-limiter.js';
+import { TtlCache } from './ttl-cache.js';
 
 export type LuniumCharge = {
   cashin_id: string;
@@ -69,6 +74,59 @@ export type LuniumPreview = {
   sandbox?: boolean;
 };
 
+/** `GET /catalog` — pares de cripto que a Lunium recebe. */
+export type LuniumCatalog = {
+  updatedAt?: string | null;
+  fast?: CatalogRail[];
+  convert?: CatalogRail[];
+  dex?: Record<string, unknown>;
+  stale?: boolean;
+};
+
+export type CatalogRail = {
+  asset?: string;
+  network?: string;
+  min_brl_cents?: number;
+  max_brl_cents?: number;
+  precision?: number;
+  fee_bps?: number;
+  fee_fixed_cents?: number;
+  eta?: string;
+  nota?: string;
+  deposit_eta?: {
+    network: string;
+    confirmations: number;
+    eta_seconds: number;
+    eta: string;
+  }[];
+};
+
+/** `GET /cashin/catalog` — o que a Lunium entrega no cash-in. */
+export type LuniumCashinCatalog = {
+  updatedAt?: string | null;
+  instant?: CashinCatalogRail[];
+  convert?: CashinCatalogRail[];
+  dropped?: { asset: string; network: string; motivo: string }[];
+  totals?: Record<string, unknown>;
+  stale?: boolean;
+};
+
+export type CashinCatalogRail = {
+  asset: string;
+  network?: string;
+  eta?: string;
+  etaSeconds?: number;
+  entregavel?: boolean;
+  fastest?: boolean;
+  min_brl_cents?: number;
+  precision?: number;
+  memoRequired?: boolean;
+  withdrawFee?: string;
+  withdrawMin?: string;
+  withdrawMax?: string;
+  minBuyAmount?: string;
+};
+
 export type CreateLuniumChargeInput = {
   amountCents: bigint;
   payerTaxNumber: string;
@@ -87,6 +145,16 @@ export type LuniumClientOptions = {
   webhookSecret?: string;
   timeoutMs: number;
   fetchImpl?: typeof fetch;
+  /** Requisições por janela liberadas para a Lunium. */
+  rateLimit?: {
+    maxRequests: number;
+    windowMs: number;
+    maxQueue?: number;
+  };
+  /** TTL do cache do catalogo (ms). */
+  catalogCacheMs?: number;
+  /** TTL do cache dos limites do pagador (ms). */
+  limitsCacheMs?: number;
 };
 
 export class LuniumError extends Error {
@@ -134,6 +202,10 @@ export class LuniumClient {
   private readonly webhookSecret: string | null;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly limiter: LuniumRateLimiter;
+  private readonly catalogCache: TtlCache<LuniumCatalog>;
+  private readonly cashinCatalogCache: TtlCache<LuniumCashinCatalog>;
+  private readonly limitsCache: TtlCache<LuniumLimits>;
 
   constructor(options: LuniumClientOptions) {
     this.apiUrl = options.apiUrl.replace(/\/+$/, '');
@@ -141,23 +213,49 @@ export class LuniumClient {
     this.webhookSecret = options.webhookSecret ?? null;
     this.timeoutMs = options.timeoutMs;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.limiter = new LuniumRateLimiter({
+      maxRequests: options.rateLimit?.maxRequests ?? 55,
+      windowMs: options.rateLimit?.windowMs ?? 60_000,
+      ...(options.rateLimit?.maxQueue !== undefined
+        ? { maxQueue: options.rateLimit.maxQueue }
+        : {}),
+    });
+    this.catalogCache = new TtlCache<LuniumCatalog>({
+      ttlMs: options.catalogCacheMs ?? 300_000,
+    });
+    this.cashinCatalogCache = new TtlCache<LuniumCashinCatalog>({
+      ttlMs: options.catalogCacheMs ?? 300_000,
+    });
+    this.limitsCache = new TtlCache<LuniumLimits>({
+      ttlMs: options.limitsCacheMs ?? 20_000,
+    });
+  }
+
+  /** Limitador em uso (exposto para métricas e diagnóstico). */
+  get rateLimiter(): LuniumRateLimiter {
+    return this.limiter;
   }
 
   async createCharge(input: CreateLuniumChargeInput): Promise<LuniumCharge> {
-    return this.request<LuniumCharge>('POST', '/cashin/charge', {
-      amount_cents: Number(input.amountCents),
-      payer_tax_number: input.payerTaxNumber,
-      destino: 'cripto',
-      asset: input.asset,
-      chain: input.chain,
-      payout_address: input.payoutAddress,
-      external_id: input.externalId,
-      ...(input.payerName ? { payer_name: input.payerName } : {}),
-      ...(input.customerRef ? { customer_ref: input.customerRef } : {}),
-      ...(input.sandboxScenario
-        ? { sandbox_scenario: input.sandboxScenario }
-        : {}),
-    });
+    return this.request<LuniumCharge>(
+      'POST',
+      '/cashin/charge',
+      {
+        amount_cents: Number(input.amountCents),
+        payer_tax_number: input.payerTaxNumber,
+        destino: 'cripto',
+        asset: input.asset,
+        chain: input.chain,
+        payout_address: input.payoutAddress,
+        external_id: input.externalId,
+        ...(input.payerName ? { payer_name: input.payerName } : {}),
+        ...(input.customerRef ? { customer_ref: input.customerRef } : {}),
+        ...(input.sandboxScenario
+          ? { sandbox_scenario: input.sandboxScenario }
+          : {}),
+      },
+      'alta',
+    );
   }
 
   async health(): Promise<{ ok: boolean; detail?: string }> {
@@ -176,6 +274,8 @@ export class LuniumClient {
     return this.request<LuniumCharge>(
       'GET',
       `/cashin/${encodeURIComponent(cashinId)}/status`,
+      undefined,
+      'normal',
     );
   }
 
@@ -183,14 +283,44 @@ export class LuniumClient {
     const data = await this.request<LuniumChargeList>(
       'GET',
       `/cashin/charges?external_id=${encodeURIComponent(externalId)}`,
+      undefined,
+      'normal',
     );
     return data.items ?? [];
   }
 
+  /**
+   * Limites do pagador. Fica em cache porque muda devagar e é consultado em
+   * toda criação de cobrança: sem cache, um pico de cobranças consome o
+   * limite de 60 req/min da Lunium só com consultas de limite.
+   */
   async getLimits(payerTax: string): Promise<LuniumLimits> {
-    return this.request<LuniumLimits>(
-      'GET',
-      `/cashin/limits?payer_tax=${encodeURIComponent(payerTax)}`,
+    return this.limitsCache.wrap(payerTax, () =>
+      this.request<LuniumLimits>(
+        'GET',
+        `/cashin/limits?payer_tax=${encodeURIComponent(payerTax)}`,
+        undefined,
+        'alta',
+      ),
+    );
+  }
+
+  /** `GET /catalog` — pares de cripto que a Lunium recebe (cache de 5 min). */
+  async getCatalog(): Promise<LuniumCatalog> {
+    return this.catalogCache.wrap('catalog', () =>
+      this.request<LuniumCatalog>('GET', '/catalog', undefined, 'normal'),
+    );
+  }
+
+  /** `GET /cashin/catalog` — o que a Lunium entrega no cash-in. */
+  async getCashinCatalog(): Promise<LuniumCashinCatalog> {
+    return this.cashinCatalogCache.wrap('cashin/catalog', () =>
+      this.request<LuniumCashinCatalog>(
+        'GET',
+        '/cashin/catalog',
+        undefined,
+        'normal',
+      ),
     );
   }
 
@@ -199,11 +329,16 @@ export class LuniumClient {
     asset: 'usdc';
     chain: 'base';
   }): Promise<LuniumPreview> {
-    return this.request<LuniumPreview>('POST', '/cashin/preview', {
-      amount_cents: Number(input.amountCents),
-      asset: input.asset,
-      chain: input.chain,
-    });
+    return this.request<LuniumPreview>(
+      'POST',
+      '/cashin/preview',
+      {
+        amount_cents: Number(input.amountCents),
+        asset: input.asset,
+        chain: input.chain,
+      },
+      'alta',
+    );
   }
 
   verifyWebhook(input: {
@@ -260,12 +395,24 @@ export class LuniumClient {
     method: 'GET' | 'POST',
     path: string,
     body?: Record<string, unknown>,
+    priority: RateLimitPriority = 'normal',
   ): Promise<T> {
     const url = `${this.apiUrl}${path}`;
     const requestId = randomUUID();
     let lastError: unknown = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.limiter.acquire(priority);
+      } catch (err) {
+        throw new LuniumError('fila de chamadas a Lunium cheia', {
+          statusCode: 503,
+          code: 'lunium_rate_limited',
+          detail: err instanceof Error ? err.message : String(err),
+          requestId,
+        });
+      }
+
       try {
         const response = await (this.fetchImpl ?? fetch)(url, {
           method,
@@ -280,6 +427,7 @@ export class LuniumClient {
         });
 
         if (response.ok) {
+          this.limiter.recordSuccess();
           return (await response.json()) as T;
         }
 
@@ -291,6 +439,10 @@ export class LuniumClient {
           parsed = null;
         }
         const retryable = response.status === 429 || response.status >= 500;
+        if (response.status === 429) {
+          // O provedor recusou por limite: pausa geral e reduz o teto.
+          this.limiter.recordThrottled(retryAfterMs(response.headers));
+        }
         const error = new LuniumError(
           typeof parsed?.detail === 'string'
             ? parsed.detail
@@ -306,6 +458,7 @@ export class LuniumClient {
         );
         lastError = error;
         if (!retryable || attempt === 2) throw error;
+        await sleep(backoffMs(attempt, retryAfterMs(response.headers)));
       } catch (err) {
         if (err instanceof LuniumError) throw err;
         lastError = err;
@@ -325,6 +478,26 @@ export class LuniumClient {
       ? lastError
       : new LuniumError('falha ao chamar a Lunium', { statusCode: 503 });
   }
+}
+
+/** `retry-after` em segundos (a Lunium envia segundos, não headers HTTP crus). */
+function retryAfterMs(headers: Headers): number | undefined {
+  const raw = headers.get('retry-after');
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  const date = Date.parse(raw);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
+/** Espera entre tentativas, respeitando o `retry-after` do provedor. */
+function backoffMs(attempt: number, retryAfter?: number): number {
+  const base = 250 * 2 ** attempt;
+  if (retryAfter !== undefined && retryAfter > 0) {
+    return Math.min(retryAfter, 30_000);
+  }
+  return base;
 }
 
 export type LuniumErrorOptions = {

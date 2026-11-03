@@ -344,7 +344,20 @@ export class PixChargeService {
     checked: number;
     synced: number;
     errors: number;
+    skipped?: boolean;
   }> {
+    // A Lunium recusou por limite: o limitador esta em cooldown. Reconciliar
+    // agora so gastaria a fila e pioraria a situacao; o proximo ciclo tenta
+    // de novo.
+    const cooldown = this.deps.lunium.rateLimiter.cooldownRemaining();
+    if (cooldown > 0) {
+      this.deps.logger.warn(
+        { cooldownMs: cooldown },
+        'reconciliacao PIX adiada: limite da Lunium em cooldown',
+      );
+      return { checked: 0, synced: 0, errors: 0, skipped: true };
+    }
+
     const charges = await this.deps.repos.listPixChargesToReconcile(limit);
     let synced = 0;
     let errors = 0;

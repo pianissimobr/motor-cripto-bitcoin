@@ -62,6 +62,13 @@ export async function main(): Promise<void> {
               ? { webhookSecret: config.pix.luniumWebhookSecret }
               : {}),
             timeoutMs: config.pix.timeoutMs,
+            rateLimit: {
+              maxRequests: config.pix.rateLimit.apiMax,
+              windowMs: config.pix.rateLimit.windowMs,
+              maxQueue: config.pix.rateLimit.maxQueue,
+            },
+            catalogCacheMs: config.pix.catalogCacheMs,
+            limitsCacheMs: config.pix.limitsCacheMs,
           })
         : null;
 
@@ -94,7 +101,11 @@ export async function main(): Promise<void> {
     const market = new MarketService({ logger });
     const ledger = new LedgerService(db.db);
     const wallets = new MerchantWalletService(db.db);
-    const metrics = new MetricsService({ repos, ledger });
+    const metrics = new MetricsService({
+      repos,
+      ledger,
+      ...(lunium ? { luniumLimiter: lunium.rateLimiter } : {}),
+    });
     const reports = new ReportService({ db: db.db });
     const lnbitsFor = config.lightning.enabled
       ? createLnbitsFactory(config, logger)

@@ -156,4 +156,88 @@ describe('LuniumClient', () => {
       }),
     ).toThrow(LuniumError);
   });
+
+  it('consulta os limites do pagador uma vez e reaproveita o cache', async () => {
+    let chamadas = 0;
+    const client = new LuniumClient({
+      apiUrl: 'https://lunium.test',
+      apiKey: 'lun_test_key',
+      timeoutMs: 5_000,
+      limitsCacheMs: 60_000,
+      fetchImpl: async () => {
+        chamadas++;
+        return jsonResponse({ max_amount_cents: 100_000 });
+      },
+    });
+
+    await client.getLimits('00000000191');
+    await client.getLimits('00000000191');
+    await client.getLimits('00000000191');
+
+    expect(chamadas).toBe(1);
+  });
+
+  it('nao reaproveita o cache dos limites entre pagadores diferentes', async () => {
+    let chamadas = 0;
+    const client = new LuniumClient({
+      apiUrl: 'https://lunium.test',
+      apiKey: 'lun_test_key',
+      timeoutMs: 5_000,
+      limitsCacheMs: 60_000,
+      fetchImpl: async () => {
+        chamadas++;
+        return jsonResponse({ max_amount_cents: 100_000 });
+      },
+    });
+
+    await client.getLimits('00000000191');
+    await client.getLimits('00000000192');
+
+    expect(chamadas).toBe(2);
+  });
+
+  it('mantem o catalogo em cache', async () => {
+    let chamadas = 0;
+    const client = new LuniumClient({
+      apiUrl: 'https://lunium.test',
+      apiKey: 'lun_test_key',
+      timeoutMs: 5_000,
+      catalogCacheMs: 60_000,
+      fetchImpl: async () => {
+        chamadas++;
+        return jsonResponse({ fast: [{ asset: 'usdc', network: 'polygon' }] });
+      },
+    });
+
+    const a = await client.getCatalog();
+    const b = await client.getCatalog();
+
+    expect(chamadas).toBe(1);
+    expect(a).toEqual(b);
+  });
+
+  it('reduz o teto e espera o retry-after quando a Lunium recusa por limite', async () => {
+    let chamadas = 0;
+    const client = new LuniumClient({
+      apiUrl: 'https://lunium.test',
+      apiKey: 'lun_test_key',
+      timeoutMs: 5_000,
+      rateLimit: { maxRequests: 60, windowMs: 100 },
+      fetchImpl: async () => {
+        chamadas++;
+        return new Response(JSON.stringify({ erro: 'limite_excedido' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        });
+      },
+    });
+
+    await expect(client.getCatalog()).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'limite_excedido',
+    });
+
+    expect(chamadas).toBe(3); // duas tentativas e o erro final
+    expect(client.rateLimiter.currentLimit).toBeLessThan(60);
+  }, 20_000);
 });

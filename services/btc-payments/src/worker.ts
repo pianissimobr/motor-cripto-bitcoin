@@ -85,6 +85,13 @@ export async function startWorker(): Promise<WorkerHandle> {
             ? { webhookSecret: config.pix.luniumWebhookSecret }
             : {}),
           timeoutMs: config.pix.timeoutMs,
+          rateLimit: {
+            maxRequests: config.pix.rateLimit.workerMax,
+            windowMs: config.pix.rateLimit.windowMs,
+            maxQueue: config.pix.rateLimit.maxQueue,
+          },
+          catalogCacheMs: config.pix.catalogCacheMs,
+          limitsCacheMs: config.pix.limitsCacheMs,
         })
       : null;
   const pixCharges = lunium
@@ -155,7 +162,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     jobs.push({
       name: 'pix-reconcile',
       intervalMs: config.jobs.pixPollMs,
-      run: () => service.reconcile(batch),
+      run: () => service.reconcile(config.jobs.pixBatchSize),
     });
   }
 

@@ -1,9 +1,12 @@
 import type { Repositories } from '../db/repositories.js';
 import type { LedgerService } from '../ledger/ledger-service.js';
+import type { LuniumRateLimiter } from '../adapters/lunium/rate-limiter.js';
 
 export type MetricsServiceDeps = {
   repos: Repositories;
   ledger?: LedgerService;
+  /** Limitador de chamadas a Lunium (estado do processo da API). */
+  luniumLimiter?: LuniumRateLimiter;
   now?: () => Date;
 };
 
@@ -153,6 +156,34 @@ export class MetricsService {
       ...metric('btc_payments_uptime_seconds', 'Uptime do processo', 'gauge', [
         { value: Math.round(process.uptime()) },
       ]),
+      ...(this.deps.luniumLimiter
+        ? [
+            ...metric(
+              'btc_payments_lunium_rate_limit_max',
+              'Teto efetivo de chamadas a Lunium por janela',
+              'gauge',
+              [{ value: this.deps.luniumLimiter.currentLimit }],
+            ),
+            ...metric(
+              'btc_payments_lunium_rate_limit_queue',
+              'Chamadas a Lunium aguardando vez',
+              'gauge',
+              [{ value: this.deps.luniumLimiter.queueLength }],
+            ),
+            ...metric(
+              'btc_payments_lunium_rate_limit_cooldown_seconds',
+              'Pausa restante por recusa de limite da Lunium',
+              'gauge',
+              [
+                {
+                  value:
+                    Math.round(this.deps.luniumLimiter.cooldownRemaining() / 100) /
+                    10,
+                },
+              ],
+            ),
+          ]
+        : []),
       ...metric('btc_payments_scrape_timestamp_seconds', 'Timestamp do scrape', 'gauge', [
         { value: Math.floor(now.getTime() / 1000) },
       ]),
