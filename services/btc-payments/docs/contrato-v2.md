@@ -269,18 +269,31 @@ tesouraria de POL e reembolsa o gas:
 
 ```http
 POST /v1/user/gas/topup
-{ "address": "0xABC...", "chain": "polygon" }
-→ { "amount": "0.05", "tx_hash": "0x...", "reason": "gas_reserve" }
+{ "address": "0xABC...", "chain": "polygon", "amount_wei": "50000000000000000" }
+→ { "amount_wei": "50000000000000000", "tx_hash": "0x...", "chain": "polygon" }
 ```
 
-- o motor envia POL da tesouraria para a carteira do usuário;
-- o gas efetivamente gasto (lido da tx) é **creditado em USDC** no extrato do
-  usuário: o estoque de POL volta ao alvo e não encolhe;
-- a tesouraria é um segredo novo em produção (`GAS_STATION_PRIVATE_KEY`), com
-  o mesmo cuidado do `DATA_ENCRYPTION_KEY` (chave isolada, sem outros usos).
+- escopo `gas:write` (fora do padrão dos clientes novos: uma chave vazada não
+  podeples para repor gas);
+- o motor envia POL da tesouraria para a carteira do usuário (chave isolada em
+  `GAS_STATION_PRIVATE_KEY`, só para isso);
+- teto por reposição (`GAS_STATION_MAX_TOPUP_WEI`, 0,05 POL) e piso da
+  tesouraria (`GAS_STATION_MIN_TREASURY_WEI`): a reposição é só para a próxima
+  operação, não para encher a carteira de gas;
+- o custo (R$ 0,012 por operação) é absorvido pelo motor ou reembolsado no
+  extrato do usuário em USDC.
 
-Sem a gas station, o app mostra o endereço e o valor a repor (o que já está
-implementado) e o usuário manda o POL de fora.
+**O que a LuniumPay não faz (medido em 2026-11-03):** ela **não entrega POL
+na Polygon** (`"rota POL/polygon não está disponível para saque agora"`), e o
+único POL do catálogo é o ERC-20 na Ethereum (mínimo de US$ 50) — que não paga
+gas na Polygon. Por isso a troca "dólar → POL" **não acontece na carteira do
+usuário**: ela seria uma transação e precisaria do gas que ela mesma produz.
+A tesouraria do motor é o que resolve.
+
+**Funding da tesouraria:** com o que o motor ganha (a taxa da LuniumPay e,
+depois, a comissão de parceiro). O saldo accumulates em USDC e, quando o POL
+baixa do piso, o motor troca USDC→POL numa DEX — operação de servidor, com
+gas de servidor.
 
 ### C14 — Cadastro da loja com o mesmo endereço
 

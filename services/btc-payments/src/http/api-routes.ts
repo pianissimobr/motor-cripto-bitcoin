@@ -32,6 +32,7 @@ import type { PaymentIntentService } from '../services/payment-intent-service.js
 import type { PixChargeService } from '../services/pix-charge-service.js';
 import type { LuniumWebhookService } from '../services/lunium-webhook-service.js';
 import { LuniumError } from '../adapters/lunium/client.js';
+import { GasStationError } from '../adapters/chain/gas-station.js';
 import { createAdminAuth, createApiAuth, parseBearerToken } from './auth.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { registerPortalRoutes } from './portal-routes.js';
@@ -39,6 +40,7 @@ import { registerCheckoutRoutes } from './checkout-routes.js';
 import type { AuthService } from '../services/auth-service.js';
 import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
+import type { GasStationService } from '../services/gas-station-service.js';
 
 export type ApiServices = {
   config: AppConfig;
@@ -58,6 +60,7 @@ export type ApiServices = {
   pixCharges?: PixChargeService;
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
+  gasStation?: GasStationService;
   reports?: ReportService;
   subscriptions?: SubscriptionService;
 };
@@ -121,6 +124,16 @@ const createPixChargeSchema = z
   })
   .strict();
 
+const gasTopUpSchema = z
+  .object({
+    address: z.string().trim().regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido'),
+    chain: z.literal('polygon').default('polygon'),
+    /** Em wei do nativo. Ausente: o motor usa o valor padrao (a folga). */
+    amount_wei: z.string().regex(/^\d+$/, 'amount_wei invalido').optional(),
+    reason: z.string().trim().max(80).optional(),
+  })
+  .strict();
+
 const apiScopeSchema = z.enum([
   'payments:write',
   'payments:read',
@@ -129,6 +142,7 @@ const apiScopeSchema = z.enum([
   'balances:read',
   'conversions:read',
   'payouts:read',
+  'gas:write',
 ]);
 
 const createClientSchema = z
@@ -423,6 +437,46 @@ export function registerApiRoutes(
       const client = request.apiClient;
       if (!client) throw new UnauthorizedError('cliente nao autenticado');
       return services.paymentIntents.cancel(client.id, params.id);
+    },
+  );
+
+  app.post(
+    '/v1/user/gas/topup',
+    { preHandler: apiAuth('gas:write') },
+    async (request, reply) => {
+      if (!services.gasStation) {
+        throw new ServiceUnavailableError('gas station indisponivel');
+      }
+      const body = parse(gasTopUpSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      if (!services.gasStation.isEnabled()) {
+        throw new ServiceUnavailableError('gas station desabilitada');
+      }
+      const amountWei = body.amount_wei
+        ? BigInt(body.amount_wei)
+        : services.config.gasStation.maxTopUpWei;
+      try {
+        const result = await services.gasStation.topUp({
+          clientId: client.id,
+          address: body.address,
+          chain: body.chain,
+          amountWei,
+          ...(body.reason ? { reason: body.reason } : {}),
+        });
+        return reply.status(201).send({
+          amount_wei: result.amountWei.toString(),
+          tx_hash: result.hash,
+          chain: body.chain,
+        });
+      } catch (err) {
+        if (err instanceof GasStationError) {
+          throw new ServiceUnavailableError(
+            `gas station: ${err.message} (${err.code})`,
+          );
+        }
+        throw err;
+      }
     },
   );
 

@@ -246,6 +246,23 @@ const EnvSchema = z
       z.string().min(1).optional(),
     ),
     SMTP_TIMEOUT_MS: intFromEnv(15_000, 1_000),
+
+    // --- Gas station (tesouraria de nativo) ---
+    // Repoe o gas das saidas on-chain do cliente: o usuario tem a stablecoin,
+    // nao o nativo. A chave e isolada e so serve para o gas.
+    GAS_STATION_ENABLED: boolFromEnv(false),
+    GAS_STATION_PRIVATE_KEY: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'GAS_STATION_PRIVATE_KEY invalida').optional(),
+    ),
+    GAS_STATION_RPC_URLS: z
+      .string()
+      .default('https://polygon-bor-rpc.publicnode.com,https://polygon-rpc.com'),
+    GAS_STATION_CHAIN_ID: intFromEnv(137, 1),
+    /** Teto por reposicao, em wei (0,05 POL). */
+    GAS_STATION_MAX_TOPUP_WEI: bigintFromEnv('50000000000000000'),
+    /** Piso da tesouraria: abaixo disso, o motor nao repõe. */
+    GAS_STATION_MIN_TREASURY_WEI: bigintFromEnv('100000000000000000'),
   })
   .superRefine((env, ctx) => {
     if (!env.LIGHTNING_ENABLED && !env.ONCHAIN_ENABLED && !env.PIX_ENABLED) {
@@ -311,6 +328,13 @@ const EnvSchema = z
           message: 'informe ao menos um contrato de USDC valido',
         });
       }
+    }
+    if (env.GAS_STATION_ENABLED && !env.GAS_STATION_PRIVATE_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['GAS_STATION_PRIVATE_KEY'],
+        message: 'obrigatorio quando GAS_STATION_ENABLED=true',
+      });
     }
     if (env.PIX_ENABLED && !env.LUNIUM_API_KEY) {
       ctx.addIssue({
@@ -471,6 +495,14 @@ export type AppConfig = {
     webhookUrl?: string;
     token?: string;
     timeoutMs: number;
+  };
+  gasStation: {
+    enabled: boolean;
+    privateKey?: string;
+    rpcUrls: string[];
+    chainId: number;
+    maxTopUpWei: bigint;
+    minTreasuryWei: bigint;
   };
   email: {
     sender: 'smtp' | 'noop';
@@ -716,6 +748,18 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       ...(env.ALERT_WEBHOOK_URL ? { webhookUrl: env.ALERT_WEBHOOK_URL } : {}),
       ...(env.ALERT_WEBHOOK_TOKEN ? { token: env.ALERT_WEBHOOK_TOKEN } : {}),
       timeoutMs: 5_000,
+    },
+    gasStation: {
+      enabled: env.GAS_STATION_ENABLED,
+      ...(env.GAS_STATION_PRIVATE_KEY
+        ? { privateKey: env.GAS_STATION_PRIVATE_KEY }
+        : {}),
+      rpcUrls: env.GAS_STATION_RPC_URLS.split(',')
+        .map((url) => url.trim().replace(/\/+$/, ''))
+        .filter((url) => url.length > 0),
+      chainId: env.GAS_STATION_CHAIN_ID,
+      maxTopUpWei: env.GAS_STATION_MAX_TOPUP_WEI,
+      minTreasuryWei: env.GAS_STATION_MIN_TREASURY_WEI,
     },
     email: {
       sender: env.EMAIL_SENDER,

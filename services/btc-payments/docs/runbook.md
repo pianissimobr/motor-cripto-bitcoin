@@ -114,6 +114,19 @@ curl -s https://$DOMAIN/ready     # db e Lunium precisam estar ok
 
 ## Incidentes
 
+### Gas station: tesouraria no piso ou chave ausente
+
+- Sintoma: o app recebe 503 "gas station: tesouraria de gas abaixo do piso" ou
+  "gas station desabilitada" no `POST /v1/user/gas/topup`.
+- A tesouraria e o que paga o gas das saidas do cliente (o usuario tem a
+  stablecoin, nao o nativo). Sem ela, o cash-out do app trava.
+- `GET /admin/api/status` traz `gasStation` com o saldo da tesouraria.
+- Repor a tesouraria: transferir POL para o endereco da tesouraria (a chave e
+  `GAS_STATION_PRIVATE_KEY`; o endereco sai de `gasStation.status`). Manter o
+  piso: `GAS_STATION_MIN_TREASURY_WEI` (0,1 POL).
+- A tesouraria se paga com o que o motor ganha nas operacoes. Quando ela
+  acumula USDC (as taxas), a troca USDC→POL numa DEX e operacao de servidor.
+
 ### Cobrança PIX travada em `manual` (conferência da Lunium)
 
 - Sintoma: a cobrança está em `manual` com `provider_status = under_review`.

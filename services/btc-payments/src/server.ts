@@ -12,6 +12,7 @@ import { AlertService } from './services/alert-service.js';
 import { AuthService } from './services/auth-service.js';
 import { NoopEmailSender } from './services/email-sender.js';
 import { SmtpEmailSender } from './services/smtp-email-sender.js';
+import { GasStationService } from './services/gas-station-service.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { FxService } from './services/fx-service.js';
 import { MarketService } from './services/market-service.js';
@@ -121,6 +122,7 @@ export async function main(): Promise<void> {
       ledger,
       ...(lunium ? { luniumLimiter: lunium.rateLimiter } : {}),
     });
+    const gasStation = new GasStationService({ repos, config, logger });
     const reports = new ReportService({ db: db.db });
     const lnbitsFor = config.lightning.enabled
       ? createLnbitsFactory(config, logger)
@@ -168,6 +170,7 @@ export async function main(): Promise<void> {
         ledger,
         wallets,
         metrics,
+        gasStation,
         reports,
         subscriptions,
         ...(lnbitsFor ? { lnbitsFor } : {}),
@@ -176,9 +179,10 @@ export async function main(): Promise<void> {
         ...(pixCharges ? { pixCharges } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
         getStatus: async () => {
-          const [counts, esploraHealth] = await Promise.all([
+          const [counts, esploraHealth, gasStatus] = await Promise.all([
             repos.getStatusCounts(),
             esplora ? esplora.health() : Promise.resolve(null),
+            gasStation.status(),
           ]);
           return {
             ok: true,
@@ -190,6 +194,7 @@ export async function main(): Promise<void> {
               onchain: config.onchain.enabled,
               pix: config.pix.enabled,
             },
+            gasStation: gasStatus,
             uptimeSeconds: Math.round(process.uptime()),
           };
         },

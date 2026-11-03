@@ -52,7 +52,9 @@ export type ApiScope =
   | 'wallets:write'
   | 'balances:read'
   | 'conversions:read'
-  | 'payouts:read';
+  | 'payouts:read'
+  /** Repor gas (nativo) para a carteira do cliente. */
+  | 'gas:write';
 
 /**
  * Escopos de um cliente novo. `wallets:write` fica de fora: trocar a carteira
