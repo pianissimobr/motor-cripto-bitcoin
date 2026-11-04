@@ -1,8 +1,17 @@
-# Contrato da integração única (v2) — app pessoal + site e-commerce
+# Contrato da integração única (v3) — app pessoal + site e-commerce
 
 Documento de contrato escrito **antes** de qualquer código de produção (F0 do
 plano). Ele fixa: quem é cada cliente do motor, quais endpoints existem, como o
 endereço é provado e como o extrato agrega.
+
+> **v3 (2026-11-04)** — fecha as decisões que faltavam depois das duas
+> operações reais (cash-in de R$ 10,00 e cash-out de R$ 6,50) e da leitura
+> da API da LuniumPay (1.44.2 / 1.50.0). O que mudou: **D21–D32** (decisões),
+> **C2, C3, C5, C6 e C12** (contratos revisados) e a **tabela de rotas**
+> (§3.1), que é o que os dois lados implementam. O resto do documento vale
+> como estava.
+
+## 1. As duas frentes
 
 ## 1. As duas frentes
 
@@ -49,6 +58,23 @@ motor é o único que fala com a LuniumPay e o único que guarda a chave.
 | D18 | O endereço do perfil pessoal vive em `api_clients.settlement_address` (não em `merchant_wallets`). |
 | D19 | **Prova de controle do endereço** ao registrar cliente e ao cadastrar loja. |
 | D20 | O extrato agrega **por endereço**: entradas de loja e de pessoa, indistintas. |
+
+### Decisões do v3 (2026-11-04)
+
+| # | Decisão | Porquê |
+|---|---|---|
+| D21 | **Hierarquia de identidade**: `endereço` (0x) é a raiz → `client_id` (credencial, substituível) → `external_id` (operação). O histórico é indexado **por endereço**: sobrevive à troca de credencial. | O app é descartável (a seed é o backup, não o app). Se o histórico morasse na credencial, perder o celular perderia o extrato. |
+| D22 | **O cliente do motor é uma carteira criada no app** — pessoa e loja são o mesmo registro (`client_type` + `settlement_address`); o site é só a superfície onde a loja se cadastra. | Tudo nasce igual: carteira → `client_id`. A loja não é um tipo diferente de cliente. |
+| D23 | **Valor sempre em centavos explícitos**: `amount_cents` (inteiro) ou `brl_amount` ("50.00"). **Nunca `amount`**, que diverge por 100× entre o app (centavos) e o motor (reais). | Um nome ambíguo entre dois lados é um bug esperando. |
+| D24 | **Uma chave LuniumPay** para o motor (a que já existe). A Lunium não modela chave por cliente: a chave é do *projeto*; o cliente final só aparece como pagador ou recebedor, por operação. | `POST /keys` só aceita `name` (nome do negócio). O que existe por cliente (`customer_ref`) é **sub-conta de saldo em custódia** — o oposto do app não-custodial. |
+| D25 | **A.identifieria por cliente vive no motor**, e a justiça de cota também: o limitador do motor é **fair-share por `client_id`**, com teto global. | A cota de 60 req/min é **por chave** (Lunium). Com uma chave, app e lojas disputam; o app (polling) pode estrangular o checkout das lojas — que é a receita. |
+| D26 | **Sub-fee é `partner_fee_bps`** (0–1000), não `spread_bps`: é a comissão do integrador **por cima** da `fee_bps` da Lunium, paga pelo usuário final. `spread_bps` não existe na API da Lunium. | Confundir taxa da Lunium com spread nosso faz o cálculo de margem errar. |
+| D27 | **Polling**: refresh por operação a cada 10–15 s (a Lunium avisa que 1/s consome a cota); **lista do extrato** a cada 30–60 s e no foreground. | A lista é a operação cara; operação viva é a que precisa de detalhe. |
+| D28 | **O motor valida o BR Code** (prefixo EMV + CRC16) e recusa com 400 `br_code_invalido`; não confia no parse do app. | Com o virando cliente de API, a confiança no app muda de natureza. |
+| D29 | **O motor expõe o estado canônico dele** + `provider_state` (cru da Lunium). O app traduz. | A Lunium é a fonte do *fato*; o motor é a fonte do *estado do produto*. Um vocabulário só, para os dois lados. |
+| D30 | **A cotação (`quote`) é efêmera**: não persiste, não consome `external_id`. Só o `POST` de criação persiste e é idempotente. | Cota e estado do motor são para operações, não para prévias. |
+| D31 | **`GET /v1/user/operations`** traz paginação por cursor, `updated_at` e um **marcador de origem** (`pessoal` \| `loja`), sem nome de loja nem dado de merchant. | O extrato é da carteira; o marcador diz "isto veio de uma loja" sem vazar o nome. |
+| D32 | **A LuniumPay tem `nivel_conta`** (`padrao` \| `vip_master`): em `vip_master` não há taxa fixa por Pix, nem escada por pagador, e o CPF/CNPJ do pagador é **opcional**. Não há API para mudar o nível — é decisão comercial da Lunium (lead filed em 2026-11-04, `lead_id` 69). | No `padrao`, cada entrada Pix custa R$ 1,00 fixos + documento do pagador — 10% de um Pix de R$ 10,00. |
 
 ### Por que D18 (e não uma linha em `merchant_wallets`)
 
@@ -103,7 +129,9 @@ POST /v1/user/cash-out-charges/quote
 ```
 
 Regra: `br_code` é exclusivo de `amount`/`brl_amount`/`pix_key` (400
-`campos_conflitantes` se vierem juntos).
+`campos_conflitantes` se vierem juntos). **v3:** a cotação é **efêmera** — não
+persiste, não consome `external_id` (D30). O `br_code` é validado pelo motor
+(prefixo EMV + CRC16) e recusado com 400 `br_code_invalido` (D28).
 
 ### C3 — Cria o cash-out
 
@@ -119,19 +147,50 @@ POST /v1/user/cash-out-charges
 {
   "id": "uuid",
   "external_id": "app-<uuid>",
-  "state": "AWAITING_DEPOSIT",
+  "state": "aguardando_deposito",
+  "provider_state": "AWAITING_DEPOSIT",
   "deposit_address": "0x...",
   "deposit_tag": null,
   "asset": "USDC",
   "network": "polygon",
   "amount": "9.97",
-  "brl_amount": "50.00"
+  "brl_amount": "50.00",
+  "origin_address": "0x...",
+  "expires_at": "2026-11-04T10:00:00.000Z"
 }
 ```
 
 O endereço de depósito **só existe depois do `accept`** (a Lunium entrega o
 endereço no aceite). `deposit_tag` é para redes com memo (solana, tron, xrp);
 **na Polygon vem `null`** — verificado no sandbox em 2026-11-03.
+
+**v3:**
+- o `state` é o **canônico do motor** (D29) e o `provider_state` é o cru da
+  Lunium, para quando o app precisar mostrar o vocabulary do provedor;
+- `origin_address` é o endereço de onde o USDC sai — é o agregador do extrato
+  (C5) e vem do `settlement_address` do cliente (D18/D22), não do corpo;
+- o `external_id` do app é a chave de idempotência: mesmo `external_id` +
+  mesmo corpo devolvem a mesma ordem (200); `external_id` com dados diferentes
+  é 409.
+
+### C3.1 — Tabela de rotas (o que os dois lados implementam)
+
+| Rota | Escopo | Request | Response |
+|---|---|---|---|
+| `POST /v1/user/cash-out-charges/quote` | `cashout:write` | `{brl_amount? \| amount_cents?, pix_key?, pix_key_type?, br_code?, refund_address?}` | `{brl_amount, asset, network, amount, fee_total_cents, expires_at}` |
+| `POST /v1/user/cash-out-charges` | `cashout:write` | `{external_id, brl_amount? \| amount_cents?, pix_key?, pix_key_type?, br_code?, refund_address?}` | ordem (C3) |
+| `GET /v1/user/cash-out-charges/:id` | `cashout:read` | — | ordem (C3) |
+| `POST /v1/user/cash-out-charges/:id/deposit` | `cashout:write` | `{tx_hash}` | 204 |
+| `POST /v1/user/cash-out-charges/:id/refund-address` | `cashout:write` | `{refund_address}` | ordem (C3) |
+| `GET /v1/user/operations` | `operations:read` | `?limit=&cursor=` | extrato (C5) |
+| `POST /v1/user/gas/topup` | `gas:write` | `{address, chain, amount_wei?}` | `{amount_wei, tx_hash, chain}` |
+| `GET /v1/user/payer-limits` | `operations:read` | `?payer_tax=` | escada do pagador (da Lunium) |
+| `POST /v1/user/challenges` | — (público) | `{purpose, address?}` | `{nonce, message, expires_at}` |
+| `POST /v1/user/clients` | — (público) | `{address, chain, proof}` | `{client_id, api_key, request_secret}` (C6) |
+| `POST /v1/pix-charges` | `payments:write` | `{external_id, amount_cents \| amount, currency, payer_tax_number, payer_name?, metadata?}` | cobrança (como hoje, com `amount_cents`) |
+
+Envelope de erro (nos dois lados): `{error: {code, message, details?}}` — o app
+ramifica por `code`, nunca por `message`.
 
 ### C4 — Reporta o depósito
 
@@ -146,7 +205,7 @@ Idempotente: repetir com o mesmo `tx_hash` não muda nada.
 ### C5 — Extrato do perfil pessoal
 
 ```http
-GET /v1/user/operations?limit=50
+GET /v1/user/operations?limit=50&cursor=<id>
 ```
 
 ```json
@@ -156,6 +215,7 @@ GET /v1/user/operations?limit=50
       "id": "uuid",
       "direction": "entrada" | "saida",
       "kind": "pix_cashin" | "pix_cashout",
+      "origin": "pessoal" | "loja",
       "state": "liquidado",
       "settlement_status": "pago",
       "brl_amount": "50.00",
@@ -164,10 +224,14 @@ GET /v1/user/operations?limit=50
       "network": "polygon",
       "tx_hash": "0x...",
       "e2e": "E0000000020261103...",
+      "receipt_url": "https://...",
+      "verify_url": "https://...",
       "created_at": "...",
+      "updated_at": "...",
       "settled_at": "..."
     }
-  ]
+  ],
+  "next_cursor": "id-da-ultima-pagina"
 }
 ```
 
@@ -179,6 +243,17 @@ endereço está em mais de um perfil).
 O extrato é da **carteira**, não da loja: não mostra nome de loja, valor de
 venda nem qualquer dado de merchant.
 
+**v3:**
+- paginação por cursor (`next_cursor`), `updated_at` sempre presente — o app
+  faz *upsert* por `id` e sabe o que mudou (D31);
+- `origin` diz **de onde** veio (`pessoal` \| `loja`), sem dizer qual loja
+  (D31);
+- o app mostra o **detalhe** da operação (E2E, comprovante, recebedor
+  mascarado, endereço de depósito no cash-out) — é o que dá confiança de que
+  o Pix foi para quem o usuário queria;
+- o saldo da carteira **não vem do motor**: é lido on-chain. O extrato é a
+  narrativa dos movimentos, o saldo é a verdade do dinheiro.
+
 ### C6 — Registra o cliente de device (perfil pessoal)
 
 ```http
@@ -189,18 +264,31 @@ POST /v1/user/clients
 {
   "address": "0xABC...",
   "chain": "polygon",
-  "proof": { "nonce": "...", "signature": "0x..." },
-  "altcha": "..."
+  "proof": { "nonce": "...", "signature": "0x..." }
 }
 ```
 
 ```json
-{ "api_key": "mk_btc_live_...", "request_secret": "...", "client_id": "uuid" }
+{ "client_id": "uuid", "api_key": "mk_btc_live_...", "request_secret": "..." }
 ```
 
 O app guarda `api_key` e `request_secret` no Keychain/Keystore e assina as
 chamadas com o HMAC canônico do motor (mesmo formato das lojas — zero código
 novo no motor).
+
+**v3:**
+- a resposta é em **snake_case** (`api_key`, `request_secret`) — o
+  `POST /admin/api/clients` devolve `apiKey`/`requestSecret`, e essa
+  divergência já enganou quem integrou;
+- o `client_id` é o **"id do mobile"** (D21): a identidade técnica do
+  aparelho. A identidade real é o **endereço**;
+- a **prova de posse é obrigatória** (C12): sem ela, qualquer um abriria um
+  cliente e consumiria a cota de 60 req/min da chave;
+- **um cliente ativo por endereço**: pedir de novo devolve o mesmo
+  `client_id` (o usuário que perdeu a credencial se re-registra sem perder o
+  histórico, que é por endereço — D21);
+- o `settlement_address` do cliente é o endereço da carteira, e é ele que
+  recebe o USDC do cash-in (C8) e de onde sai no cash-out (C3).
 
 ### C7 — (removido na v2) login e-commerce no app
 
@@ -245,6 +333,20 @@ POST /v1/user/clients
 ```
 
 O nonce é de uso único, expira em 10 minutos e é gravado (replay é recusado).
+
+**v3 — revogação (C12.1).** A loja cadastra o endereço do usuário como
+carteira de liquidação (C14). Isso é legítimo (o dinheiro é da loja), mas
+qualquer um pode cadastrar o endereço de outra pessoa. Enquanto o C14 completo
+(obrigar prova da loja) está fora do escopo, o mínimo é:
+
+- o motor **marca** a operação como `origin: "loja"` no extrato do dono do
+  endereço (C5) — o usuário vê que aquela entrada não é dele;
+- o **app** pode **revogar** o registro: `POST /v1/user/address-revocations`
+  com `{address, merchant_id}` → a loja perde o destino e cadastra outro
+  (com prova, quando o C14 entrar).
+
+A revogação é o controle que substitui o C14 no escopo atual — e é feito
+pelo app (a loja não decide sobre o endereço do outro).
 
 ### C13 — Gas: a política e a "gas station" (novo)
 
@@ -450,22 +552,49 @@ ou bridged `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`). Até la, a
 verificação do motor deve aceitar **as duas** (lista de endereços), para a
 primeira entrega real não travar em `manual`.
 
-## 8. Estado em 2026-11-03
+## 8. Estado em 2026-11-04
 
 | Fase | Situação |
 |---|---|
-| F0 (contrato e schema) | ✅ este documento |
-| F1 (cash-out no motor + Polygon) | 🟡 a **chain** e a verificação on-chain estão prontas e validadas em produção; falta a tabela `cashout_charges` e o serviço de cash-out |
-| F2 (cliente de device + prova de posse + rate limiter) | 🟡 o **rate limiter** está pronto (60 req/min fatiados entre API e worker); faltam o cliente de device (`/v1/user/clients`) e a prova de posse |
-| F3 (checkout PIX público + extrato) | ⬜ |
+| F0 (contrato e schema) | ✅ este documento (v3) |
+| F1 (cash-out no motor + Polygon) | 🟡 **em andamento**: a chain, a verificação on-chain e o **fluxo real do cash-out** (app → Lunium → Pix pago) estão validados em produção; falta o serviço no motor (tabela `cashout_charges`, rotas, job) |
+| F2 (cliente de device + prova de posse + rate limiter) | 🟡 o **rate limiter** está pronto; falta o cliente de device (`/v1/user/clients`) e a prova de posse |
+| F3 (checkout PIX público + extrato) | ⬜ (o checkout público de BTC existe; o extrato por endereço, não) |
 | F4 (site: cadastro da loja com o endereço do app) | ⬜ |
-| F5 (app: gateway abstrato) | ⬜ |
-| F6 (app: perfil pessoal) | ⬜ |
-| F7 (operação: e-mail, alertas, conformidade) | 🟡 limite e conciliação prontos; falta ligar o e-mail (SMTP) e decidir a questão regulatória |
+| F5 (app: gateway abstrato) | ✅ pronto e verificado contra o motor real (HMAC aceito, escopo `gas:write` recusado sem permissão, gas station respondendo) |
+| F6 (app: perfil pessoal) | 🟡 falta a **tela de registro do device** (sem ela o app ainda fala direto com a LuniumPay) e a tela de extrato |
+| F7 (operação: e-mail, alertas, conformidade) | 🟡 limite, conciliação e SMTP prontos; falta ligar o relay e a decisão regulatória |
 
-**Validação de ponta a ponta em produção:** uma cobrança de R$ 10,00 paga de
-verdade, conferida on-chain (`liquidado`), com E2E do Banco Central e o
-`settlement_tx_hash` registrado.
+**Validações de ponta a ponta em produção:**
+
+- **cash-in**: cobrança de R$ 10,00 paga de verdade, conferida on-chain
+  (`liquidado`), E2E `E20855875202611031543SX9I9XU27IJ`, tx
+  `0xb80bf950079fe715cbe7c7291fbc76cd5bcaf5bf6a1151cd691ad4578f6c223b`
+  (1,558020 USDC nativo na Polygon).
+- **cash-out**: R$ 6,50 para `adm@pianolabribeirao.com.br` — Pix pago, E2E
+  `E3729393020261104024702905451d07`, tx do depósito
+  `0xa2a9242d774f6a1078d23ba2231e62fc4f596f9acd8a4be39258c0dddd37f367`
+  (1,436256 USDC). O gas (0,0219 POL) veio da **gas station** do motor, que
+  repôs 0,05 POL na carteira.
+- **gas station**: `POST /v1/user/gas/topup` devolveu `201` com receipt
+  `status 0x1` (tesouraria `0x4Cd01696…3855`).
+
+> **Bug encontrado e corrigido no caminho** (2026-11-04): a transação legacy do
+> app era assinada com `v = recovery + 27 + chainId * 2` em vez de `35` (EIP-155).
+> O nó lia um chainId 4 unidades menor e recusava **toda** transação ("invalid
+> chain id for signer: have 133 want 137") — ou seja, nenhum cash-out assinado
+> pelo app passaria. O teste de conformidade comparava só o digest e repetia a
+> mesma convenção errada; agora compara a transação serializada **byte a byte**
+> com a do `ethers`.
+
+### Alternativa considerada e descartada: `/carteira-usdt`
+
+A LuniumPay passou a oferecer **carteira USDT/USDC própria** (`/carteira-usdt`):
+o usuário deposita nela e paga Pix do saldo — sem assinar nada e sem gas. É o
+caminho **custodiante** (a Lunium guarda o dinheiro; existe o erro
+`custodia_desligada` para desligar por chave). **Descartado**: a fork é
+não-custodial e a chave nunca sai do aparelho. Fica registrado para não se
+reinventar.
 
 ## 9. Fases (ordem de ataque)
 
@@ -482,24 +611,47 @@ verdade, conferida on-chain (`liquidado`), com E2E do Banco Central e o
 
 ## 10. Em aberto
 
-**Resolvidos em 2026-11-03** (mediros, não presumidos):
+**Resolvidos** (medidos, não presumidos):
 
 1. ✅ Contrato de USDC na Polygon: **nativo** (`0x3c499c54…`).
 2. ✅ `deposit_tag` na Polygon: `null` — o trilho é viável.
 3. ✅ A chave de produção tem `chain: polygon` — o motor migrou.
 4. ✅ Os limites do cash-in: `GET /keys/me` → `limits.cashin` = 102–600000.
+5. ✅ **A chave LuniumPay é do projeto, não do cliente** (D24): `POST /keys` só
+   aceita `name`/`email`/`settlement_address`/`webhook_url`/`lead_token`; o
+   cliente final aparece como pagador ou recebedor, por operação. O conceito
+   de "cliente" que existe (`customer_ref`) é sub-conta de **saldo em custódia**
+   — fora do modelo não-custodial.
+6. ✅ **Uma chave só** (D24), com **fair-share por `client_id`** no motor
+   (D25).
+7. ✅ **`spread_bps` não existe na Lunium** (D26): a nossa comissão é
+   `partner_fee_bps` (hoje 0 na chave `libreflow`).
+8. ✅ **`nivel_conta`**: existe na spec 1.50.0, só em resposta — não há API
+   para mudar. No `padrao` (o nosso hoje) são R$ 1,00 fixos por Pix e CPF do
+   pagador obrigatório. Pedido o `vip_master` via `POST /leads` em 2026-11-04
+   (`lead_id` 69); a resposta trouxe `lead_token`, que só pode ser vinculado a
+   uma chave **nova** — a nossa já existe, então o vínculo é do lado deles.
+9. ✅ O `v` da EIP-155 do app (bug que impedia qualquer cash-out assinado) —
+   corrigido e com teste que compara a tx byte a byte com a do `ethers`.
+10. ✅ Divergências app↔motor fechadas no v3: unidade do valor (`amount_cents`
+    × `brl_amount`, D23), `payout_address` fora do corpo (o destino vem do
+    cliente), vocabulário de estado (D29), `br_code` exclusivo e validado pelo
+    motor (D28), envelope de erro por `code`.
 
 **Ainda em aberto:**
 
-5. 🔶 `settlement_tx_hash` como id interno (entrega pela corretora) — o motor
-   precisa de um caminho de liquidação sem hash on-chain. Na entrega real veio
-   hash de verdade, mas a API não garante.
-6. 🔶 Sandbox sem USDC/polygon no catálogo de cash-out — pedir à LuniumPay
-   (a produção tem o par).
-7. 🔶 Prova de posse no site: QR obrigatório ou colar o endereço?
-8. 🔶 `external_id` do app = `external_id` do motor (idempotência ponta a
-   ponta) — a Lunium aceita o mesmo id nos dois lugares, mas precisa
-   confirmar.
-9. 🔶 E-mail do motor sem relay SMTP: sem ele, ninguém redefine senha.
-10. 🔶 Os limites da chave não são relidos em runtime: se a Lunium mudar a
-    faixa, o motor descobre no erro.
+11. 🔶 `settlement_tx_hash` como id interno (entrega pela corretora) — o motor
+    precisa de um caminho de liquidação sem hash on-chain. Na entrega real veio
+    hash de verdade, mas a API não garante.
+12. 🔶 Sandbox sem USDC/polygon no catálogo de cash-out — pedir à LuniumPay
+    (a produção tem o par).
+13. 🔶 C14 (prova de posse da loja) fora do escopo atual; no lugar fica o
+    marcador `origin: "loja"` + a revogação pelo app (C12.1).
+14. 🔶 E-mail do motor sem relay SMTP: sem ele, ninguém redefine senha.
+15. 🔶 Os limites da chave não são relidos em runtime: se a LuniumPay mudar a
+    faixa, o motor só descobre no erro.
+16. 🔶 `GET /v1/user/payer-limits` não existe no motor (o app já chama):
+    falta a rota que delega `GET /cashin/limits?payer_tax=`.
+17. 🔶 Cota: com uma chave, o teto é 60 req/min no total. O fair-share por
+    `client_id` está no desenho (D25) e ainda não foi implementado; a
+    cadência de polling do app também (D27).
