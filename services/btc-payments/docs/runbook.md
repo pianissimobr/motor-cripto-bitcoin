@@ -124,6 +124,14 @@ curl -s https://$DOMAIN/ready     # db e Lunium precisam estar ok
 - Repor a tesouraria: transferir POL para o endereco da tesouraria (a chave e
   `GAS_STATION_PRIVATE_KEY`; o endereco sai de `gasStation.status`). Manter o
   piso: `GAS_STATION_MIN_TREASURY_WEI` (0,1 POL).
+- A chave de verdade está no cofre (`chaves-cripto.md` na máquina do
+  operador). Para instalar uma chave nova, use
+  `KEY=0x... scripts/set-gas-station-key.sh 0xENDERECO_ESPERADO` — ele
+  confere o endereço antes de gravar, então uma chave trocada não fica
+  apontando para a carteira errada.
+- Em produção (2026-11-03) a reposição foi exercitada de verdade: `201` com
+  receipt `status 0x1` na Polygon, saindo da tesouraria
+  `0x4Cd01696Cd0165D6020AB7d8AE866Fdf2feD3855`.
 - A tesouraria se paga com o que o motor ganha nas operacoes. Quando ela
   acumula USDC (as taxas), a troca USDC→POL numa DEX e operacao de servidor.
 

@@ -39,9 +39,17 @@ Escopos por cliente:
 payments:write  payments:read
 wallets:read    wallets:write
 balances:read   conversions:read  payouts:read   (os tres ultimos: so historico)
+gas:write       (so a gas station: emprestar nativo ao cliente)
 ```
 
 Escopo ausente retorna `403`.
+
+O `gas:write` fica fora do padrao dos clientes novos de proposito: uma chave
+vazada nao empresta POL para ninguem. Quem precisa dele (o app BlueWallet) tem
+o escopo concedido na criacao do cliente — `app-bluewallet`, com
+`payments:read`, `payments:write`, `gas:write` e `wallets:read`. A credencial
+dele fica no cofre (`APP_API_KEY` + `APP_REQUEST_SECRET`) e no cofre do app
+(Keychain/Keystore); trocar uma exige desativar a outra no banco.
 
 ## Criar cobranca
 

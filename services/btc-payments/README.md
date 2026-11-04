@@ -102,6 +102,42 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 - Guarde a `DATA_ENCRYPTION_KEY`: sem ela as Invoice keys e os segredos das
   lojas gravados no banco não abrem.
 
+### Onde ficam os segredos
+
+O cofre é o `chaves-cripto.md` na máquina do operador (kombitech), com
+permissão `0600`. A VPS guarda cópias no `.env.production` (`0600`) — o
+arquivo é a fonte da verdade: quando algo muda lá, o cofre é refeito a
+partir do estado real, não no verso.
+
+O cofre guarda: a `api_key` da LuniumPay, a chave e o endereço da tesouraria
+de gas, o `ADMIN_TOKEN`, a `DATA_ENCRYPTION_KEY` e a credencial do app
+(`APP_API_KEY` + `APP_REQUEST_SECRET`).
+
+### Tesouraria de gas (gas station)
+
+A tesouraria paga o gas das saídas do cliente: quem tem stablecoin, mas não
+tem nativo, não consegue pagar o Pix. O motor empresta o nativo e cobra
+depois.
+
+```bash
+# conferir o saldo e o endereço da tesouraria
+curl -s https://$DOMAIN/admin/api/status -H "Authorization: Bearer $ADMIN_TOKEN" \
+  | grep -o 'gasStation[^}]*}'
+```
+
+A chave fica no cofre (`GAS_SPONSOR_PRIVATE_KEY`) e no `.env.production` da
+VPS (`GAS_STATION_PRIVATE_KEY`). Para trocar a chave — ou conferir que a chave
+que você tem é a da tesouraria — use o script, que **deriva o endereço a
+partir da chave e aborta se não bater**:
+
+```bash
+KEY=0x... scripts/set-gas-station-key.sh 0xENDERECO_ESPERADO
+```
+
+Estado atual: tesouraria `0x4Cd01696Cd0165D6020AB7d8AE866Fdf2feD3855`
+(Polygon), com o saldo que dá para miles de reposições, verificado em
+produção — `POST /v1/user/gas/topup` devolveu `201` com receipt `status 0x1`.
+
 ## API
 
 Toda rota `/v1/*` (exceto `/v1/portal/*`) exige API key + HMAC:
