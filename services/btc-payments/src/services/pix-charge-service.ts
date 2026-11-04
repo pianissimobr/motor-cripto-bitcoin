@@ -236,13 +236,14 @@ export class PixChargeService {
       return { dto: await this.toDto(existing), reused: true };
     }
 
-    // A Lunium entrega o USDC direto na carteira do lojista. Sem ela nao ha
-    // para onde liquidar, entao a cobranca nem e criada.
-    const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(
-      input.clientId,
-    );
-    if (!wallet) throw new SettlementWalletRequiredError();
-    const destination = wallet.address;
+    // A Lunium entrega o USDC direto na carteira de quem recebe. Sem ela nao
+    // ha para onde liquidar, entao a cobranca nem e criada.
+    //
+    // O destino tem duas fontes (D18/D22): o `settlement_address` do
+    // cliente (perfil `usuario`, a carteira criada no app) ou a carteira
+    // `usdc_settlement` da loja (perfil `loja`).
+    const destination = await this.resolveDestinationAddress(input.clientId);
+    if (!destination) throw new SettlementWalletRequiredError();
 
     try {
       const limits = await this.deps.lunium.getLimits(payerTax);
@@ -424,6 +425,25 @@ export class PixChargeService {
       }
     }
     return { checked: charges.length, synced, errors };
+  }
+
+  /**
+   * Endereco que recebe o USDC do cash-in.
+   *
+   * `usuario` (perfil pessoal do app): o `settlement_address` do cliente.
+   * `loja`: a carteira `usdc_settlement` cadastrada.
+   */
+  private async resolveDestinationAddress(
+    clientId: string,
+  ): Promise<string | null> {
+    const client = await this.deps.repos.findClientById(clientId);
+    if (client?.clientType === 'usuario' && client.settlementAddress) {
+      return client.settlementAddress.toLowerCase();
+    }
+    const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(
+      clientId,
+    );
+    return wallet?.address ?? null;
   }
 
   async applyProviderCharge(
