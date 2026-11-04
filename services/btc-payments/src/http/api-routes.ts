@@ -234,6 +234,9 @@ const apiScopeSchema = z.enum([
   'conversions:read',
   'payouts:read',
   'gas:write',
+  'cashout:write',
+  'cashout:read',
+  'operations:read',
 ]);
 
 const createClientSchema = z
