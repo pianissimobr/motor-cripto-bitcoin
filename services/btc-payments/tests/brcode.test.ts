@@ -8,29 +8,32 @@ import {
 } from '../src/domain/brcode.js';
 
 /**
- * BR Code real, gerado com a mesma_library do app (o app valida tambem — mas
- * o motor precisa validar sozinho: D28).
+ * Constroi um BR Code no formato EMV do BACEN — o mesmo do app
+ * (`blue_modules/pix/brcode.ts`): `000201` + tags + `6304` + CRC16.
  */
 function buildBrCode(fields: {
   key: string;
   amount?: string;
-  name?: string;
+  merchantName?: string;
   city?: string;
 }): string {
   const tag = (id: string, value: string) =>
-    `${id}${value.length.toString().padStart(2, '0')}${value}`;
-  const payload = [
+    `${id}${String(value.length).padStart(2, '0')}${value}`;
+  const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', fields.key);
+  const parts = [
     '000201',
-    tag('00', 'br.gov.bcb.pix'),
-    tag('26', fields.key),
+    tag('00', '01'),
+    tag('26', accountInfo),
     tag('52', '0000'),
-    tag('53', fields.name ?? 'TESTE'),
+    tag('53', '986'),
+    fields.amount ? tag('54', fields.amount) : '',
     tag('58', 'BR'),
-    tag('60', fields.city ?? 'SAO PAULO'),
-    ...(fields.amount ? [tag('54', fields.amount)] : []),
-    tag('62', tag('05', fields.amount ?? '***')),
-  ].join('|');
-  return `${payload}|${brCodeCrc16(payload)}`;
+    tag('59', fields.merchantName ?? 'PIANOLAB RIBEIRAO'),
+    tag('60', fields.city ?? 'RIBEIRAO PRETO'),
+    tag('62', tag('05', '***')),
+  ].filter(part => part.length > 0);
+  const withoutCrc = parts.join('');
+  return `${withoutCrc}6304${brCodeCrc16(`${withoutCrc}6304`)}`;
 }
 
 describe('BR Code do Pix', () => {
@@ -38,13 +41,14 @@ describe('BR Code do Pix', () => {
     const code = buildBrCode({
       key: 'adm@pianolabribeirao.com.br',
       amount: '6.50',
-      name: 'PIANOLAB RIBEIRAO',
+      merchantName: 'PIANOLAB RIBEIRAO',
     });
     const parsed = parseBrCode(code);
     expect(parsed.key).toBe('adm@pianolabribeirao.com.br');
+    expect(parsed.keyType).toBe('email');
     expect(parsed.amount).toBe('6.50');
     expect(parsed.merchantName).toBe('PIANOLAB RIBEIRAO');
-    expect(parsed.city).toBe('SAO PAULO');
+    expect(parsed.city).toBe('RIBEIRAO PRETO');
   });
 
   it('recusa um codigo adulterado (CRC16 nao confere)', () => {
@@ -64,7 +68,17 @@ describe('BR Code do Pix', () => {
     const code = buildBrCode({ key: '12345678909' });
     const parsed = parseBrCode(code);
     expect(parsed.key).toBe('12345678909');
+    expect(parsed.keyType).toBe('cpf');
     expect(parsed.amount).toBeNull();
+  });
+
+  it('recusa moeda que nao e BRL', () => {
+    const tag = (id: string, value: string) =>
+      `${id}${String(value.length).padStart(2, '0')}${value}`;
+    const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', '12345678909');
+    const parts = ['000201', tag('00', '01'), tag('26', accountInfo), tag('53', '978')].join('');
+    const code = `${parts}6304${brCodeCrc16(`${parts}6304`)}`;
+    expect(() => parseBrCode(code)).toThrow(/moeda nao suportada/);
   });
 
   it('mascara a chave Pix para exibicao', () => {

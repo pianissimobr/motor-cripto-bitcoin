@@ -9,20 +9,25 @@ import type { CashOutCharge } from '../src/domain/types.js';
 
 const ORIGIN = '0xe49FBc85D36B37Ea85895c339aA9044b0D2B7ce6';
 
-/** BR Code com CRC16 conferido (o mesmo gerador do app). */
+/** BR Code no formato EMV do BACEN (o mesmo do app). */
 function buildBrCode(fields: { key: string; amount?: string }): string {
   const tag = (id: string, value: string) =>
-    `${id}${value.length.toString().padStart(2, '0')}${value}`;
-  const payload = [
+    `${id}${String(value.length).padStart(2, '0')}${value}`;
+  const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', fields.key);
+  const parts = [
     '000201',
-    tag('00', 'br.gov.bcb.pix'),
-    tag('26', fields.key),
+    tag('00', '01'),
+    tag('26', accountInfo),
     tag('52', '0000'),
+    tag('53', '986'),
+    fields.amount ? tag('54', fields.amount) : '',
     tag('58', 'BR'),
+    tag('59', 'MERCHANT'),
     tag('60', 'SAO PAULO'),
-    ...(fields.amount ? [tag('54', fields.amount)] : []),
-  ].join('|');
-  return `${payload}|${brCodeCrc16(payload)}`;
+    tag('62', tag('05', '***')),
+  ].filter(part => part.length > 0);
+  const withoutCrc = parts.join('');
+  return `${withoutCrc}6304${brCodeCrc16(`${withoutCrc}6304`)}`;
 }
 
 function build(overrides: Record<string, string> = {}) {
@@ -160,9 +165,9 @@ describe('cash-out (regras)', () => {
         externalId: 'e1',
         amountBrlCents: 650n,
         originAddress: ORIGIN,
-        brCode: '000201|26|20|adm@exemplo.com.br|54|02|6.50|6304|ABCD',
+        brCode: '000201naoeumbrcode',
       }),
-    ).rejects.toThrow(/BR Code invalido/);
+    ).rejects.toThrow(/BR Code/);
   });
 
   it('recusa um tx_hash malformado no deposito', async () => {
