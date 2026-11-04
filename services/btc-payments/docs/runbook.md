@@ -124,8 +124,7 @@ curl -s https://$DOMAIN/ready     # db e Lunium precisam estar ok
 - Repor a tesouraria: transferir POL para o endereco da tesouraria (a chave e
   `GAS_STATION_PRIVATE_KEY`; o endereco sai de `gasStation.status`). Manter o
   piso: `GAS_STATION_MIN_TREASURY_WEI` (0,1 POL).
-- A chave de verdade está no cofre (`chaves-cripto.md` na máquina do
-  operador). Para instalar uma chave nova, use
+- Para instalar uma chave nova, use
   `KEY=0x... scripts/set-gas-station-key.sh 0xENDERECO_ESPERADO` — ele
   confere o endereço antes de gravar, então uma chave trocada não fica
   apontando para a carteira errada.

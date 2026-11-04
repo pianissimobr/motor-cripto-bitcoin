@@ -46,10 +46,8 @@ Escopo ausente retorna `403`.
 
 O `gas:write` fica fora do padrao dos clientes novos de proposito: uma chave
 vazada nao empresta POL para ninguem. Quem precisa dele (o app BlueWallet) tem
-o escopo concedido na criacao do cliente — `app-bluewallet`, com
-`payments:read`, `payments:write`, `gas:write` e `wallets:read`. A credencial
-dele fica no cofre (`APP_API_KEY` + `APP_REQUEST_SECRET`) e no cofre do app
-(Keychain/Keystore); trocar uma exige desativar a outra no banco.
+o escopo concedido no proprio cliente; trocar a credencial do app exige
+desativar a antiga no banco.
 
 ## Criar cobranca
 
