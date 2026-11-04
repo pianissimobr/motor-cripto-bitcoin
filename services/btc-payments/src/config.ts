@@ -183,6 +183,15 @@ const EnvSchema = z
     PIX_MAX_BRL_CENTS: bigintFromEnv('600000'),
     PIX_VERIFY_SETTLEMENT_TX: boolFromEnv(true),
 
+    /**
+     * Cash-out (venda de cripto por Pix). Desligado por padrao: o trilho
+     * completo depende do app assinar a transferencia (F1).
+     */
+    CASHOUT_ENABLED: boolFromEnv(false),
+    /** Faixa da venda (leia de GET /keys/me -> limits.cashout). */
+    CASHOUT_MIN_BRL_CENTS: bigintFromEnv('600'),
+    CASHOUT_MAX_BRL_CENTS: bigintFromEnv('25000000'),
+
     RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),
     RATE_LIMIT_MAX: intFromEnv(120, 1),
 
@@ -468,6 +477,16 @@ export type AppConfig = {
     catalogCacheMs: number;
     limitsCacheMs: number;
   };
+  /** Cash-out: venda de cripto por Pix (o app assina; o motor orquestra). */
+  cashout: {
+    enabled: boolean;
+    /** Ativo e rede da venda (o trilho rapido da Lunium e USDC/polygon). */
+    asset: 'USDC';
+    network: 'polygon';
+    /** Faixa aceita: a LuniumPay vai de R$ 6,00 a R$ 250.000,00 por vez. */
+    minBrlCents: bigint;
+    maxBrlCents: bigint;
+  };
   webhook: {
     timeoutMs: number;
     maxAttempts: number;
@@ -716,6 +735,13 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       },
       catalogCacheMs: env.LUNIUM_CATALOG_CACHE_MS,
       limitsCacheMs: env.LUNIUM_LIMITS_CACHE_MS,
+    },
+    cashout: {
+      enabled: env.CASHOUT_ENABLED,
+      asset: 'USDC',
+      network: 'polygon',
+      minBrlCents: env.CASHOUT_MIN_BRL_CENTS,
+      maxBrlCents: env.CASHOUT_MAX_BRL_CENTS,
     },
     webhook: {
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,

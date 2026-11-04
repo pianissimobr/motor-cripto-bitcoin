@@ -13,6 +13,7 @@ import { LedgerService } from './ledger/ledger-service.js';
 import { ReconciliationService } from './services/reconciliation-service.js';
 import { LuniumClient } from './adapters/lunium/client.js';
 import { PixChargeService } from './services/pix-charge-service.js';
+import { CashOutService } from './services/cashout-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { createLnbitsFactory } from './services/merchant-lightning.js';
@@ -97,6 +98,10 @@ export async function startWorker(): Promise<WorkerHandle> {
   const pixCharges = lunium
     ? new PixChargeService({ repos, lunium, config, logger, alerts })
     : null;
+  const cashOut =
+    lunium && config.cashout.enabled
+      ? new CashOutService({ repos, lunium, config, logger, alerts })
+      : null;
   const luniumWebhook = pixCharges && lunium
     ? new LuniumWebhookService({
         repos,
@@ -161,6 +166,15 @@ export async function startWorker(): Promise<WorkerHandle> {
     const service = pixCharges;
     jobs.push({
       name: 'pix-reconcile',
+      intervalMs: config.jobs.pixPollMs,
+      run: () => service.reconcile(config.jobs.pixBatchSize),
+    });
+  }
+
+  if (cashOut) {
+    const service = cashOut;
+    jobs.push({
+      name: 'cashout-reconcile',
       intervalMs: config.jobs.pixPollMs,
       run: () => service.reconcile(config.jobs.pixBatchSize),
     });

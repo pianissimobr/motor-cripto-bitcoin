@@ -54,7 +54,13 @@ export type ApiScope =
   | 'conversions:read'
   | 'payouts:read'
   /** Repor gas (nativo) para a carteira do cliente. */
-  | 'gas:write';
+  | 'gas:write'
+  /** Criar e acompanhar vendas de cripto por Pix (cash-out). */
+  | 'cashout:write'
+  /** Ler as vendas de cripto por Pix. */
+  | 'cashout:read'
+  /** Ler o extrato de operações do endereço. */
+  | 'operations:read';
 
 /**
  * Escopos de um cliente novo. `wallets:write` fica de fora: trocar a carteira
@@ -108,6 +114,47 @@ export type PixProviderStatus =
   | 'expired'
   | 'refunded'
   | 'failed';
+
+/**
+ * Estado canonico do cash-out (venda de cripto por Pix).
+ *
+ * O caminho feliz: `criando` -> `aguardando_deposito` (a Lunium ja devolveu o
+ * endereco de deposito) -> `depositado` (o app ja enviou) -> `pago` (a Lunium
+ * esta vendendo) -> `liquidado` (o Pix caiu). `liquidado` e o unico sucesso.
+ */
+export type CashOutStatus =
+  | 'criando'
+  | 'pendente'
+  | 'aguardando_deposito'
+  | 'depositado'
+  | 'pago'
+  | 'liquidado'
+  | 'expirado'
+  | 'reembolsado'
+  | 'falhou'
+  | 'incerto'
+  | 'manual';
+
+/** Estado cru da Lunium numa ordem de cash-out. */
+export type CashOutProviderState =
+  | 'QUOTE_CREATED'
+  | 'AWAITING_DEPOSIT'
+  | 'DEPOSIT_DETECTED'
+  | 'DEPOSIT_CONFIRMED'
+  | 'SELLING'
+  | 'SOLD'
+  | 'FORWARDING'
+  | 'PAYING_OUT'
+  | 'COMPLETED'
+  | 'MANUAL_REVIEW'
+  | 'AWAITING_REFUND_ADDRESS'
+  | 'REFUNDING'
+  | 'REFUNDING_CRYPTO'
+  | 'REFUNDED'
+  | 'EXPIRED'
+  | 'FAILED'
+  | 'DELAYED'
+  | 'PROCESSING';
 
 export type PixProviderSettlementStatus =
   | 'pending'
@@ -163,6 +210,10 @@ export type ApiClient = {
   baseCurrency: 'BRL' | 'USD';
   settlementAsset: 'USDC';
   settlementChain: SettlementChain;
+  /** `loja` (site) ou `usuario` (app). */
+  clientType: 'loja' | 'usuario';
+  /** Endereco EVM do cliente (USDC/Polygon). */
+  settlementAddress: string | null;
   spreadBps: number;
   autoPayoutLimitBrl: bigint;
   autoPayoutLimitUsd: bigint;
@@ -430,6 +481,45 @@ export type PixCharge = {
   attempts: number;
   lastCheckedAt: Date | null;
   payoutId: string | null;
+  metadata: Record<string, unknown> | null;
+  version: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** Linha de uma venda de cripto por Pix (cash-out). */
+export type CashOutCharge = {
+  id: string;
+  clientId: string;
+  externalId: string;
+  provider: 'lunium';
+  providerExternalId: string;
+  providerCashoutId: string | null;
+  providerState: CashOutProviderState | null;
+  status: CashOutStatus;
+  amountBrlCents: bigint;
+  asset: 'USDC';
+  network: 'polygon';
+  originAddress: string;
+  depositAddress: string | null;
+  depositTag: string | null;
+  amountAssetMinor: bigint | null;
+  feeTotalCents: bigint | null;
+  pixKeyMasked: string | null;
+  pixKeyType: string | null;
+  brCode: string | null;
+  providerPath: string | null;
+  txHash: string | null;
+  pixE2e: string | null;
+  pixPaidAt: Date | null;
+  receiptUrl: string | null;
+  verifyUrl: string | null;
+  refundAddress: string | null;
+  providerPayload: Record<string, unknown> | null;
+  error: string | null;
+  attempts: number;
+  lastCheckedAt: Date | null;
+  expiresAt: Date | null;
   metadata: Record<string, unknown> | null;
   version: number;
   createdAt: Date;

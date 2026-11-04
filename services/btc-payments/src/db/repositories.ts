@@ -26,6 +26,7 @@ import type {
   OnchainSweep,
   PaidRail,
   PaymentIntent,
+  CashOutCharge,
   PixCharge,
   Payout,
   PayoutStatus,
@@ -58,6 +59,7 @@ import {
   passwordResetTokens,
   paymentIntents,
   payouts,
+  cashoutCharges,
   pixCharges,
   providerEvents,
   reconciliationRuns,
@@ -224,6 +226,7 @@ export type InsertWebhookEventInput = {
   clientId: string;
   intentId?: string | null;
   pixChargeId?: string | null;
+  cashoutChargeId?: string | null;
   eventType: string;
   dedupeKey: string;
   payload: Record<string, unknown>;
@@ -303,6 +306,45 @@ export type InsertProviderEventInput = {
   conversionId?: string | null;
   pixChargeId?: string | null;
   payload: Record<string, unknown>;
+};
+
+export type CreateCashOutChargeInput = {
+  id?: string;
+  clientId: string;
+  externalId: string;
+  providerExternalId: string;
+  amountBrlCents: bigint;
+  originAddress: string;
+  asset?: 'USDC';
+  network?: 'polygon';
+  pixKeyMasked?: string | null;
+  pixKeyType?: string | null;
+  brCode?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type UpdateCashOutChargeInput = {
+  id: string;
+  status?: CashOutCharge['status'];
+  providerCashoutId?: string | null;
+  providerState?: CashOutCharge['providerState'];
+  depositAddress?: string | null;
+  depositTag?: string | null;
+  amountAssetMinor?: bigint | null;
+  feeTotalCents?: bigint | null;
+  providerPath?: string | null;
+  txHash?: string | null;
+  pixE2e?: string | null;
+  pixPaidAt?: Date | null;
+  receiptUrl?: string | null;
+  verifyUrl?: string | null;
+  refundAddress?: string | null;
+  providerPayload?: Record<string, unknown> | null;
+  error?: string | null;
+  attempts?: number;
+  lastCheckedAt?: Date | null;
+  expiresAt?: Date | null;
+  version?: number;
 };
 
 export type CreatePixChargeInput = {
@@ -625,6 +667,28 @@ export type Repositories = {
     merchantId: string,
     limit: number,
   ) => Promise<PixCharge[]>;
+
+  // Cash-out (venda de cripto por Pix)
+  createCashOutCharge: (input: CreateCashOutChargeInput) => Promise<CashOutCharge>;
+  findCashOutChargeById: (id: string) => Promise<CashOutCharge | null>;
+  findCashOutChargeByIdForClient: (
+    id: string,
+    clientId: string,
+  ) => Promise<CashOutCharge | null>;
+  findCashOutChargeByClientAndExternalId: (
+    clientId: string,
+    externalId: string,
+  ) => Promise<CashOutCharge | null>;
+  findCashOutChargeByProviderCashoutId: (
+    provider: string,
+    providerCashoutId: string,
+  ) => Promise<CashOutCharge | null>;
+  updateCashOutCharge: (input: UpdateCashOutChargeInput) => Promise<CashOutCharge | null>;
+  listCashOutChargesToReconcile: (limit: number) => Promise<CashOutCharge[]>;
+  listCashOutChargesForOriginAddress: (
+    originAddress: string,
+    limit: number,
+  ) => Promise<CashOutCharge[]>;
 
   // Payout
   createPayout: (input: CreatePayoutInput) => Promise<Payout>;
@@ -2285,6 +2349,7 @@ export function createRepositories(db: Db): Repositories {
           clientId: input.clientId,
           intentId: input.intentId ?? null,
           pixChargeId: input.pixChargeId ?? null,
+          cashoutChargeId: input.cashoutChargeId ?? null,
           eventType: input.eventType,
           dedupeKey: input.dedupeKey,
           payload: input.payload,
@@ -2677,6 +2742,165 @@ export function createRepositories(db: Db): Repositories {
       const found = existing[0];
       if (!found) throw new Error('falha ao criar cobranca PIX');
       return found;
+    },
+
+    async createCashOutCharge(input) {
+      const rows = await db
+        .insert(cashoutCharges)
+        .values({
+          ...(input.id ? { id: input.id } : {}),
+          clientId: input.clientId,
+          externalId: input.externalId,
+          provider: 'lunium',
+          providerExternalId: input.providerExternalId,
+          amountBrlCents: input.amountBrlCents,
+          originAddress: input.originAddress,
+          asset: input.asset ?? 'USDC',
+          network: input.network ?? 'polygon',
+          pixKeyMasked: input.pixKeyMasked ?? null,
+          pixKeyType: input.pixKeyType ?? null,
+          brCode: input.brCode ?? null,
+          metadata: input.metadata ?? null,
+        })
+        .onConflictDoNothing({
+          target: [cashoutCharges.clientId, cashoutCharges.externalId],
+        })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(cashoutCharges)
+        .where(
+          and(
+            eq(cashoutCharges.clientId, input.clientId),
+            eq(cashoutCharges.externalId, input.externalId),
+          ),
+        )
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar cash-out');
+      return found;
+    },
+
+    async findCashOutChargeById(id) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(eq(cashoutCharges.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findCashOutChargeByIdForClient(id, clientId) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(and(eq(cashoutCharges.id, id), eq(cashoutCharges.clientId, clientId)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findCashOutChargeByClientAndExternalId(clientId, externalId) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(
+          and(
+            eq(cashoutCharges.clientId, clientId),
+            eq(cashoutCharges.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findCashOutChargeByProviderCashoutId(provider, providerCashoutId) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(
+          and(
+            eq(cashoutCharges.provider, provider as 'lunium'),
+            eq(cashoutCharges.providerCashoutId, providerCashoutId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updateCashOutCharge(input) {
+      const rows = await db
+        .update(cashoutCharges)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.providerCashoutId !== undefined
+            ? { providerCashoutId: input.providerCashoutId }
+            : {}),
+          ...(input.providerState !== undefined
+            ? { providerState: input.providerState }
+            : {}),
+          ...(input.depositAddress !== undefined
+            ? { depositAddress: input.depositAddress }
+            : {}),
+          ...(input.depositTag !== undefined ? { depositTag: input.depositTag } : {}),
+          ...(input.amountAssetMinor !== undefined
+            ? { amountAssetMinor: input.amountAssetMinor }
+            : {}),
+          ...(input.feeTotalCents !== undefined
+            ? { feeTotalCents: input.feeTotalCents }
+            : {}),
+          ...(input.providerPath !== undefined ? { providerPath: input.providerPath } : {}),
+          ...(input.txHash !== undefined ? { txHash: input.txHash } : {}),
+          ...(input.pixE2e !== undefined ? { pixE2e: input.pixE2e } : {}),
+          ...(input.pixPaidAt !== undefined ? { pixPaidAt: input.pixPaidAt } : {}),
+          ...(input.receiptUrl !== undefined ? { receiptUrl: input.receiptUrl } : {}),
+          ...(input.verifyUrl !== undefined ? { verifyUrl: input.verifyUrl } : {}),
+          ...(input.refundAddress !== undefined
+            ? { refundAddress: input.refundAddress }
+            : {}),
+          ...(input.providerPayload !== undefined
+            ? { providerPayload: input.providerPayload }
+            : {}),
+          ...(input.error !== undefined ? { error: input.error } : {}),
+          ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+          ...(input.lastCheckedAt !== undefined ? { lastCheckedAt: input.lastCheckedAt } : {}),
+          ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+          ...(input.version !== undefined ? { version: input.version } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(cashoutCharges.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listCashOutChargesToReconcile(limit) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(
+          inArray(cashoutCharges.status, [
+            'criando',
+            'pendente',
+            'aguardando_deposito',
+            'depositado',
+            'pago',
+            'incerto',
+          ]),
+        )
+        .orderBy(asc(cashoutCharges.updatedAt))
+        .limit(limit);
+      return rows;
+    },
+
+    async listCashOutChargesForOriginAddress(originAddress, limit) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(eq(cashoutCharges.originAddress, originAddress.toLowerCase()))
+        .orderBy(desc(cashoutCharges.createdAt))
+        .limit(limit);
+      return rows;
     },
 
     async findPixChargeById(id) {

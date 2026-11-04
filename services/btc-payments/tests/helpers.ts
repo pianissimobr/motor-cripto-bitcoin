@@ -77,6 +77,7 @@ export async function truncateAll(db: DbClient): Promise<void> {
         ledger_accounts,
         payouts,
         pix_charges,
+        cashout_charges,
         conversion_legs,
         conversion_orders,
         fx_quotes,

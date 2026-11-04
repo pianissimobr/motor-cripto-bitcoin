@@ -41,6 +41,7 @@ import type { AuthService } from '../services/auth-service.js';
 import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
 import type { GasStationService } from '../services/gas-station-service.js';
+import type { CashOutService } from '../services/cashout-service.js';
 
 export type ApiServices = {
   config: AppConfig;
@@ -58,12 +59,35 @@ export type ApiServices = {
   walletNotifier?: WalletChangeNotifier;
   autho?: AuthoIssuerClient;
   pixCharges?: PixChargeService;
+  cashOut?: CashOutService;
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
   gasStation?: GasStationService;
   reports?: ReportService;
   subscriptions?: SubscriptionService;
 };
+
+/**
+ * Endereco de origem do cash-out.
+ *
+ * O canonico e o `settlement_address` do cliente (D18): e ele que recebe o
+ * USDC do cash-in e de onde o USDC sai no cash-out, e e por ele que o
+ * extrato agrega. enquanto o cliente nao tem um cadastrado, o app pode
+ * informa-lo no corpo.
+ */
+async function resolveOriginAddress(
+  services: ApiServices,
+  clientId: string,
+  fromBody?: string,
+): Promise<string> {
+  const client = await services.repos.findClientById(clientId);
+  const registered = client?.settlementAddress ?? null;
+  if (registered) return registered.toLowerCase();
+  if (fromBody) return fromBody.toLowerCase();
+  throw new ValidationError(
+    'cliente sem endereco de liquidacao: registre o settlement_address ou informe origin_address',
+  );
+}
 
 const amountSatsSchema = z
   .union([z.string().regex(/^\d+$/), z.number().int().positive()])
@@ -121,6 +145,73 @@ const createPixChargeSchema = z
     payer_name: z.string().trim().max(200).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     sandbox_scenario: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict();
+
+/**
+ * Cotacao do cash-out: `br_code` **ou** `pix_key` + valor, nunca os dois
+ * (D28: o motor valida o BR Code antes de repassar).
+ */
+const cashOutQuoteSchema = z
+  .object({
+    amount_cents: z.string().regex(/^\d+$/).optional(),
+    pix_key: z.string().trim().min(1).max(140).optional(),
+    pix_key_type: z
+      .enum(['cpf', 'cnpj', 'phone', 'email', 'random'])
+      .optional(),
+    br_code: z.string().trim().min(1).max(1024).optional(),
+    refund_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
+      .optional(),
+    sandbox_scenario: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict();
+
+const createCashOutSchema = z
+  .object({
+    external_id: z.string().trim().min(1).max(64),
+    /** OBRIGATORIO sem `br_code`; com `br_code`, o valor vem do codigo. */
+    amount_cents: z.string().regex(/^\d+$/).optional(),
+    pix_key: z.string().trim().min(1).max(140).optional(),
+    pix_key_type: z
+      .enum(['cpf', 'cnpj', 'phone', 'email', 'random'])
+      .optional(),
+    br_code: z.string().trim().min(1).max(1024).optional(),
+    /**
+     * Endereco de origem do USDC.
+     *
+     * O destino canonico e o `settlement_address` do cliente (D18); enquanto o
+     * cliente nao tem um cadastrado, o app pode informa-lo.
+     */
+    origin_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
+      .optional(),
+    refund_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
+      .optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    sandbox_scenario: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict();
+
+const cashOutDepositSchema = z
+  .object({
+    tx_hash: z.string().trim().regex(/^0x[a-fA-F0-9]{64}$/, 'tx_hash invalido'),
+  })
+  .strict();
+
+const cashOutRefundSchema = z
+  .object({
+    refund_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido'),
   })
   .strict();
 
@@ -477,6 +568,131 @@ export function registerApiRoutes(
         }
         throw err;
       }
+    },
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Cash-out: venda de cripto por Pix (o app assina, o motor orquestra)  */
+  /* ------------------------------------------------------------------ */
+
+  app.post(
+    '/v1/user/cash-out-charges/quote',
+    { preHandler: apiAuth('cashout:read') },
+    async (request) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const body = parse(cashOutQuoteSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      return services.cashOut.quote({
+        ...(body.amount_cents != null
+          ? { amountBrlCents: BigInt(body.amount_cents) }
+          : {}),
+        ...(body.pix_key ? { pixKey: body.pix_key } : {}),
+        ...(body.pix_key_type ? { pixKeyType: body.pix_key_type } : {}),
+        ...(body.br_code ? { brCode: body.br_code } : {}),
+        ...(body.refund_address ? { refundAddress: body.refund_address } : {}),
+        ...(body.sandbox_scenario
+          ? { sandboxScenario: body.sandbox_scenario }
+          : {}),
+      });
+    },
+  );
+
+  app.post(
+    '/v1/user/cash-out-charges',
+    { preHandler: apiAuth('cashout:write') },
+    async (request, reply) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const body = parse(createCashOutSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      const originAddress = await resolveOriginAddress(
+        services,
+        client.id,
+        body.origin_address,
+      );
+      const { dto, reused } = await services.cashOut.create({
+        clientId: client.id,
+        externalId: body.external_id,
+        ...(body.amount_cents ? { amountBrlCents: BigInt(body.amount_cents) } : {}),
+        originAddress,
+        ...(body.pix_key ? { pixKey: body.pix_key } : {}),
+        ...(body.pix_key_type ? { pixKeyType: body.pix_key_type } : {}),
+        ...(body.br_code ? { brCode: body.br_code } : {}),
+        ...(body.refund_address ? { refundAddress: body.refund_address } : {}),
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+        ...(body.sandbox_scenario
+          ? { sandboxScenario: body.sandbox_scenario }
+          : {}),
+      });
+      return reply.status(reused ? 200 : 201).send(dto);
+    },
+  );
+
+  app.get(
+    '/v1/user/cash-out-charges/:id',
+    { preHandler: apiAuth('cashout:read') },
+    async (request) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const params = parse(idParamsSchema, request.params, 'id');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      return services.cashOut.sync(params.id, client.id);
+    },
+  );
+
+  app.post(
+    '/v1/user/cash-out-charges/:id/accept',
+    { preHandler: apiAuth('cashout:write') },
+    async (request) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const params = parse(idParamsSchema, request.params, 'id');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      return services.cashOut.accept(params.id, client.id);
+    },
+  );
+
+  app.post(
+    '/v1/user/cash-out-charges/:id/deposit',
+    { preHandler: apiAuth('cashout:write') },
+    async (request, reply) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const params = parse(idParamsSchema, request.params, 'id');
+      const body = parse(cashOutDepositSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      await services.cashOut.reportDeposit(params.id, client.id, body.tx_hash);
+      return reply.status(204).send();
+    },
+  );
+
+  app.post(
+    '/v1/user/cash-out-charges/:id/refund-address',
+    { preHandler: apiAuth('cashout:write') },
+    async (request) => {
+      if (!services.cashOut) {
+        throw new ServiceUnavailableError('cash-out indisponivel');
+      }
+      const params = parse(idParamsSchema, request.params, 'id');
+      const body = parse(cashOutRefundSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      return services.cashOut.setRefundAddress(
+        params.id,
+        client.id,
+        body.refund_address,
+      );
     },
   );
 

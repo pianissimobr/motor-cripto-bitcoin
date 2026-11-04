@@ -143,6 +143,82 @@ export type CashinCatalogRail = {
   minBuyAmount?: string;
 };
 
+/**
+ * Ordem de cash-out (venda de cripto por Pix) na Lunium.
+ *
+ * O caminho tem três passos: criacao (trava a cotacao), `accept` (devolve o
+ * endereco de deposito) e o deposito em si, que o **app** assina e transmite.
+ */
+export type LuniumCashOut = {
+  cashout_id: string;
+  state: string;
+  asset?: string | null;
+  network?: string | null;
+  /** Quantidade a depositar, em string decimal. */
+  amount?: string | null;
+  /** Valor do Pix em reais. */
+  brl_amount?: string | null;
+  /** Endereco de deposito: so existe depois do accept. */
+  deposit_address?: string | null;
+  /** Memo/tag (redes com memo). Na Polygon vem null. */
+  deposit_tag?: string | null;
+  external_id?: string | null;
+  pix_key?: string | null;
+  pix_key_type?: string | null;
+  br_code?: string | null;
+  merchant_name?: string | null;
+  /** Trilho: FAST, DEX ou CONVERT. */
+  path?: string | null;
+  /** Reserva operacional de R$ 1,00 por operacao em chave Pix. */
+  reserve_brl?: string | null;
+  copia_e_cola_buffer_usd?: string | null;
+  fee_total_cents?: number | null;
+  net_cents?: number | null;
+  refund_address?: string | null;
+  refund_address_required?: boolean | null;
+  refund_amount?: string | null;
+  refund_asset?: string | null;
+  refund_network?: string | null;
+  provider_return_txid?: string | null;
+  deposit_from?: string | null;
+  pix_e2e?: string | null;
+  pix_paid_at?: string | null;
+  receipt_url?: string | null;
+  receipt_pdf_url?: string | null;
+  verify_url?: string | null;
+  expires_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  confirmations?: number | null;
+  confirmations_required?: number | null;
+  failure_reason?: string | null;
+  sandbox?: boolean | null;
+  timeline?: { state: string; at: string }[] | null;
+  [key: string]: unknown;
+};
+
+export type LuniumCashOutList = {
+  cash_outs?: LuniumCashOut[];
+};
+
+/** Corpo de criacao/previsao de cash-out. */
+export type LuniumCashOutInput = {
+  asset: string;
+  network: string;
+  /** Valor do Pix em reais (string decimal). Exclusivo com `amount`/`brCode`. */
+  brlAmount?: string | null;
+  /** Quantidade de cripto a vender (string decimal). Exclusivo com `brlAmount`. */
+  amount?: string | null;
+  pixKey?: string | null;
+  pixKeyType?: string | null;
+  /** BR Code do Pix: carrega valor e recebedor. Exclusivo com os outros. */
+  brCode?: string | null;
+  /** Carteira de devolucao, caso a venda falhe. */
+  refundAddress?: string | null;
+  externalId?: string | null;
+  sandboxScenario?: string | null;
+};
+
 export type CreateLuniumChargeInput = {
   amountCents: bigint;
   payerTaxNumber: string;
@@ -270,6 +346,92 @@ export class LuniumClient {
           ? { sandbox_scenario: input.sandboxScenario }
           : {}),
       },
+      'alta',
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Cash-out (venda de cripto por Pix)                                  */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * `POST /cash-outs/preview` — previa da cotacao. Nao cria nada.
+   *
+   * A Lunium exige `br_code` **ou** `pix_key`+`brl_amount`, nunca os dois
+   * (400 `campos_conflitantes`).
+   */
+  async previewCashOut(input: LuniumCashOutInput): Promise<LuniumCashOut> {
+    return this.request<LuniumCashOut>(
+      'POST',
+      '/cash-outs/preview',
+      cashOutBody(input),
+      'alta',
+    );
+  }
+
+  /**
+   * `POST /cash-outs` — cria a ordem (passo 1 de 3).
+   *
+   * O `external_id` e a chave de idempotencia: repetir com o mesmo id e o
+   * mesmo corpo devolve a mesma ordem.
+   */
+  async createCashOut(input: LuniumCashOutInput): Promise<LuniumCashOut> {
+    return this.request<LuniumCashOut>(
+      'POST',
+      '/cash-outs',
+      cashOutBody(input),
+      'alta',
+    );
+  }
+
+  /**
+   * `POST /cash-outs/{id}/accept` — trava a cotacao e devolve o endereco de
+   * deposito (passo 2 de 3). Sem corpo.
+   */
+  async acceptCashOut(cashoutId: string): Promise<LuniumCashOut> {
+    return this.request<LuniumCashOut>(
+      'POST',
+      `/cash-outs/${encodeURIComponent(cashoutId)}/accept`,
+      undefined,
+      'alta',
+    );
+  }
+
+  /** `GET /cash-outs/{id}` — estado da ordem (passo 3 de 3). */
+  async getCashOut(cashoutId: string): Promise<LuniumCashOut> {
+    return this.request<LuniumCashOut>(
+      'GET',
+      `/cash-outs/${encodeURIComponent(cashoutId)}`,
+      undefined,
+      'normal',
+    );
+  }
+
+  /**
+   * `GET /cash-outs?external_id=` — recupera a ordem por `external_id`.
+   *
+   * E o caminho de recuperacao quando a criacao deu timeout: a ordem pode ter
+   * sido criada do outro lado.
+   */
+  async findCashOutsByExternalId(externalId: string): Promise<LuniumCashOut[]> {
+    const data = await this.request<LuniumCashOutList>(
+      'GET',
+      `/cash-outs?external_id=${encodeURIComponent(externalId)}`,
+      undefined,
+      'normal',
+    );
+    return data.cash_outs ?? [];
+  }
+
+  /** `POST /cash-outs/{id}/refund-address` — informa a carteira de devolucao. */
+  async setCashOutRefundAddress(
+    cashoutId: string,
+    refundAddress: string,
+  ): Promise<LuniumCashOut> {
+    return this.request<LuniumCashOut>(
+      'POST',
+      `/cash-outs/${encodeURIComponent(cashoutId)}/refund-address`,
+      { refund_address: refundAddress },
       'alta',
     );
   }
@@ -494,6 +656,28 @@ export class LuniumClient {
       ? lastError
       : new LuniumError('falha ao chamar a Lunium', { statusCode: 503 });
   }
+}
+
+/**
+ * Corpo das rotas de cash-out.
+ *
+ * A Lunium trata `br_code` como **mutuamente exclusivo** com `amount`,
+ * `brl_amount` e `pix_key` (400 `campos_conflitantes`). O motor valida isso
+ * antes (D28) e so envia o que o cliente pediu.
+ */
+function cashOutBody(input: LuniumCashOutInput): Record<string, unknown> {
+  return {
+    asset: input.asset,
+    network: input.network,
+    ...(input.brlAmount ? { brl_amount: input.brlAmount } : {}),
+    ...(input.amount ? { amount: input.amount } : {}),
+    ...(input.pixKey ? { pix_key: input.pixKey } : {}),
+    ...(input.pixKeyType ? { pix_key_type: input.pixKeyType } : {}),
+    ...(input.brCode ? { br_code: input.brCode } : {}),
+    ...(input.refundAddress ? { refund_address: input.refundAddress } : {}),
+    ...(input.externalId ? { external_id: input.externalId } : {}),
+    ...(input.sandboxScenario ? { sandbox_scenario: input.sandboxScenario } : {}),
+  };
 }
 
 /** `retry-after` em segundos (a Lunium envia segundos, não headers HTTP crus). */

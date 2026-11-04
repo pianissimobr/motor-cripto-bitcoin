@@ -16,6 +16,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type {
   ApiScope,
+  CashOutProviderState,
   ClientStatus,
   LightningPaymentStatus,
   OnchainPaymentStatus,
@@ -53,6 +54,22 @@ export const apiClients = pgTable(
     baseCurrency: text('base_currency').$type<'BRL' | 'USD'>().notNull().default('BRL'),
     settlementAsset: text('settlement_asset').$type<'USDC'>().notNull().default('USDC'),
     settlementChain: text('settlement_chain').$type<'base' | 'polygon'>().notNull().default('base'),
+    /**
+     * `loja` (carrinho do site) ou `usuario` (perfil pessoal do app).
+     *
+     * Nao sao tipos diferentes de cliente: os dois nascem de uma carteira
+     * criada no app e recebem um `client_id` (D22). O que muda e de onde vem o
+     * destino do cash-in e do cash-out.
+     */
+    clientType: text('client_type').$type<'loja' | 'usuario'>().notNull().default('loja'),
+    /**
+     * Endereco EVM do cliente (USDC/Polygon).
+     *
+     * E o destino do cash-in (a Lunium entrega aqui) e a origem do cash-out
+     * (o USDC sai daqui). Fica no cliente — e nao em `merchant_wallets` — porque
+     * o mesmo endereco pode ser o de uma loja e o de uma pessoa (D18/D20).
+     */
+    settlementAddress: text('settlement_address'),
     spreadBps: integer('spread_bps').notNull().default(100),
     autoPayoutLimitBrl: bigint('auto_payout_limit_brl', { mode: 'bigint' })
       .notNull()
@@ -81,6 +98,11 @@ export const apiClients = pgTable(
   (table) => [
     uniqueIndex('api_clients_key_hash_uq').on(table.apiKeyHash),
     index('api_clients_prefix_idx').on(table.apiKeyPrefix),
+    // O mesmo endereco pode ser de uma loja e de uma pessoa (D20): o indice
+    // e por endereco, nao por par (cliente, endereco).
+    uniqueIndex('api_clients_settlement_address_uq')
+      .on(table.settlementAddress)
+      .where(sql`${table.settlementAddress} is not null`),
     check(
       'api_clients_status_chk',
       sql`${table.status} in ('ativo', 'inativo')`,
@@ -462,6 +484,9 @@ export const webhookEvents = pgTable(
     pixChargeId: uuid('pix_charge_id').references(() => pixCharges.id, {
       onDelete: 'cascade',
     }),
+    cashoutChargeId: uuid('cashout_charge_id').references(() => cashoutCharges.id, {
+      onDelete: 'cascade',
+    }),
     eventType: text('event_type').notNull(),
     dedupeKey: text('dedupe_key').notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
@@ -822,6 +847,106 @@ export const pixCharges = pgTable(
       'pix_charges_asset_chk',
       sql`${table.asset} in ('USDC') and ${table.chain} in ('base','polygon')`,
     ),
+  ],
+);
+
+/**
+ * Venda de cripto por Pix (cash-out).
+ *
+ * O espelho de `pix_charges`: o app pede a venda, a Lunium devolve o endereco
+ * de deposito, o app envia o USDC (assinatura local) e a Lunium paga o Pix.
+ *
+ * `origin_address` e o endereco de onde o USDC sai: e por ele que o extrato
+ * agrega as saidas (C5/D20).
+ */
+export const cashoutCharges = pgTable(
+  'cashout_charges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'restrict' }),
+    externalId: text('external_id').notNull(),
+    provider: text('provider').$type<'lunium'>().notNull().default('lunium'),
+    providerExternalId: text('provider_external_id').notNull(),
+    providerCashoutId: text('provider_cashout_id'),
+    /** Estado cru da Lunium (o que o app ve em `provider_state`). */
+    providerState: text('provider_state').$type<CashOutProviderState>(),
+    status: text('status')
+      .$type<
+        | 'criando'
+        | 'pendente'
+        | 'aguardando_deposito'
+        | 'depositado'
+        | 'pago'
+        | 'liquidado'
+        | 'expirado'
+        | 'reembolsado'
+        | 'falhou'
+        | 'incerto'
+        | 'manual'
+      >()
+      .notNull()
+      .default('criando'),
+    amountBrlCents: bigint('amount_brl_cents', { mode: 'bigint' }).notNull(),
+    asset: text('asset').$type<'USDC'>().notNull().default('USDC'),
+    network: text('network').$type<'polygon'>().notNull().default('polygon'),
+    /** Endereco de onde o USDC sai (o agregador do extrato). */
+    originAddress: text('origin_address').notNull(),
+    /** Endereco de deposito da Lunium: so existe depois do accept. */
+    depositAddress: text('deposit_address'),
+    depositTag: text('deposit_tag'),
+    /** Quantidade a depositar, em unidades atomicas do token. */
+    amountAssetMinor: bigint('amount_asset_minor', { mode: 'bigint' }),
+    feeTotalCents: bigint('fee_total_cents', { mode: 'bigint' }),
+    pixKeyMasked: text('pix_key_masked'),
+    pixKeyType: text('pix_key_type'),
+    /** BR Code enviado pelo app (o valor e o recebedor vem dentro). */
+    brCode: text('br_code'),
+    /** Trilho da Lunium: FAST, DEX ou CONVERT. */
+    providerPath: text('provider_path'),
+    /** Hash da transacao que o app assinou (o motor nao assina). */
+    txHash: text('tx_hash'),
+    pixE2e: text('pix_e2e'),
+    pixPaidAt: timestamp('pix_paid_at', { withTimezone: true, mode: 'date' }),
+    receiptUrl: text('receipt_url'),
+    verifyUrl: text('verify_url'),
+    /** Carteira de devolucao, quando a venda falhar. */
+    refundAddress: text('refund_address'),
+    providerPayload: jsonb('provider_payload').$type<Record<string, unknown> | null>(),
+    error: text('error'),
+    attempts: integer('attempts').notNull().default(0),
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    metadata: jsonb('metadata').$type<Record<string, unknown> | null>(),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('cashout_charges_client_external_uq').on(
+      table.clientId,
+      table.externalId,
+    ),
+    uniqueIndex('cashout_charges_provider_external_uq').on(
+      table.provider,
+      table.providerExternalId,
+    ),
+    uniqueIndex('cashout_charges_provider_cashout_uq').on(
+      table.provider,
+      table.providerCashoutId,
+    ),
+    index('cashout_charges_status_idx').on(table.status),
+    index('cashout_charges_origin_idx').on(table.originAddress),
+    check(
+      'cashout_charges_status_chk',
+      sql`${table.status} in ('criando','pendente','aguardando_deposito','depositado','pago','liquidado','expirado','reembolsado','falhou','incerto','manual')`,
+    ),
+    check(
+      'cashout_charges_asset_chk',
+      sql`${table.asset} in ('USDC') and ${table.network} in ('polygon')`,
+    ),
+    check('cashout_charges_amount_chk', sql`${table.amountBrlCents} > 0`),
   ],
 );
 
