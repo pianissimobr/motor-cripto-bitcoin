@@ -278,6 +278,43 @@ HMAC-SHA256(webhook_secret, "${timestamp}.${rawBody}")
 - O worker consulta o estado canonico antes de creditar.
 - Eventos duplicados sao idempotentes por `(provider, event_id)`.
 
+## Pix direto (a chave do proprio usuario)
+
+O trilho oposto: em vez de a LuniumPay receber o Pix e entregar USDC, o
+usuario cadastra **a chave Pix da conta dele** e o motor monta o BR Code. O
+pagamento cai direto na conta do usuario — sem custodia, sem conversao e sem
+taxa da Lunium.
+
+Cadastro da chave (app, escopo `operations:read`):
+
+```text
+PUT /v1/user/pix-key
+{ "pix_key": "00000000191", "merchant_name": "PIANO LAB", "city": "RIBEIRAO PRETO" }
+
+GET /v1/user/pix-key
+{ "pix_key": "00•••••••91", "pix_key_type": "cpf", "merchant_name": "...", "city": "..." }
+```
+
+A chave sai **mascarada** nas respostas: e dado pessoal do usuario.
+
+No pedido (`POST /v1/payment-requests`, trilho `pix_direto`) o motor gera o
+BR Code com o valor e um `txid` que amarra o codigo ao pedido:
+
+```json
+{
+  "br_code": "00020100020126330014br.gov.bcb.pix0111000000001915204000053039865406100.005802BR5909PIANO LAB6014RIBEIRAO PRETO62240520PR52C46FD3DB7940CBBC63040D93",
+  "key_masked": "00•••••••91",
+  "key_type": "cpf",
+  "amount": "100.00",
+  "txid": "PR52C46FD3DB7940CBBC"
+}
+```
+
+**Limitacao importante:** o motor **nao descobre** o pagamento. Nao ha webhook
+do banco do usuario, entao o pedido fica `pendente` ate uma confirmacao
+(manual, ou por um PSP no futuro). O mesmo QR, do lado do pagador, e um Pix
+comum: qualquer aplicativo de banco le.
+
 ## Regras
 
 - Sem cancelamento na Lunium: cancelamento local so antes de `paid`.

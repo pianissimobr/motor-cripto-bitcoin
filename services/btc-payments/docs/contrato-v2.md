@@ -76,6 +76,17 @@ motor é o único que fala com a LuniumPay e o único que guarda a chave.
 | D31 | **`GET /v1/user/operations`** traz paginação por cursor, `updated_at` e um **marcador de origem** (`pessoal` \| `loja`), sem nome de loja nem dado de merchant. | O extrato é da carteira; o marcador diz "isto veio de uma loja" sem vazar o nome. |
 | D32 | **A LuniumPay tem `nivel_conta`** (`padrao` \| `vip_master`): em `vip_master` não há taxa fixa por Pix, nem escada por pagador, e o CPF/CNPJ do pagador é **opcional**. Não há API para mudar o nível — é decisão comercial da Lunium (lead filed em 2026-11-04, `lead_id` 69). | No `padrao`, cada entrada Pix custa R$ 1,00 fixos + documento do pagador — 10% de um Pix de R$ 10,00. |
 
+### Decisões do v4 (2026-11-07)
+
+| # | Decisão | Porquê |
+|---|---|---|
+| D33 | **O trilho "Bitcoin vira dólar digital" é do motor**: ele cota o par, pede o endereço de depósito à SwapKit e devolve um BIP21 comum. O pagador **nunca vê a SwapKit**. | O pagador é qualquer pessoa com uma carteira de Bitcoin. Se ele precisasse montar a operação da SwapKit, o trilho não existiria na prática. |
+| D34 | **Só os provedores de depósito servem** (NEAR, FLASHNET): eles dão um **endereço único por pedido**. A THORChain está descartada: cofre compartilhado + memo (OP_RETURN), que não cabe num BIP21 — sem endereço único, o pagador precisaria de uma carteira com suporte a memo. | O QR tem que ser um `bitcoin:endereço?amount=` comum. É o que torna o fluxo "escaneou e pagou" funcionar em qualquer carteira. |
+| D35 | **A prova da entrega do swap é on-chain**: `trocado` (o provedor diz que entregou) é diferente de `liquidado` (o motor leu o `Transfer` do USDC na Polygon). Sem hash do provedor, a prova é o crescimento do saldo contra a linha de base. | O mesmo princípio do Pix (`pago` ≠ `liquidado`). O provedor é a fonte do *fato*; o motor é a fonte do *estado do produto*. |
+| D36 | **"Pix direto": o motor monta o BR Code para a chave do próprio usuário** (sem LuniumPay e sem conversão). **O motor não descobre o pagamento** — não há webhook do banco do usuário — então o pedido fica `pendente` até uma confirmação. | É a única forma de o dinheiro cair direto na conta do usuário. A falta de confirmação é o preço: sem webhook do banco, o motor não tem como saber. |
+| D37 | **`payment_requests` é o pedido com mais de um trilho**: o `external_id` do site é a idempotência e cada trilho tem sua própria tabela (`pix_charges`, `swap_orders`) mais o BR Code do Pix direto. | O site manda o valor uma vez e escolhe o QR; o motor acompanha os três e sabe qual foi pago. |
+| D38 | **`amount_cents` é o canônico** em toda cobrança nova (Pix, swap e pedido). O `amount` em reais continua aceito só por compatibilidade. | D23 na prática: o app mandava centavos no `amount` e o motor lia reais — a cobrança saía 100× maior. |
+
 ### Por que D18 (e não uma linha em `merchant_wallets`)
 
 `merchant_wallets` tem índice único em `(chain, address)`. O mesmo endereço não
@@ -410,6 +421,131 @@ POST /v1/portal/merchants/:id/wallets
 
 Sem prova, o cadastro é recusado. **Isso fecha um buraco que existe hoje**:
 qualquer pessoa pode cadastrar o endereço de outra e desviar a liquidação.
+
+### C15 — Pedido de pagamento com mais de um trilho
+
+`POST /v1/payment-requests` (escopo `payments:write`).
+
+```json
+{
+  "external_id": "pedido_123",
+  "amount_cents": "10000",
+  "currency": "BRL",
+  "rails": ["pix", "bitcoin", "pix_direto"],
+  "payer_tax_number": "00000000191",
+  "description": "Pedido 123",
+  "expires_in_seconds": 3600
+}
+```
+
+Resposta (`201`, ou `200` quando o `external_id` ja existe):
+
+```json
+{
+  "id": "52c46fd3-…",
+  "external_id": "pedido_123",
+  "amount_cents": "10000",
+  "currency": "BRL",
+  "status": "pendente",
+  "expires_at": null,
+  "options": {
+    "pix": {
+      "charge_id": "eb3ac3c8-…",
+      "qr_copypaste": "000201…",
+      "qr_image_url": null,
+      "qr_svg": "<svg…>",
+      "expires_at": null
+    },
+    "bitcoin": {
+      "swap_id": "…",
+      "address": "bc1q…",
+      "amount_btc": "0.002",
+      "bip21": "bitcoin:bc1q…?amount=0.002",
+      "qr_svg": "<svg…>",
+      "expires_at": null
+    },
+    "pix_direto": {
+      "br_code": "000201…",
+      "key_masked": "00•••••••91",
+      "key_type": "cpf",
+      "amount": "100.00",
+      "txid": "PR52C46FD3DB7940CBBC"
+    }
+  }
+}
+```
+
+Regras:
+
+- `payer_tax_number` é **obrigatório** quando o trilho `pix` está na lista
+  (a LuniumPay exige o documento do pagador no nível `padrao`);
+- `pix_direto` só aparece se o usuário tiver chave Pix configurada
+  (`PUT /v1/user/pix-key`);
+- sem `rails`, o motor oferece `pix` e `bitcoin` (e `pix_direto` quando há
+  chave);
+- o `external_id` do site é a idempotência: repetir a chamada devolve o mesmo
+  pedido (`200`), sem abrir cobranças novas;
+- `GET /v1/payment-requests/:id` devolve o pedido com o estado de cada trilho.
+
+### C16 — Swap (Bitcoin → dólar digital)
+
+`POST /v1/swap-charges` (escopo `payments:write`):
+
+```json
+{ "external_id": "btc_123", "amount_cents": "10000", "currency": "BRL" }
+```
+
+Resposta (`201`):
+
+```json
+{
+  "id": "…",
+  "external_id": "btc_123",
+  "status": "aguardando_deposito",
+  "provider_state": null,
+  "amount_fiat_cents": "10000",
+  "currency": "BRL",
+  "amount_sats": "200000",
+  "asset": "USDC",
+  "network": "polygon",
+  "destination_address": "0x…",
+  "bitcoin": {
+    "address": "bc1q…",
+    "amount_btc": "0.002",
+    "bip21": "bitcoin:bc1q…?amount=0.002",
+    "qr_svg": "<svg…>",
+    "expires_at": "2026-11-07T16:00:00.000Z"
+  }
+}
+```
+
+Estados: `criando` → `aguardando_deposito` → `depositado` → `trocado` →
+`liquidado` (e `expirado`, `reembolsado`, `falhou`, `incerto`, `manual`).
+
+- `trocado` = a SwapKit disse que entregou. `liquidado` = o motor leu o
+  `Transfer` do USDC na Polygon (ou viu o saldo crescer contra a linha de
+  base). **Só `liquidado` é sucesso**;
+- o destino é o `settlement_address` do cliente (ou a carteira
+  `usdc_settlement` da loja), resolvido pelo motor — o corpo não manda
+  endereço;
+- `GET /v1/swap-charges/:id` devolve o estado;
+- o motor acompanha pelo job `swap-reconcile` (`POST /track` na SwapKit).
+
+### C17 — Chave Pix do próprio usuário
+
+`PUT /v1/user/pix-key` (escopo `operations:read`):
+
+```json
+{ "pix_key": "00000000191", "merchant_name": "PIANO LAB", "city": "RIBEIRAO PRETO" }
+```
+
+Resposta: a chave **mascarada** (`00•••••••91`), o tipo deduzido, o nome e a
+cidade. `GET /v1/user/pix-key` devolve o mesmo (ou `{ "pix_key": null }`).
+
+- a chave fica no cliente (`client_pix_keys`) e é da conta do próprio usuário:
+  o motor só monta o BR Code;
+- o `txid` do BR Code amarra o código ao pedido;
+- sem webhook do banco, o motor **não descobre** o pagamento (D36).
 
 ## 4. Diff de schema
 

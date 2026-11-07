@@ -187,12 +187,15 @@ do ledger batem por ativo.
 ```json
 {
   "external_id": "pedido-123",
-  "amount": "50.00",
-  "currency": "BRL",
+  "amount_cents": "5000",
   "payer_tax_number": "00000000191",
   "payer_name": "Cliente"
 }
 ```
+
+> O valor e sempre em centavos (`amount_cents`). O campo antigo `amount` (em
+> reais) continua aceito so por compatibilidade — ele ja custou uma cobranca
+> 100x maior quando o app mandou centavos nele.
 
 Resposta:
 
@@ -245,6 +248,76 @@ Pelo portal, a mesma coisa sem integracao: `POST /v1/portal/merchants/:id/pix-ch
 (sessao de lojista).
 
 Detalhes em [pix.md](pix.md).
+
+## Pedido com mais de um trilho
+
+`POST /v1/payment-requests` devolve as opcoes prontas: o Pix (LuniumPay), o
+Bitcoin que vira dolar digital (SwapKit) e o Pix direto na chave do proprio
+usuario. O site manda o valor uma vez; o pagador escolhe o QR.
+
+```json
+{
+  "external_id": "pedido-123",
+  "amount_cents": "10000",
+  "currency": "BRL",
+  "rails": ["pix", "bitcoin", "pix_direto"],
+  "payer_tax_number": "00000000191"
+}
+```
+
+`payer_tax_number` e obrigatorio no trilho `pix`. `pix_direto` so aparece se o
+usuario tiver chave Pix cadastrada (`PUT /v1/user/pix-key`). Sem `rails`, o
+motor oferece `pix` e `bitcoin`.
+
+Resposta (201):
+
+```json
+{
+  "id": "uuid",
+  "external_id": "pedido-123",
+  "amount_cents": "10000",
+  "currency": "BRL",
+  "status": "pendente",
+  "expires_at": null,
+  "options": {
+    "pix": { "charge_id": "uuid", "qr_copypaste": "000201...", "qr_svg": "<svg ...>" },
+    "bitcoin": {
+      "swap_id": "uuid",
+      "address": "bc1q...",
+      "amount_btc": "0.002",
+      "bip21": "bitcoin:bc1q...?amount=0.002",
+      "qr_svg": "<svg ...>"
+    },
+    "pix_direto": {
+      "br_code": "000201...",
+      "key_masked": "00•••••••91",
+      "key_type": "cpf",
+      "amount": "100.00",
+      "txid": "PR52C46FD3DB7940CBBC"
+    }
+  }
+}
+```
+
+Consulta: `GET /v1/payment-requests/:id`.
+
+## Bitcoin -> dolar digital (swap)
+
+`POST /v1/swap-charges` cria o pedido: o motor cota o par, pede a SwapKit um
+endereco de deposito e devolve o BIP21. O pagador ve so o QR.
+
+```json
+{ "external_id": "btc-123", "amount_cents": "10000", "currency": "BRL" }
+```
+
+Estados: `aguardando_deposito` → `depositado` → `trocado` → `liquidado`.
+`trocado` e a SwapKit dizendo que entregou; `liquidado` e o motor lendo a
+entrega do USDC na Polygon. **So `liquidado` e sucesso.**
+
+Consulta: `GET /v1/swap-charges/:id`.
+
+Desligado por padrao (`SWAPKIT_ENABLED=false`): sem chave da SwapKit nao ha
+cota nem endereco de deposito.
 
 ## Erros
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Serviço de pagamentos Bitcoin: Lightning (LNbits) + on-chain watch-only (Esplora/Electrum)",
+  "description": "Servi\u00e7o de pagamentos Bitcoin: Lightning (LNbits) + on-chain watch-only (Esplora/Electrum)",
   "engines": {
     "node": ">=22"
   },
@@ -23,6 +23,7 @@
     "alert:drill:prod": "node dist/tools/alert-drill.js",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "client:create": "tsx scripts/seed-client.ts",
+    "device:register": "tsx scripts/register-device.ts",
     "merchant:pix:seed": "tsx scripts/seed-pix-merchant.ts",
     "pix:e2e": "tsx scripts/pix-sandbox-e2e.ts",
     "pix:live": "tsx scripts/pix-live-charge.ts",
