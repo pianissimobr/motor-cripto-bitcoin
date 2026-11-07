@@ -557,6 +557,87 @@ export type LedgerAccount = {
   createdAt: Date;
 };
 
+/**
+ * Estados canonicos do swap (Bitcoin -> dolar digital).
+ *
+ * `trocado` e o provedor dizer que entregou; `liquidado` e a nossa prova
+ * on-chain. So `liquidado` e sucesso.
+ */
+export type SwapStatus =
+  | 'criando'
+  | 'pendente'
+  | 'aguardando_deposito'
+  | 'depositado'
+  | 'trocado'
+  | 'liquidado'
+  | 'expirado'
+  | 'reembolsado'
+  | 'falhou'
+  | 'incerto'
+  | 'manual';
+
+/** Estado cru da SwapKit no rastreio de um swap. */
+export type SwapProviderState =
+  | 'pending'
+  | 'waiting'
+  | 'created'
+  | 'new'
+  | 'awaiting_deposit'
+  | 'deposit_pending'
+  | 'funding'
+  | 'deposited'
+  | 'deposit_detected'
+  | 'deposit_confirmed'
+  | 'swapping'
+  | 'swapped'
+  | 'swap_completed'
+  | 'completed'
+  | 'failed'
+  | 'error'
+  | 'refunded'
+  | 'refund'
+  | 'expired'
+  | 'manual_review'
+  | 'under_review';
+
+/** Linha de um pedido de pagamento em Bitcoin que vira dolar digital. */
+export type SwapOrder = {
+  id: string;
+  clientId: string;
+  externalId: string;
+  provider: 'swapkit';
+  providerOrderId: string | null;
+  providerState: SwapProviderState | null;
+  status: SwapStatus;
+  /** Valor em centavos da moeda de cotacao (BRL ou USD). */
+  amountFiatCents: bigint;
+  currency: 'BRL' | 'USD';
+  /** Quanto o pagador deve enviar em BTC, em sats. */
+  amountSats: bigint;
+  /** Ativo que o pagador envia. */
+  sellAsset: string;
+  /** Ativo que o cliente recebe (USDC nativo na Polygon). */
+  buyAsset: string;
+  network: 'polygon';
+  /** Carteira que recebe o USDC. */
+  destinationAddress: string;
+  /** Endereco de BTC do pagador (unico por pedido). */
+  depositAddress: string | null;
+  depositChannelId: string | null;
+  /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
+  expectedAssetMinor: bigint | null;
+  feeTotalBps: number | null;
+  expiresAt: Date | null;
+  providerPayload: Record<string, unknown> | null;
+  error: string | null;
+  attempts: number;
+  lastCheckedAt: Date | null;
+  metadata: Record<string, unknown> | null;
+  version: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type LedgerEntryInput = {
   accountCode: string;
   merchantId?: string | null;

@@ -141,6 +141,20 @@
       "when": 1793781777829,
       "tag": "0019_merchant_wallet_purpose",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794054181087,
+      "tag": "0020_swap_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794062591072,
+      "tag": "0021_client_pix_keys_payment_requests",
+      "breakpoints": true
     }
   ]
 }

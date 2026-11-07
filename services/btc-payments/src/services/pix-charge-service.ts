@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import QRCode from 'qrcode';
+import { resolveSettlementDestination } from './settlement-destination.js';
 import type { AppConfig } from '../config.js';
 import { LuniumError, type LuniumCharge, type LuniumClient } from '../adapters/lunium/client.js';
 import { verifyUsdcSettlement } from '../adapters/chain/usdc-settlement-verify.js';
@@ -525,38 +526,12 @@ export class PixChargeService {
     clientId: string,
     explicit: string | null,
   ): Promise<string | null> {
-    if (explicit) {
-      const address = explicit.toLowerCase();
-      const revoked = await this.deps.repos.isAddressRevoked(address, clientId);
-      if (revoked) {
-        throw new ValidationError(
-          'o dono do endereco revogou o uso dele por esta loja',
-        );
-      }
-      const wallet = await this.deps.repos.findMerchantWalletByChainAddress(
-        this.deps.config.pix.chain,
-        address,
-      );
-      if (!wallet || wallet.merchantId !== clientId || wallet.status !== 'ativo') {
-        throw new ValidationError(
-          'endereco nao cadastrado por esta loja para liquidacao USDC',
-        );
-      }
-      // A carteira da propria loja e a de um cliente (F4) sao destinos validos;
-      // o que nao pode e o endereco de outra loja.
-      return address;
-    }
-    const client = await this.deps.repos.findClientById(clientId);
-    if (client?.clientType === 'usuario' && client.settlementAddress) {
-      return client.settlementAddress.toLowerCase();
-    }
-    if (client?.settlementAddress) {
-      return client.settlementAddress.toLowerCase();
-    }
-    const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(
+    return resolveSettlementDestination({
+      repos: this.deps.repos,
+      config: this.deps.config,
       clientId,
-    );
-    return wallet?.address ?? null;
+      explicit,
+    });
   }
 
   async applyProviderCharge(

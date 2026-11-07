@@ -192,6 +192,65 @@ const EnvSchema = z
     CASHOUT_MIN_BRL_CENTS: bigintFromEnv('600'),
     CASHOUT_MAX_BRL_CENTS: bigintFromEnv('25000000'),
 
+    /**
+     * Swap (Bitcoin -> dolar digital) pela SwapKit.
+     *
+     * Desligado por padrao: o trilho depende de uma chave da SwapKit e de um
+     * endereco de deposito unico por cobranca, que so os provedores de
+     * deposito (NEAR, FLASHNET) entregam.
+     */
+    SWAPKIT_ENABLED: boolFromEnv(false),
+    SWAPKIT_API_URL: httpUrl('SWAPKIT_API_URL invalida').default(
+      'https://api.swapkit.dev',
+    ),
+    SWAPKIT_API_KEY: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).optional(),
+    ),
+    /**
+     * Provedores, na ordem de preferencia.
+     *
+     * `NEAR` e `FLASHNET` sao os que aceitam BTC como origem e USDC na
+     * Polygon como destino **e** dao um endereco de deposito unico por pedido
+     * (sem memo, o que permite um BIP21 comum). `THORCHAIN_STREAMING` nao
+     * tem USDC na Polygon e usa cofre compartilhado com memo: nao serve.
+     */
+    SWAPKIT_PROVIDERS: z.string().trim().default('NEAR,FLASHNET'),
+    /** Ativo que o pagador envia. */
+    SWAPKIT_SELL_ASSET: z.string().trim().default('BTC.BTC'),
+    /**
+     * Ativo que o cliente recebe: USDC nativo na Polygon.
+     *
+     * O contrato e o mesmo que o motor ja usa na liquidacao do PIX
+     * (`0x3c499c54...`). A SwapKit identifica o token pelo par chain + endereco.
+     */
+    SWAPKIT_BUY_ASSET: z
+      .string()
+      .trim()
+      .default('POL.USDC-0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),
+    /**
+     * Unidade do `sellAmount`.
+     *
+     * A documentacao da SwapKit nao diz se e unidade base (sats) ou decimal
+     * (BTC). Os exemplos usam decimal (`0.01`), que e o default; o spike com
+     * chave real confirma.
+     */
+    SWAPKIT_AMOUNT_UNIT: z.enum(['decimal', 'base']).default('decimal'),
+    SWAPKIT_TIMEOUT_MS: intFromEnv(15_000, 1_000),
+    /**
+     * A chave da SwapKit aceita 10 requisicoes por minuto por servico.
+     * `api` e `worker` sao processos separados e dividem esse teto.
+     */
+    SWAPKIT_RATE_LIMIT_API_MAX: intFromEnv(6, 1, 10),
+    SWAPKIT_RATE_LIMIT_WORKER_MAX: intFromEnv(4, 1, 10),
+    SWAPKIT_RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),
+    SWAPKIT_RATE_LIMIT_MAX_QUEUE: intFromEnv(50, 1, 1_000),
+    /** Deslizamento aceito na cotacao, em basis points. */
+    SWAPKIT_SLIPPAGE_BPS: intFromEnv(100, 1, 5_000),
+    /** Faixa aceita do swap (o teto da chave da SwapKit e menor). */
+    SWAPKIT_MIN_BRL_CENTS: bigintFromEnv('102'),
+    SWAPKIT_MAX_BRL_CENTS: bigintFromEnv('600000'),
+
     RATE_LIMIT_WINDOW_MS: intFromEnv(60_000, 1_000),
     RATE_LIMIT_MAX: intFromEnv(120, 1),
 
@@ -369,6 +428,21 @@ const EnvSchema = z
         message: 'obrigatorio quando PIX_ENABLED=true',
       });
     }
+    if (env.SWAPKIT_ENABLED && !env.SWAPKIT_API_KEY) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SWAPKIT_API_KEY'],
+        message: 'obrigatorio quando SWAPKIT_ENABLED=true',
+      });
+    }
+    if (env.SWAPKIT_ENABLED && !env.ONCHAIN_ENABLED && !env.PIX_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SWAPKIT_ENABLED'],
+        message:
+          'o swap entrega USDC na Polygon: habilite ONCHAIN_ENABLED ou PIX_ENABLED para a liquidacao',
+      });
+    }
     if (
       env.LUNIUM_RATE_LIMIT_API_MAX + env.LUNIUM_RATE_LIMIT_WORKER_MAX >
       env.LUNIUM_RATE_LIMIT_MAX
@@ -496,6 +570,29 @@ export type AppConfig = {
     /** Faixa aceita: a LuniumPay vai de R$ 6,00 a R$ 250.000,00 por vez. */
     minBrlCents: bigint;
     maxBrlCents: bigint;
+  };
+  /** Swap: Bitcoin -> dolar digital, pela SwapKit. */
+  swapkit: {
+    enabled: boolean;
+    apiUrl: string;
+    apiKey?: string;
+    /** Provedores na ordem de preferencia. */
+    providers: string[];
+    /** Ativo que o pagador envia (ex.: `BTC.BTC`). */
+    sellAsset: string;
+    /** Ativo que o cliente recebe (ex.: `POL.USDC-0x3c499c...`). */
+    buyAsset: string;
+    amountUnit: 'decimal' | 'base';
+    timeoutMs: number;
+    slippageBps: number;
+    minBrlCents: bigint;
+    maxBrlCents: bigint;
+    rateLimit: {
+      apiMax: number;
+      workerMax: number;
+      windowMs: number;
+      maxQueue: number;
+    };
   };
   webhook: {
     timeoutMs: number;
@@ -754,6 +851,27 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       network: 'polygon',
       minBrlCents: env.CASHOUT_MIN_BRL_CENTS,
       maxBrlCents: env.CASHOUT_MAX_BRL_CENTS,
+    },
+    swapkit: {
+      enabled: env.SWAPKIT_ENABLED,
+      apiUrl: env.SWAPKIT_API_URL.replace(/\/+$/, ''),
+      ...(env.SWAPKIT_API_KEY ? { apiKey: env.SWAPKIT_API_KEY } : {}),
+      providers: env.SWAPKIT_PROVIDERS.split(',')
+        .map((provider) => provider.trim())
+        .filter((provider) => provider.length > 0),
+      sellAsset: env.SWAPKIT_SELL_ASSET,
+      buyAsset: env.SWAPKIT_BUY_ASSET,
+      amountUnit: env.SWAPKIT_AMOUNT_UNIT,
+      timeoutMs: env.SWAPKIT_TIMEOUT_MS,
+      slippageBps: env.SWAPKIT_SLIPPAGE_BPS,
+      minBrlCents: env.SWAPKIT_MIN_BRL_CENTS,
+      maxBrlCents: env.SWAPKIT_MAX_BRL_CENTS,
+      rateLimit: {
+        apiMax: env.SWAPKIT_RATE_LIMIT_API_MAX,
+        workerMax: env.SWAPKIT_RATE_LIMIT_WORKER_MAX,
+        windowMs: env.SWAPKIT_RATE_LIMIT_WINDOW_MS,
+        maxQueue: env.SWAPKIT_RATE_LIMIT_MAX_QUEUE,
+      },
     },
     webhook: {
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,

@@ -12,7 +12,9 @@ import { AlertService } from './services/alert-service.js';
 import { LedgerService } from './ledger/ledger-service.js';
 import { ReconciliationService } from './services/reconciliation-service.js';
 import { LuniumClient } from './adapters/lunium/client.js';
+import { SwapKitClient } from './adapters/swapkit/client.js';
 import { PixChargeService } from './services/pix-charge-service.js';
+import { SwapService } from './services/swap-service.js';
 import { CashOutService } from './services/cashout-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
@@ -102,6 +104,22 @@ export async function startWorker(): Promise<WorkerHandle> {
     lunium && config.cashout.enabled
       ? new CashOutService({ repos, lunium, config, logger, alerts })
       : null;
+  const swapkit =
+    config.swapkit.enabled && config.swapkit.apiKey
+      ? new SwapKitClient({
+          apiUrl: config.swapkit.apiUrl,
+          apiKey: config.swapkit.apiKey,
+          timeoutMs: config.swapkit.timeoutMs,
+          rateLimit: {
+            maxRequests: config.swapkit.rateLimit.workerMax,
+            windowMs: config.swapkit.rateLimit.windowMs,
+            maxQueue: config.swapkit.rateLimit.maxQueue,
+          },
+        })
+      : null;
+  const swap = swapkit
+    ? new SwapService({ repos, swapkit, config, logger, alerts })
+    : null;
   const luniumWebhook = pixCharges && lunium
     ? new LuniumWebhookService({
         repos,
@@ -180,6 +198,15 @@ export async function startWorker(): Promise<WorkerHandle> {
     });
   }
 
+  if (swap) {
+    const service = swap;
+    jobs.push({
+      name: 'swap-reconcile',
+      intervalMs: config.jobs.pixPollMs,
+      run: () => service.reconcile(config.jobs.pixBatchSize),
+    });
+  }
+
   if (luniumWebhook) {
     const service = luniumWebhook;
     jobs.push({
@@ -201,6 +228,7 @@ export async function startWorker(): Promise<WorkerHandle> {
       lightning: config.lightning.enabled,
       onchain: config.onchain.enabled,
       pix: config.pix.enabled,
+      swap: config.swapkit.enabled,
       jobs: jobs.map((job) => ({ name: job.name, intervalMs: job.intervalMs })),
     },
     'worker btc-payments iniciado',

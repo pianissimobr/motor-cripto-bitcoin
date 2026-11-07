@@ -30,6 +30,11 @@ import type { WalletChangeNotifier } from '../services/wallet-change-notifier.js
 import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
 import type { PixChargeService } from '../services/pix-charge-service.js';
+import type { SwapService } from '../services/swap-service.js';
+import type {
+  PaymentRequestRail,
+  PaymentRequestService,
+} from '../services/payment-request-service.js';
 import type { LuniumWebhookService } from '../services/lunium-webhook-service.js';
 import { LuniumError } from '../adapters/lunium/client.js';
 import { GasStationError } from '../adapters/chain/gas-station.js';
@@ -65,6 +70,8 @@ export type ApiServices = {
   walletNotifier?: WalletChangeNotifier;
   autho?: AuthoIssuerClient;
   pixCharges?: PixChargeService;
+  swap?: SwapService;
+  paymentRequests?: PaymentRequestService;
   cashOut?: CashOutService;
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
@@ -146,17 +153,87 @@ const createIntentSchema = z
     }
   });
 
+/**
+ * Pedido de pagamento em Bitcoin que vira dolar digital.
+ *
+ * O valor vem sempre em centavos (`amount_cents`, D23): `amount` diverge por
+ * 100x entre o app (centavos) e o motor (reais), e nome ambiguo entre dois
+ * lados e bug esperando.
+ */
+/**
+ * Pedido de pagamento com mais de um trilho.
+ *
+ * O valor vem sempre em centavos (`amount_cents`, D23).
+ */
+const createPaymentRequestSchema = z
+  .object({
+    external_id: z.string().trim().min(1).max(128),
+    amount_cents: z
+      .union([z.string().regex(/^\d+$/), z.number().int().positive()])
+      .transform((value) => BigInt(value)),
+    currency: z.enum(['BRL', 'USD']).default('BRL'),
+    /** Trilhos oferecidos. Sem esse campo: Pix + Bitcoin. */
+    rails: z
+      .array(z.enum(['pix', 'bitcoin', 'pix_direto']))
+      .max(3)
+      .optional(),
+    /** CPF/CNPJ do pagador: obrigatorio no trilho Pix. */
+    payer_tax_number: z.string().trim().min(1).max(32).optional(),
+    payer_name: z.string().trim().max(200).optional(),
+    description: z.string().trim().max(200).optional(),
+    expires_in_seconds: z.number().int().min(30).max(86_400).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+const createSwapChargeSchema = z
+  .object({
+    external_id: z.string().trim().min(1).max(128),
+    amount_cents: z.string().regex(/^\d+$/, 'amount_cents invalido'),
+    currency: z.enum(['BRL', 'USD']).default('BRL'),
+    /** Endereco que recebe o USDC (o padrao e o do cliente). */
+    destination_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
+      .optional(),
+    description: z.string().trim().max(200).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
+
+/**
+ * Cobranca Pix.
+ *
+ * O valor vem em centavos (`amount_cents`, D23). O campo `amount` (em reais)
+ * continua aceito para as integracoes antigas, mas e a ultima vez: nome
+ * ambiguo entre dois lados e bug esperando — o app mandava centavos no
+ * `amount` e o motor lia reais, e a cobranca saia 100x maior.
+ */
 const createPixChargeSchema = z
   .object({
     external_id: z.string().trim().min(1).max(128),
-    amount: fiatAmountSchema,
+    amount_cents: z
+      .union([z.string().regex(/^\d+$/), z.number().int().positive()])
+      .transform((value) => BigInt(value))
+      .optional(),
+    amount: fiatAmountSchema.optional(),
     currency: z.literal('BRL').default('BRL'),
     payer_tax_number: z.string().trim().min(1).max(32),
     payer_name: z.string().trim().max(200).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     sandbox_scenario: z.string().trim().min(1).max(80).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.amount_cents === undefined) === (value.amount === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['amount_cents'],
+        message: 'informe amount_cents (ou amount, em reais, para as integracoes antigas)',
+      });
+    }
+  });
 
 /**
  * Cotacao do cash-out: `br_code` **ou** `pix_key` + valor, nunca os dois
@@ -739,7 +816,7 @@ export function registerApiRoutes(
         const created = await services.pixCharges.create({
           clientId: client.id,
           externalId: body.external_id,
-          amountBrlCents: body.amount,
+          amountBrlCents: body.amount_cents ?? body.amount!,
           payerTaxNumber: body.payer_tax_number,
           ...(body.payer_name ? { payerName: body.payer_name } : {}),
           ...(body.metadata ? { metadata: body.metadata } : {}),
@@ -783,6 +860,91 @@ export function registerApiRoutes(
         throw new ServiceUnavailableError('PIX indisponivel');
       }
       return services.pixCharges.getById(client.id, params.id);
+    },
+  );
+
+  app.post(
+    '/v1/payment-requests',
+    { preHandler: apiAuth('payments:write') },
+    async (request, reply) => {
+      const body = parse(createPaymentRequestSchema, request.body, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      if (!services.paymentRequests) {
+        throw new ServiceUnavailableError('pedidos de pagamento indisponiveis');
+      }
+      const created = await services.paymentRequests.create({
+        clientId: client.id,
+        externalId: body.external_id,
+        amountFiatCents: body.amount_cents,
+        currency: body.currency,
+        ...(body.rails ? { rails: body.rails as PaymentRequestRail[] } : {}),
+        ...(body.payer_tax_number ? { payerTaxNumber: body.payer_tax_number } : {}),
+        ...(body.payer_name ? { payerName: body.payer_name } : {}),
+        ...(body.description ? { description: body.description } : {}),
+        ...(body.expires_in_seconds
+          ? { expiresInSeconds: body.expires_in_seconds }
+          : {}),
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+      });
+      return reply.status(created.reused ? 200 : 201).send(created.dto);
+    },
+  );
+
+  app.get(
+    '/v1/payment-requests/:id',
+    { preHandler: apiAuth('payments:read') },
+    async (request) => {
+      const params = parse(idParamsSchema, request.params, 'id');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      if (!services.paymentRequests) {
+        throw new ServiceUnavailableError('pedidos de pagamento indisponiveis');
+      }
+      const found = await services.paymentRequests.get(params.id, client.id);
+      if (!found) throw new NotFoundError('pedido de pagamento nao encontrado');
+      return found;
+    },
+  );
+
+  app.post(
+    '/v1/swap-charges',
+    { preHandler: apiAuth('payments:write') },
+    async (request, reply) => {
+      const body = parse(createSwapChargeSchema, request.body, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      if (!services.swap) {
+        throw new ServiceUnavailableError('swap indisponivel');
+      }
+      const created = await services.swap.create({
+        clientId: client.id,
+        externalId: body.external_id,
+        amountFiatCents: BigInt(body.amount_cents),
+        currency: body.currency,
+        ...(body.destination_address
+          ? { destinationAddress: body.destination_address }
+          : {}),
+        ...(body.description ? { description: body.description } : {}),
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+      });
+      return reply.status(created.reused ? 200 : 201).send(created.dto);
+    },
+  );
+
+  app.get(
+    '/v1/swap-charges/:id',
+    { preHandler: apiAuth('payments:read') },
+    async (request) => {
+      const params = parse(idParamsSchema, request.params, 'id');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      if (!services.swap) {
+        throw new ServiceUnavailableError('swap indisponivel');
+      }
+      const found = await services.swap.get(params.id, client.id);
+      if (!found) throw new NotFoundError('pedido de swap nao encontrado');
+      return found;
     },
   );
 

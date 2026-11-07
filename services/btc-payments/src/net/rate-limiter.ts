@@ -35,7 +35,7 @@ export type RateLimiterOptions = {
 
 export class RateLimiterQueueFullError extends Error {
   constructor(maxQueue: number) {
-    super(`fila de chamadas a Lunium cheia (${maxQueue})`);
+    super(`fila de chamadas cheia (${maxQueue})`);
     this.name = 'RateLimiterQueueFullError';
   }
 }
@@ -59,7 +59,7 @@ function burstCapacity(maxRequests: number): number {
   return Math.max(1, Math.min(maxRequests, 5));
 }
 
-export class LuniumRateLimiter {
+export class RateLimiter {
   private readonly maxRequests: number;
   private readonly windowMs: number;
   private readonly maxQueue: number;

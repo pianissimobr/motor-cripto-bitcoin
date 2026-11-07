@@ -6,6 +6,7 @@ import {
   ValidationError,
 } from '../domain/errors.js';
 import { isPossessionPurpose } from '../domain/possession.js';
+import { guessPixKeyType, maskPixKey } from '../domain/brcode.js';
 import { createApiAuth } from './auth.js';
 import type { ApiServices } from './api-routes.js';
 
@@ -49,6 +50,24 @@ const addressQuerySchema = z.object({
 const payerLimitsQuerySchema = z.object({
   payer_tax: z.string().trim().min(1).max(32),
 });
+
+/**
+ * Chave Pix do proprio usuario.
+ *
+ * E o trilho "Pix direto": com a chave configurada, o motor monta o BR Code
+ * e o pagamento cai direto na conta do usuario, sem passar pela LuniumPay e
+ * sem conversao.
+ */
+const pixKeySchema = z
+  .object({
+    pix_key: z.string().trim().min(1).max(140),
+    pix_key_type: z
+      .enum(['cpf', 'cnpj', 'email', 'phone', 'random'])
+      .optional(),
+    merchant_name: z.string().trim().max(25).optional(),
+    city: z.string().trim().max(15).optional(),
+  })
+  .strict();
 
 const revocationSchema = z
   .object({
@@ -164,6 +183,53 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
       }
       const query = parse(payerLimitsQuerySchema, request.query, 'query string');
       return services.lunium.getLimits(query.payer_tax);
+    },
+  );
+
+  app.put(
+    '/v1/user/pix-key',
+    { preHandler: apiAuth('operations:read') },
+    async (request, reply) => {
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      const address = client.settlementAddress;
+      if (!address) {
+        throw new ValidationError('cliente sem endereco de liquidacao');
+      }
+      const body = parse(pixKeySchema, request.body ?? {}, 'corpo');
+      const saved = await services.repos.createClientPixKey({
+        clientId: client.id,
+        address: address.toLowerCase(),
+        pixKey: body.pix_key,
+        pixKeyType: body.pix_key_type ?? guessPixKeyType(body.pix_key) ?? null,
+        merchantName: body.merchant_name ?? null,
+        city: body.city ?? null,
+      });
+      return reply.status(200).send({
+        pix_key: maskPixKey(saved.pixKey),
+        pix_key_type: saved.pixKeyType,
+        merchant_name: saved.merchantName,
+        city: saved.city,
+        updated_at: saved.updatedAt.toISOString(),
+      });
+    },
+  );
+
+  app.get(
+    '/v1/user/pix-key',
+    { preHandler: apiAuth('operations:read') },
+    async (request) => {
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      const saved = await services.repos.findClientPixKeyByClientId(client.id);
+      if (!saved) return { pix_key: null };
+      return {
+        pix_key: maskPixKey(saved.pixKey),
+        pix_key_type: saved.pixKeyType,
+        merchant_name: saved.merchantName,
+        city: saved.city,
+        updated_at: saved.updatedAt.toISOString(),
+      };
     },
   );
 

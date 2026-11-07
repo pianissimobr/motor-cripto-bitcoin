@@ -193,3 +193,58 @@ export function maskPixKey(key: string): string {
   if (key.length <= 4) return key;
   return `${key.slice(0, 2)}${'•'.repeat(Math.max(1, key.length - 4))}${key.slice(-2)}`;
 }
+
+/** Tag EMV: `id` (2) + `len` (2) + valor. */
+function buildTag(id: string, value: string): string {
+  return `${id}${String(value.length).padStart(2, '0')}${value}`;
+}
+
+/**
+ * Monta um BR Code (QR Code do Pix) para uma chave Pix.
+ *
+ * O motor monta o codigo no trilho "Pix direto": o usuario configura a chave
+ * Pix da propria conta e o pagamento cai la, sem passar pela LuniumPay e sem
+ * conversao. O `txid` amarra o codigo ao pedido — e o que permite reconciliar
+ * depois (quando ha um provedor que avisa).
+ *
+ * O `txid` do padrao EMV aceita ate 25 caracteres alfanumericos; qualquer
+ * coisa fora disso e removida, porque um caractere especial quebra a leitura
+ * de alguns aplicativo de banco.
+ */
+export function buildBrCode(options: {
+  key: string;
+  merchantName?: string;
+  city?: string;
+  amount?: string;
+  txid?: string;
+}): string {
+  const key = options.key.trim();
+  if (key.length === 0) {
+    throw new BrCodeError('chave Pix vazia');
+  }
+  const accountInfo = buildTag('00', 'br.gov.bcb.pix') + buildTag('01', key);
+  const merchantName = (options.merchantName ?? 'MERCHANT')
+    .slice(0, 25)
+    .replace(/[^\p{L}\p{N} ]/gu, '');
+  const city = (options.city ?? 'SAO PAULO').slice(0, 15).replace(/[^\p{L}\p{N} ]/gu, '');
+  const txid = (options.txid ?? '***')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .slice(0, 25);
+
+  const parts = [
+    BR_CODE_PREFIX,
+    buildTag('00', '01'),
+    buildTag('26', accountInfo),
+    buildTag('52', '0000'),
+    buildTag('53', '986'),
+    options.amount ? buildTag('54', options.amount) : '',
+    buildTag('58', 'BR'),
+    buildTag('59', merchantName),
+    buildTag('60', city),
+    buildTag('62', buildTag('05', txid)),
+  ].filter((part) => part.length > 0);
+
+  const withoutCrc = parts.join('');
+  return `${withoutCrc}6304${brCodeCrc16(`${withoutCrc}6304`)}`;
+}
+

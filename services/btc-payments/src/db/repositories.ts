@@ -30,6 +30,7 @@ import type {
   PaymentIntent,
   CashOutCharge,
   PixCharge,
+  SwapOrder,
   Payout,
   PayoutStatus,
   PaymentIntentStatus,
@@ -65,6 +66,8 @@ import {
   paymentIntents,
   payouts,
   cashoutCharges,
+  clientPixKeys,
+  paymentRequests,
   pixCharges,
   possessionChallenges,
   providerEvents,
@@ -73,6 +76,7 @@ import {
   sessions,
   subscriptionCharges,
   subscriptions,
+  swapOrders,
   treasuryWallets,
   users,
   webhookEvents,
@@ -352,6 +356,112 @@ export type UpdateCashOutChargeInput = {
   error?: string | null;
   attempts?: number;
   lastCheckedAt?: Date | null;
+  expiresAt?: Date | null;
+  version?: number;
+};
+
+export type CreateSwapOrderInput = {
+  id?: string;
+  clientId: string;
+  externalId: string;
+  providerExternalId?: string | null;
+  amountFiatCents: bigint;
+  currency: 'BRL' | 'USD';
+  amountSats: bigint;
+  sellAsset: string;
+  buyAsset: string;
+  network?: 'polygon';
+  destinationAddress: string;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type UpdateSwapOrderInput = {
+  id: string;
+  status?: SwapOrder['status'];
+  providerOrderId?: string | null;
+  providerState?: SwapOrder['providerState'];
+  depositAddress?: string | null;
+  depositChannelId?: string | null;
+  expectedAssetMinor?: bigint | null;
+  feeTotalBps?: number | null;
+  expiresAt?: Date | null;
+  providerPayload?: Record<string, unknown> | null;
+  error?: string | null;
+  attempts?: number;
+  lastCheckedAt?: Date | null;
+  version?: number;
+};
+
+export type ClientPixKey = {
+  id: string;
+  clientId: string;
+  address: string;
+  pixKey: string;
+  pixKeyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random' | null;
+  merchantName: string | null;
+  city: string | null;
+  status: 'ativo' | 'inativo';
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type CreateClientPixKeyInput = {
+  clientId: string;
+  address: string;
+  pixKey: string;
+  pixKeyType?: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random' | null;
+  merchantName?: string | null;
+  city?: string | null;
+};
+
+export type PaymentRequest = {
+  id: string;
+  clientId: string;
+  externalId: string;
+  amountFiatCents: bigint;
+  currency: 'BRL' | 'USD';
+  rails: string[];
+  status:
+    | 'criando'
+    | 'pendente'
+    | 'pago'
+    | 'parcial'
+    | 'expirado'
+    | 'cancelado'
+    | 'falha';
+  pixChargeId: string | null;
+  swapOrderId: string | null;
+  pixDirect: {
+    br_code: string;
+    key_masked: string;
+    key_type: string | null;
+    txid: string;
+    amount: string;
+  } | null;
+  expiresAt: Date | null;
+  metadata: Record<string, unknown> | null;
+  version: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type CreatePaymentRequestInput = {
+  id?: string;
+  clientId: string;
+  externalId: string;
+  amountFiatCents: bigint;
+  currency: 'BRL' | 'USD';
+  rails: string[];
+  expiresAt?: Date | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export type UpdatePaymentRequestInput = {
+  id: string;
+  status?: PaymentRequest['status'];
+  pixChargeId?: string | null;
+  swapOrderId?: string | null;
+  pixDirect?: PaymentRequest['pixDirect'];
   expiresAt?: Date | null;
   version?: number;
 };
@@ -698,6 +808,44 @@ export type Repositories = {
     originAddress: string,
     limit: number,
   ) => Promise<CashOutCharge[]>;
+
+  // Chave Pix do proprio usuario (trilho "Pix direto")
+  createClientPixKey: (input: CreateClientPixKeyInput) => Promise<ClientPixKey>;
+  findClientPixKeyByClientId: (clientId: string) => Promise<ClientPixKey | null>;
+  updateClientPixKey: (
+    input: Partial<CreateClientPixKeyInput> & { clientId: string },
+  ) => Promise<ClientPixKey | null>;
+
+  // Pedido de pagamento com mais de um trilho
+  createPaymentRequest: (input: CreatePaymentRequestInput) => Promise<PaymentRequest>;
+  findPaymentRequestById: (id: string) => Promise<PaymentRequest | null>;
+  findPaymentRequestByIdForClient: (
+    id: string,
+    clientId: string,
+  ) => Promise<PaymentRequest | null>;
+  findPaymentRequestByClientAndExternalId: (
+    clientId: string,
+    externalId: string,
+  ) => Promise<PaymentRequest | null>;
+  updatePaymentRequest: (input: UpdatePaymentRequestInput) => Promise<PaymentRequest | null>;
+
+  // Swap (Bitcoin -> dolar digital, pela SwapKit)
+  createSwapOrder: (input: CreateSwapOrderInput) => Promise<SwapOrder>;
+  findSwapOrderById: (id: string) => Promise<SwapOrder | null>;
+  findSwapOrderByIdForClient: (
+    id: string,
+    clientId: string,
+  ) => Promise<SwapOrder | null>;
+  findSwapOrderByClientAndExternalId: (
+    clientId: string,
+    externalId: string,
+  ) => Promise<SwapOrder | null>;
+  findSwapOrderByProviderOrderId: (
+    provider: string,
+    providerOrderId: string,
+  ) => Promise<SwapOrder | null>;
+  updateSwapOrder: (input: UpdateSwapOrderInput) => Promise<SwapOrder | null>;
+  listSwapOrdersToReconcile: (limit: number) => Promise<SwapOrder[]>;
 
   // Prova de posse (C12) e revogacao de endereco (C12.1)
   createPossessionChallenge: (input: {
@@ -2845,6 +2993,302 @@ export function createRepositories(db: Db): Repositories {
       const found = existing[0];
       if (!found) throw new Error('falha ao criar cash-out');
       return found;
+    },
+
+    async createClientPixKey(input: CreateClientPixKeyInput) {
+      const rows = await db
+        .insert(clientPixKeys)
+        .values({
+          clientId: input.clientId,
+          address: input.address,
+          pixKey: input.pixKey,
+          pixKeyType: input.pixKeyType ?? null,
+          merchantName: input.merchantName ?? null,
+          city: input.city ?? null,
+        })
+        .onConflictDoNothing({ target: [clientPixKeys.clientId] })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      // Ja existe uma chave para este cliente: a nova substitui a antiga.
+      const updated = await db
+        .update(clientPixKeys)
+        .set({
+          address: input.address,
+          pixKey: input.pixKey,
+          pixKeyType: input.pixKeyType ?? null,
+          merchantName: input.merchantName ?? null,
+          city: input.city ?? null,
+          status: 'ativo',
+          updatedAt: new Date(),
+        })
+        .where(eq(clientPixKeys.clientId, input.clientId))
+        .returning();
+      const found = updated[0];
+      if (!found) throw new Error('falha ao salvar a chave Pix');
+      return found;
+    },
+
+    async findClientPixKeyByClientId(clientId) {
+      const rows = await db
+        .select()
+        .from(clientPixKeys)
+        .where(eq(clientPixKeys.clientId, clientId))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updateClientPixKey(input) {
+      const rows = await db
+        .update(clientPixKeys)
+        .set({
+          ...(input.address !== undefined ? { address: input.address } : {}),
+          ...(input.pixKey !== undefined ? { pixKey: input.pixKey } : {}),
+          ...(input.pixKeyType !== undefined ? { pixKeyType: input.pixKeyType } : {}),
+          ...(input.merchantName !== undefined
+            ? { merchantName: input.merchantName }
+            : {}),
+          ...(input.city !== undefined ? { city: input.city } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(clientPixKeys.clientId, input.clientId))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async createPaymentRequest(input: CreatePaymentRequestInput) {
+      const rows = await db
+        .insert(paymentRequests)
+        .values({
+          ...(input.id ? { id: input.id } : {}),
+          clientId: input.clientId,
+          externalId: input.externalId,
+          amountFiatCents: input.amountFiatCents,
+          currency: input.currency,
+          rails: input.rails,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+          metadata: input.metadata ?? null,
+        })
+        .onConflictDoNothing({
+          target: [paymentRequests.clientId, paymentRequests.externalId],
+        })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(paymentRequests)
+        .where(
+          and(
+            eq(paymentRequests.clientId, input.clientId),
+            eq(paymentRequests.externalId, input.externalId),
+          ),
+        )
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar o pedido de pagamento');
+      return found;
+    },
+
+    async findPaymentRequestById(id) {
+      const rows = await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPaymentRequestByIdForClient(id, clientId) {
+      const rows = await db
+        .select()
+        .from(paymentRequests)
+        .where(
+          and(
+            eq(paymentRequests.id, id),
+            eq(paymentRequests.clientId, clientId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findPaymentRequestByClientAndExternalId(clientId, externalId) {
+      const rows = await db
+        .select()
+        .from(paymentRequests)
+        .where(
+          and(
+            eq(paymentRequests.clientId, clientId),
+            eq(paymentRequests.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updatePaymentRequest(input: UpdatePaymentRequestInput) {
+      const rows = await db
+        .update(paymentRequests)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.pixChargeId !== undefined
+            ? { pixChargeId: input.pixChargeId }
+            : {}),
+          ...(input.swapOrderId !== undefined
+            ? { swapOrderId: input.swapOrderId }
+            : {}),
+          ...(input.pixDirect !== undefined ? { pixDirect: input.pixDirect } : {}),
+          ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+          ...(input.version !== undefined ? { version: input.version } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(paymentRequests.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async createSwapOrder(input: CreateSwapOrderInput) {
+      const rows = await db
+        .insert(swapOrders)
+        .values({
+          ...(input.id ? { id: input.id } : {}),
+          clientId: input.clientId,
+          externalId: input.externalId,
+          provider: 'swapkit',
+          providerOrderId: input.providerExternalId ?? null,
+          amountFiatCents: input.amountFiatCents,
+          currency: input.currency,
+          amountSats: input.amountSats,
+          sellAsset: input.sellAsset,
+          buyAsset: input.buyAsset,
+          network: input.network ?? 'polygon',
+          destinationAddress: input.destinationAddress,
+          metadata: input.metadata ?? null,
+        })
+        .onConflictDoNothing({
+          target: [swapOrders.clientId, swapOrders.externalId],
+        })
+        .returning();
+      const created = rows[0];
+      if (created) return created;
+      const existing = await db
+        .select()
+        .from(swapOrders)
+        .where(
+          and(
+            eq(swapOrders.clientId, input.clientId),
+            eq(swapOrders.externalId, input.externalId),
+          ),
+        )
+        .limit(1);
+      const found = existing[0];
+      if (!found) throw new Error('falha ao criar pedido de swap');
+      return found;
+    },
+
+    async findSwapOrderById(id) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(eq(swapOrders.id, id))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findSwapOrderByIdForClient(id, clientId) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(and(eq(swapOrders.id, id), eq(swapOrders.clientId, clientId)))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findSwapOrderByClientAndExternalId(clientId, externalId) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(
+          and(
+            eq(swapOrders.clientId, clientId),
+            eq(swapOrders.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async findSwapOrderByProviderOrderId(provider, providerOrderId) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(
+          and(
+            eq(swapOrders.provider, provider as 'swapkit'),
+            eq(swapOrders.providerOrderId, providerOrderId),
+          ),
+        )
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async updateSwapOrder(input: UpdateSwapOrderInput) {
+      const rows = await db
+        .update(swapOrders)
+        .set({
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.providerOrderId !== undefined
+            ? { providerOrderId: input.providerOrderId }
+            : {}),
+          ...(input.providerState !== undefined
+            ? { providerState: input.providerState }
+            : {}),
+          ...(input.depositAddress !== undefined
+            ? { depositAddress: input.depositAddress }
+            : {}),
+          ...(input.depositChannelId !== undefined
+            ? { depositChannelId: input.depositChannelId }
+            : {}),
+          ...(input.expectedAssetMinor !== undefined
+            ? { expectedAssetMinor: input.expectedAssetMinor }
+            : {}),
+          ...(input.feeTotalBps !== undefined
+            ? { feeTotalBps: input.feeTotalBps }
+            : {}),
+          ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+          ...(input.providerPayload !== undefined
+            ? { providerPayload: input.providerPayload }
+            : {}),
+          ...(input.error !== undefined ? { error: input.error } : {}),
+          ...(input.attempts !== undefined ? { attempts: input.attempts } : {}),
+          ...(input.lastCheckedAt !== undefined
+            ? { lastCheckedAt: input.lastCheckedAt }
+            : {}),
+          ...(input.version !== undefined ? { version: input.version } : {}),
+          updatedAt: new Date(),
+        })
+        .where(eq(swapOrders.id, input.id))
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async listSwapOrdersToReconcile(limit) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(
+          inArray(swapOrders.status, [
+            'pendente',
+            'aguardando_deposito',
+            'depositado',
+            'trocado',
+            'incerto',
+          ]),
+        )
+        .orderBy(asc(swapOrders.updatedAt))
+        .limit(limit);
+      return rows;
     },
 
     async findCashOutChargeById(id) {

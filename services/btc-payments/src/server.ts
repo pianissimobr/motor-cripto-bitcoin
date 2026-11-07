@@ -22,7 +22,10 @@ import { MerchantWalletService } from './services/merchant-wallet-service.js';
 import { createLnbitsFactory } from './services/merchant-lightning.js';
 import { MetricsService } from './services/metrics-service.js';
 import { LuniumClient } from './adapters/lunium/client.js';
+import { SwapKitClient } from './adapters/swapkit/client.js';
 import { PixChargeService } from './services/pix-charge-service.js';
+import { SwapService } from './services/swap-service.js';
+import { PaymentRequestService } from './services/payment-request-service.js';
 import { CashOutService } from './services/cashout-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { ReportService } from './services/report-service.js';
@@ -78,11 +81,26 @@ export async function main(): Promise<void> {
           })
         : null;
 
+    const swapkit =
+      config.swapkit.enabled && config.swapkit.apiKey
+        ? new SwapKitClient({
+            apiUrl: config.swapkit.apiUrl,
+            apiKey: config.swapkit.apiKey,
+            timeoutMs: config.swapkit.timeoutMs,
+            rateLimit: {
+              maxRequests: config.swapkit.rateLimit.apiMax,
+              windowMs: config.swapkit.rateLimit.windowMs,
+              maxQueue: config.swapkit.rateLimit.maxQueue,
+            },
+          })
+        : null;
+
     const readiness = createReadiness({
       onchainEnabled: config.onchain.enabled,
       repos,
       ...(esplora ? { esplora } : {}),
       ...(lunium ? { lunium } : {}),
+      ...(swapkit ? { swapkit } : {}),
     });
 
     const clients = new ClientService({ repos, config, logger });
@@ -152,6 +170,9 @@ export async function main(): Promise<void> {
     const pixCharges = lunium
       ? new PixChargeService({ repos, lunium, config, logger, alerts })
       : null;
+    const swap = swapkit
+      ? new SwapService({ repos, swapkit, config, logger, alerts, fx })
+      : null;
     const cashOut =
       lunium && config.cashout.enabled
         ? new CashOutService({ repos, lunium, config, logger, alerts })
@@ -167,6 +188,13 @@ export async function main(): Promise<void> {
         })
       : null;
 
+    const paymentRequests = new PaymentRequestService({
+      repos,
+      config,
+      logger,
+      ...(pixCharges ? { pixCharges } : {}),
+      ...(swap ? { swap } : {}),
+    });
     const deviceClients = new DeviceClientService({ repos, config, logger });
     const operations = new OperationsService({ repos, logger });
     const flags = new FlagsService({ repos, logger });
@@ -197,6 +225,8 @@ export async function main(): Promise<void> {
         walletNotifier,
         ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
+        ...(swap ? { swap } : {}),
+        paymentRequests,
         ...(cashOut ? { cashOut } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
         ...(lunium ? { lunium } : {}),

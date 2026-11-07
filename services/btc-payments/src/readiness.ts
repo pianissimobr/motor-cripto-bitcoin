@@ -1,6 +1,7 @@
 import type { Repositories } from './db/repositories.js';
 import type { EsploraClient } from './adapters/chain/esplora.js';
 import type { LuniumClient } from './adapters/lunium/client.js';
+import type { SwapKitClient } from './adapters/swapkit/client.js';
 import type {
   Readiness,
   ReadinessCheck,
@@ -16,6 +17,7 @@ export type ReadinessDeps = {
   repos: Repositories;
   esplora?: Pick<EsploraClient, 'health'>;
   lunium?: Pick<LuniumClient, 'health'>;
+  swapkit?: Pick<SwapKitClient, 'health'>;
 };
 
 export function createReadiness(deps: ReadinessDeps): Readiness {
@@ -55,6 +57,18 @@ export function createReadiness(deps: ReadinessDeps): Readiness {
         return result.ok
           ? { ok: true }
           : { ok: false, detail: result.detail ?? 'Lunium indisponivel' };
+      },
+    });
+  }
+
+  if (deps.swapkit) {
+    checks.push({
+      name: 'swapkit',
+      run: async () => {
+        const result = await deps.swapkit!.health();
+        return result.ok
+          ? { ok: true }
+          : { ok: false, detail: result.detail ?? 'SwapKit indisponivel' };
       },
     });
   }

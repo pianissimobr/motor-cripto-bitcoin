@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BrCodeError,
   brCodeCrc16,
+  buildBrCode,
   isValidBrCode,
   maskPixKey,
   parseBrCode,
@@ -11,7 +12,7 @@ import {
  * Constroi um BR Code no formato EMV do BACEN — o mesmo do app
  * (`blue_modules/pix/brcode.ts`): `000201` + tags + `6304` + CRC16.
  */
-function buildBrCode(fields: {
+function buildFixture(fields: {
   key: string;
   amount?: string;
   merchantName?: string;
@@ -38,7 +39,7 @@ function buildBrCode(fields: {
 
 describe('BR Code do Pix', () => {
   it('aceita um codigo valido e le a chave, o valor e o recebedor', () => {
-    const code = buildBrCode({
+    const code = buildFixture({
       key: 'adm@pianolabribeirao.com.br',
       amount: '6.50',
       merchantName: 'PIANOLAB RIBEIRAO',
@@ -52,7 +53,7 @@ describe('BR Code do Pix', () => {
   });
 
   it('recusa um codigo adulterado (CRC16 nao confere)', () => {
-    const code = buildBrCode({ key: '12345678909', amount: '6.50' });
+    const code = buildFixture({ key: '12345678909', amount: '6.50' });
     const adulterado = code.replace('6.50', '65.00');
     expect(isValidBrCode(adulterado)).toBe(false);
     expect(() => parseBrCode(adulterado)).toThrow(BrCodeError);
@@ -65,7 +66,7 @@ describe('BR Code do Pix', () => {
   });
 
   it('aceita um codigo sem valor (o usuario digita depois)', () => {
-    const code = buildBrCode({ key: '12345678909' });
+    const code = buildFixture({ key: '12345678909' });
     const parsed = parseBrCode(code);
     expect(parsed.key).toBe('12345678909');
     expect(parsed.keyType).toBe('cpf');
@@ -79,6 +80,36 @@ describe('BR Code do Pix', () => {
     const parts = ['000201', tag('00', '01'), tag('26', accountInfo), tag('53', '978')].join('');
     const code = `${parts}6304${brCodeCrc16(`${parts}6304`)}`;
     expect(() => parseBrCode(code)).toThrow(/moeda nao suportada/);
+  });
+
+  it('monta um BR Code que o proprio motor le de volta', () => {
+    const code = buildBrCode({
+      key: '12345678909',
+      merchantName: 'PIANO LAB',
+      city: 'RIBEIRAO PRETO',
+      amount: '100.00',
+      txid: 'PR123',
+    });
+
+    expect(code.startsWith('000201')).toBe(true);
+    expect(isValidBrCode(code)).toBe(true);
+
+    const parsed = parseBrCode(code);
+    expect(parsed.key).toBe('12345678909');
+    expect(parsed.keyType).toBe('cpf');
+    expect(parsed.amount).toBe('100.00');
+    expect(parsed.merchantName).toBe('PIANO LAB');
+    expect(parsed.city).toBe('RIBEIRAO PRETO');
+    expect(parsed.txid).toBe('PR123');
+  });
+
+  it('limpa o txid: o padrao EMV so aceita alfanumericos', () => {
+    const code = buildBrCode({ key: '12345678909', txid: 'PR-123/456' });
+    expect(parseBrCode(code).txid).toBe('PR123456');
+  });
+
+  it('recusa chave vazia', () => {
+    expect(() => buildBrCode({ key: '  ' })).toThrow(BrCodeError);
   });
 
   it('mascara a chave Pix para exibicao', () => {

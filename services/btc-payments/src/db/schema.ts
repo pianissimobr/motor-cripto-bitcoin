@@ -23,6 +23,7 @@ import type {
   PaidRail,
   PaymentIntentStatus,
   SweepStatus,
+  SwapProviderState,
   WebhookStatus,
 } from '../domain/types.js';
 
@@ -962,6 +963,211 @@ export const cashoutCharges = pgTable(
       sql`${table.asset} in ('USDC') and ${table.network} in ('polygon')`,
     ),
     check('cashout_charges_amount_chk', sql`${table.amountBrlCents} > 0`),
+  ],
+);
+
+/**
+ * Pedido de pagamento em Bitcoin que vira dolar digital.
+ *
+ * A SwapKit e quem troca: o pagador envia BTC para o `deposit_address` (que
+ * e unico por pedido) e a SwapKit entrega o USDC na `destination_address`.
+ * O motor nao assina nem move dinheiro: ele cota, guarda o endereco de
+ * deposito, acompanha o rastreio e **confere a entrega on-chain** antes de
+ * marcar `liquidado`.
+ */
+export const swapOrders = pgTable(
+  'swap_orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'restrict' }),
+    externalId: text('external_id').notNull(),
+    provider: text('provider').$type<'swapkit'>().notNull().default('swapkit'),
+    providerOrderId: text('provider_order_id'),
+    /** Estado cru da SwapKit (o que o app ve em `provider_state`). */
+    providerState: text('provider_state').$type<SwapProviderState>(),
+    status: text('status')
+      .$type<
+        | 'criando'
+        | 'pendente'
+        | 'aguardando_deposito'
+        | 'depositado'
+        | 'trocado'
+        | 'liquidado'
+        | 'expirado'
+        | 'reembolsado'
+        | 'falhou'
+        | 'incerto'
+        | 'manual'
+      >()
+      .notNull()
+      .default('criando'),
+    amountFiatCents: bigint('amount_fiat_cents', { mode: 'bigint' }).notNull(),
+    currency: text('currency').$type<'BRL' | 'USD'>().notNull().default('BRL'),
+    /** Quanto o pagador deve enviar, em sats. */
+    amountSats: bigint('amount_sats', { mode: 'bigint' }).notNull(),
+    sellAsset: text('sell_asset').notNull(),
+    buyAsset: text('buy_asset').notNull(),
+    network: text('network').$type<'polygon'>().notNull().default('polygon'),
+    /** Carteira que recebe o USDC. */
+    destinationAddress: text('destination_address').notNull(),
+    /** Endereco de BTC do pagador (unico por pedido). */
+    depositAddress: text('deposit_address'),
+    depositChannelId: text('deposit_channel_id'),
+    /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
+    expectedAssetMinor: bigint('expected_asset_minor', { mode: 'bigint' }),
+    feeTotalBps: integer('fee_total_bps'),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    providerPayload: jsonb('provider_payload').$type<Record<string, unknown> | null>(),
+    error: text('error'),
+    attempts: integer('attempts').notNull().default(0),
+    lastCheckedAt: timestamp('last_checked_at', { withTimezone: true, mode: 'date' }),
+    metadata: jsonb('metadata').$type<Record<string, unknown> | null>(),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('swap_orders_client_external_uq').on(table.clientId, table.externalId),
+    uniqueIndex('swap_orders_provider_order_uq').on(table.provider, table.providerOrderId),
+    uniqueIndex('swap_orders_deposit_address_uq')
+      .on(table.provider, table.depositAddress)
+      .where(sql`${table.depositAddress} is not null`),
+    index('swap_orders_status_idx').on(table.status),
+    index('swap_orders_destination_idx').on(table.destinationAddress),
+    check(
+      'swap_orders_status_chk',
+      sql`${table.status} in ('criando','pendente','aguardando_deposito','depositado','trocado','liquidado','expirado','reembolsado','falhou','incerto','manual')`,
+    ),
+    check(
+      'swap_orders_currency_chk',
+      sql`${table.currency} in ('BRL','USD') and ${table.network} in ('polygon')`,
+    ),
+    check(
+      'swap_orders_amount_chk',
+      sql`${table.amountFiatCents} > 0 and ${table.amountSats} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Chave Pix do proprio usuario.
+ *
+ * E o trilho "Pix direto": o usuario configura a chave Pix da conta dele e o
+ * pagamento cai direto nela, sem passar pela LuniumPay e sem conversao. O
+ * motor so monta o BR Code — quem recebe e o proprio banco do usuario.
+ *
+ * A chave nao e segredo (e um endereco de pagamento, como o
+ * `settlement_address`), mas e dado pessoal: nas respostas da API ela sai
+ * mascarada.
+ */
+export const clientPixKeys = pgTable(
+  'client_pix_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    /** Endereco EVM do dono da chave (o mesmo que o do cliente). */
+    address: text('address').notNull(),
+    pixKey: text('pix_key').notNull(),
+    pixKeyType: text('pix_key_type').$type<
+      'cpf' | 'cnpj' | 'email' | 'phone' | 'random'
+    >(),
+    merchantName: text('merchant_name'),
+    city: text('city'),
+    status: text('status').$type<'ativo' | 'inativo'>().notNull().default('ativo'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('client_pix_keys_client_uq').on(table.clientId),
+    index('client_pix_keys_address_idx').on(table.address),
+    check(
+      'client_pix_keys_status_chk',
+      sql`${table.status} in ('ativo','inativo')`,
+    ),
+  ],
+);
+
+/**
+ * Pedido de pagamento com mais de um trilho.
+ *
+ * O site manda o valor e o motor devolve as opcoes: Pix (LuniumPay), Bitcoin
+ * que vira dolar digital (SwapKit) e Pix direto (a chave do proprio usuario).
+ * Cada trilho tem sua tabela e seu estado; aqui fica o pedido e a ligacao
+ * entre eles.
+ */
+export const paymentRequests = pgTable(
+  'payment_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'restrict' }),
+    externalId: text('external_id').notNull(),
+    amountFiatCents: bigint('amount_fiat_cents', { mode: 'bigint' }).notNull(),
+    currency: text('currency').$type<'BRL' | 'USD'>().notNull().default('BRL'),
+    /** Trilhos oferecidos (`pix`, `bitcoin`, `pix_direto`). */
+    rails: jsonb('rails').$type<string[]>().notNull(),
+    status: text('status')
+      .$type<
+        | 'criando'
+        | 'pendente'
+        | 'pago'
+        | 'parcial'
+        | 'expirado'
+        | 'cancelado'
+        | 'falha'
+      >()
+      .notNull()
+      .default('criando'),
+    /** Cobranca Pix da LuniumPay (trilho `pix`). */
+    pixChargeId: uuid('pix_charge_id'),
+    /** Pedido de swap (trilho `bitcoin`). */
+    swapOrderId: uuid('swap_order_id'),
+    /**
+     * BR Code do trilho `pix_direto`.
+     *
+     * O motor nao descobre o pagamento sozinho (nao ha webhook do banco do
+     * usuario): o pedido fica esperando ate a confirmacao.
+     */
+    pixDirect: jsonb('pix_direct').$type<
+      | {
+          br_code: string;
+          key_masked: string;
+          key_type: string | null;
+          txid: string;
+          amount: string;
+        }
+      | null
+    >(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    metadata: jsonb('metadata').$type<Record<string, unknown> | null>(),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('payment_requests_client_external_uq').on(
+      table.clientId,
+      table.externalId,
+    ),
+    index('payment_requests_status_idx').on(table.status),
+    index('payment_requests_created_idx').on(table.createdAt),
+    check(
+      'payment_requests_status_chk',
+      sql`${table.status} in ('criando','pendente','pago','parcial','expirado','cancelado','falha')`,
+    ),
+    check(
+      'payment_requests_currency_chk',
+      sql`${table.currency} in ('BRL','USD')`,
+    ),
+    check(
+      'payment_requests_amount_chk',
+      sql`${table.amountFiatCents} > 0`,
+    ),
   ],
 );
 
