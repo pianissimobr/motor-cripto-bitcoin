@@ -252,7 +252,10 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
       const client = request.apiClient;
       if (!client) throw new UnauthorizedError('cliente nao autenticado');
       const ownAddress = (client.settlementAddress ?? '').toLowerCase();
-      if (ownAddress && ownAddress !== body.address.toLowerCase()) {
+      if (!ownAddress) {
+        throw new ForbiddenError('cliente sem endereco proprio nao revoga enderecos');
+      }
+      if (ownAddress !== body.address.toLowerCase()) {
         throw new ValidationError('so da para revogar o proprio endereco');
       }
       const merchantId = body.merchant_id ?? null;
