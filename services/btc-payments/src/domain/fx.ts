@@ -1,8 +1,16 @@
 import { MAX_SATS } from './money.js';
+import { AppError } from './errors.js';
 
-export class FxError extends Error {
+/**
+ * Falha na fonte de taxa.
+ *
+ * E um erro de aplicacao (503, e nao 500): a fonte de taxa externa esta
+ * fora do ar ou no limite, e quem chamou precisa saber que e para tentar de
+ * novo — nao que o motor quebrou.
+ */
+export class FxError extends AppError {
   constructor(message: string, opts?: { cause?: unknown }) {
-    super(message, opts);
+    super(message, { code: 'fx_unavailable', statusCode: 503, cause: opts?.cause });
     this.name = 'FxError';
   }
 }

@@ -96,6 +96,8 @@ const EnvSchema = z
     INTENT_TTL_SECONDS: intFromEnv(600, 30, 86_400),
     INTENT_GRACE_SECONDS: intFromEnv(86_400, 0),
     FX_QUOTE_TTL_SECONDS: intFromEnv(600, 30, 86_400),
+    /** Cache do preco do BTC (as fontes publicas tem cota). */
+    FX_PRICE_CACHE_MS: intFromEnv(30_000, 1_000),
 
     ONCHAIN_ENABLED: boolFromEnv(true),
     ONCHAIN_CONFIRMATIONS: intFromEnv(1, 1),
@@ -528,6 +530,8 @@ export type AppConfig = {
   };
   fx: {
     quoteTtlSeconds: number;
+    /** Cache do preco do BTC (as fontes publicas tem cota). */
+    priceCacheMs: number;
   };
   onchain: {
     enabled: boolean;
@@ -818,6 +822,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     fx: {
       quoteTtlSeconds: env.FX_QUOTE_TTL_SECONDS,
+      priceCacheMs: env.FX_PRICE_CACHE_MS,
     },
     onchain: {
       enabled: env.ONCHAIN_ENABLED,

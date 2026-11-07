@@ -16,7 +16,10 @@ import { GasStationService } from './services/gas-station-service.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { FxService } from './services/fx-service.js';
 import { MarketService } from './services/market-service.js';
-import { HttpFxPriceProvider } from './adapters/fx/http.js';
+import {
+  CachedFxPriceProvider,
+  HttpFxPriceProvider,
+} from './adapters/fx/http.js';
 import { LedgerService } from './ledger/ledger-service.js';
 import { MerchantWalletService } from './services/merchant-wallet-service.js';
 import { createLnbitsFactory } from './services/merchant-lightning.js';
@@ -139,7 +142,13 @@ export async function main(): Promise<void> {
     const walletNotifier = new WalletChangeNotifier({ repos, logger, alerts, emailSender });
     const fx = new FxService(
       db.db,
-      new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
+      // Com cache: as fontes de taxa sao publicas e tem cota propria (a
+      // AwesomeAPI responde 429 com frequencia), e uma rajada de cobrancas
+      // nao pode virar uma rajada de requisicoes.
+      new CachedFxPriceProvider(
+        new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
+        config.fx.priceCacheMs,
+      ),
     );
     const market = new MarketService({ logger });
     const ledger = new LedgerService(db.db);
