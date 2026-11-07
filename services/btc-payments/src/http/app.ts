@@ -77,10 +77,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return payload;
   });
 
-  app.get('/login', async (_request, reply) => reply.redirect('/login.html'));
-  app.get('/signup', async (_request, reply) => reply.redirect('/signup.html'));
-  app.get('/portal', async (_request, reply) => reply.redirect('/app.html'));
-
   void app.register(cors, {
     origin: deps.config.server.corsAllowedOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],

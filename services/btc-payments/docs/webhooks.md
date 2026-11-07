@@ -20,7 +20,7 @@ Eventos:
 ## Evento da loja
 
 - `merchant.wallet_changed`: uma carteira de recebimento foi cadastrada ou
-  removida (portal ou API). `data` traz `kind`, `action` (`cadastrada` |
+  removida (API). `data` traz `kind`, `action` (`cadastrada` |
   `removida`), `destination` (URL do LNbits, início/fim do xpub ou o 0x) e
   `actor`. Se não foi você, troque a senha e revise as carteiras: os próximos
   pagamentos vão para a carteira nova.

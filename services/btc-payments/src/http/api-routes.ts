@@ -19,7 +19,6 @@ import type { LedgerService } from '../ledger/ledger-service.js';
 import type { Logger } from '../logger.js';
 import type { ClientService } from '../services/client-service.js';
 import type { FxService } from '../services/fx-service.js';
-import type { MarketService } from '../services/market-service.js';
 import {
   createLightningWallet,
   type LnbitsFactory,
@@ -27,7 +26,6 @@ import {
 import type { MerchantWalletService } from '../services/merchant-wallet-service.js';
 import type { MetricsService } from '../services/metrics-service.js';
 import type { WalletChangeNotifier } from '../services/wallet-change-notifier.js';
-import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 import type { PaymentIntentService } from '../services/payment-intent-service.js';
 import type { PixChargeService } from '../services/pix-charge-service.js';
 import type { SwapService } from '../services/swap-service.js';
@@ -39,11 +37,7 @@ import type { LuniumWebhookService } from '../services/lunium-webhook-service.js
 import { LuniumError } from '../adapters/lunium/client.js';
 import { GasStationError } from '../adapters/chain/gas-station.js';
 import { createAdminAuth, createApiAuth, parseBearerToken } from './auth.js';
-import { registerAuthRoutes } from './auth-routes.js';
-import { registerPortalRoutes } from './portal-routes.js';
 import { registerCheckoutRoutes } from './checkout-routes.js';
-import type { AuthService } from '../services/auth-service.js';
-import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
 import type { GasStationService } from '../services/gas-station-service.js';
 import type { CashOutService } from '../services/cashout-service.js';
@@ -61,14 +55,11 @@ export type ApiServices = {
   paymentIntents: PaymentIntentService;
   clients: ClientService;
   getStatus?: () => Promise<Record<string, unknown>>;
-  auth?: AuthService;
   fx?: FxService;
-  market?: MarketService;
   wallets?: MerchantWalletService;
   ledger?: LedgerService;
   lnbitsFor?: LnbitsFactory;
   walletNotifier?: WalletChangeNotifier;
-  autho?: AuthoIssuerClient;
   pixCharges?: PixChargeService;
   swap?: SwapService;
   paymentRequests?: PaymentRequestService;
@@ -76,7 +67,6 @@ export type ApiServices = {
   luniumWebhook?: LuniumWebhookService;
   metrics?: MetricsService;
   gasStation?: GasStationService;
-  reports?: ReportService;
   subscriptions?: SubscriptionService;
   deviceClients?: DeviceClientService;
   operations?: OperationsService;
@@ -519,34 +509,6 @@ export function registerApiRoutes(
     ...(services.pixCharges ? { pixCharges: services.pixCharges } : {}),
   });
   registerUserRoutes(app, services);
-
-  if (services.auth) {
-    registerAuthRoutes(app, {
-      config: services.config,
-      logger: services.logger,
-      auth: services.auth,
-      ...(services.autho ? { autho: services.autho } : {}),
-    });
-    if (services.wallets) {
-      registerPortalRoutes(app, {
-        config: services.config,
-        logger: services.logger,
-        auth: services.auth,
-        repos: services.repos,
-        clients: services.clients,
-        wallets: services.wallets,
-        paymentIntents: services.paymentIntents,
-        ...(services.reports ? { reports: services.reports } : {}),
-        ...(services.subscriptions ? { subscriptions: services.subscriptions } : {}),
-        ...(services.lnbitsFor ? { lnbitsFor: services.lnbitsFor } : {}),
-        ...(services.walletNotifier ? { walletNotifier: services.walletNotifier } : {}),
-        ...(services.fx ? { fx: services.fx } : {}),
-        ...(services.market ? { market: services.market } : {}),
-        ...(services.pixCharges ? { pixCharges: services.pixCharges } : {}),
-        ...(services.deviceClients ? { possession: services.deviceClients } : {}),
-      });
-    }
-  }
 
   app.post(
     '/v1/payment-intents',

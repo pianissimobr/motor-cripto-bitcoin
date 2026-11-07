@@ -3,7 +3,7 @@
 ## Carteira
 
 - O lojista cadastra o xpub de **conta** BIP84 (`m/84'/0'/0'`, depth 3) dele no
-  portal ou em `POST /v1/wallets` (`kind: btc_deposit`). Nunca xprv/seed.
+  `POST /v1/wallets` (`kind: btc_deposit`). Nunca xprv/seed.
 - Cada cobrança usa um endereço novo derivado desse xpub:
   `m/84'/0'/0'/{BTC_DERIVATION_PREFIX}/{index}` (P2WPKH).
 - O índice é por carteira, alocado atomicamente no Postgres e nunca reusado.

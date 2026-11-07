@@ -6,13 +6,13 @@ converte nada: ele cria a cobrança, mostra o QR, prova o pagamento na fonte e
 avisa a loja por webhook.
 
 O produto é o serviço em [`services/btc-payments`](services/btc-payments): uma
-API HTTP, um worker e um portal do lojista. O motor Polygon/Ramp em `legacy/` é
-**legado** e não faz parte do contrato atual.
+API HTTP e um worker. O motor Polygon/Ramp e o portal do lojista, ambos em
+`legacy/`, são **legado** e não fazem parte do contrato atual.
 
 ## As três carteiras do lojista
 
-Cada loja cadastra no portal (ou em `POST /v1/wallets`) as carteiras dos
-trilhos que quer aceitar:
+Cada loja cadastra em `POST /v1/wallets` as carteiras dos trilhos que quer
+aceitar:
 
 | Trilho | Carteira do lojista | Como o motor prova o pagamento |
 | --- | --- | --- |
@@ -29,8 +29,9 @@ trilhos que quer aceitar:
 
 ## O que mais tem
 
-- **Portal do lojista**: `/login`, `/signup`, `/portal`, carteiras, webhook,
-  checkouts, relatórios e assinaturas.
+- **Portal do lojista** (aposentado em 2026-11-07, em [`legacy/portal/`](legacy/portal/)):
+  o login e o dashboard saíram do serviço que roda. O cadastro do lojista é
+  feito pela API.
 - **Checkout público**: `/pay/:id` e o snippet `/checkout.js`, que funciona em
   qualquer domínio.
 - **API**: `/v1/*` com API key + HMAC; `/admin/api/*` com `ADMIN_TOKEN`.
@@ -60,9 +61,9 @@ npm run dev               # API em :4580
 npm run worker            # outro terminal
 ```
 
-`python3 start.py --up` já sobe o compose e aplica as migrations.
-Depois abra `http://localhost:4580/portal`, crie a conta e cadastre as
-carteiras da loja.
+`python3 start.py --up` já sobe o compose e aplica as migrations. Depois
+cadastre as carteiras da loja pela API (`POST /v1/wallets`) — o portal do
+lojista foi aposentado e está em `legacy/portal/`.
 
 ## Produção
 
@@ -83,7 +84,7 @@ O compose de produção usa Caddy para 80/443. Detalhes em
 
 ```text
 motor-cripto-bitcoin/
-├── services/btc-payments/   # o produto: API, worker, portal, migrations, docs
+├── services/btc-payments/   # o produto: API, worker, migrations, docs
 ├── docs/                    # contrato, mapa, livro HTML, planejamento e referências
 └── legacy/                  # motor Polygon/Ramp arquivado (não é o contrato atual)
 ```

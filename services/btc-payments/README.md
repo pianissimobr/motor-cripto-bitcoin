@@ -46,7 +46,8 @@ npm run worker            # outro terminal
 ```
 
 `python3 start.py --engines lightning,onchain,pix --up` faz tudo de uma vez.
-Abra `http://localhost:4580/portal`, crie a conta e cadastre as carteiras.
+Cadastre as carteiras da loja pela API (`POST /v1/wallets`). O portal do
+lojista foi aposentado em 2026-11-07 e esta em `legacy/portal/`.
 
 ### Trilhos
 
@@ -63,7 +64,7 @@ tem fluxo próprio (QR da Lunium).
 
 1. Abra `http://localhost:5001`, crie uma wallet (FakeWallet) e copie a
    **Invoice/read key**.
-2. No portal, em Carteiras → Lightning, informe a URL (`http://localhost:5001`)
+2. Em `POST /v1/wallets` (kind `lightning_lnbits`), informe a URL (`http://localhost:5001`)
    e essa key.
 3. Para o webhook do LNbits chegar à API, `LNBITS_WEBHOOK_BASE_URL` precisa ser
    alcançável por ele. Em dev com Docker, habilite IPs privados no admin do
@@ -129,7 +130,7 @@ com receipt `status 0x1`.
 
 ## API
 
-Toda rota `/v1/*` (exceto `/v1/portal/*`) exige API key + HMAC:
+Toda rota `/v1/*` exige API key + HMAC:
 
 ```http
 Authorization: Bearer mk_btc_live_...
@@ -175,9 +176,9 @@ Cadastro de carteira via API:
 As rotas `/v1/balances`, `/v1/conversions` e `/v1/payouts` continuam só como
 histórico de versões anteriores; não há conversão nem payout novos.
 
-Rotas do portal (cookie de sessão + `X-CSRF-Token`): `/auth/*`,
-`/v1/portal/merchants/...` (lojas, carteiras, webhook, checkout, relatórios e
-assinaturas). Página pública: `/pay/:id` e `/pay/:id/status`.
+O portal do lojista (cookie de sessão + `X-CSRF-Token`) foi aposentado em
+2026-11-07 e esta em `legacy/portal/` — junto com as rotas `/auth/*` e
+`/v1/portal/*`. Página pública: `/pay/:id` e `/pay/:id/status`.
 
 ## Webhook de saída
 

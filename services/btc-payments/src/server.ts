@@ -9,13 +9,11 @@ import { createReadiness } from './readiness.js';
 import { EsploraClient } from './adapters/chain/esplora.js';
 import { ClientService } from './services/client-service.js';
 import { AlertService } from './services/alert-service.js';
-import { AuthService } from './services/auth-service.js';
 import { NoopEmailSender } from './services/email-sender.js';
 import { SmtpEmailSender } from './services/smtp-email-sender.js';
 import { GasStationService } from './services/gas-station-service.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { FxService } from './services/fx-service.js';
-import { MarketService } from './services/market-service.js';
 import {
   CachedFxPriceProvider,
   HttpFxPriceProvider,
@@ -31,13 +29,11 @@ import { SwapService } from './services/swap-service.js';
 import { PaymentRequestService } from './services/payment-request-service.js';
 import { CashOutService } from './services/cashout-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
-import { ReportService } from './services/report-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
 import { DeviceClientService } from './services/device-client-service.js';
 import { OperationsService } from './services/operations-service.js';
 import { FlagsService } from './services/flags-service.js';
-import { AuthoIssuerClient } from './adapters/autho/client.js';
 
 /**
  * API do motor. O dinheiro nao passa pela plataforma: Lightning cai na
@@ -125,20 +121,9 @@ export async function main(): Promise<void> {
     if (config.email.sender === 'noop') {
       logger.warn(
         {},
-        'e-mail desativado (EMAIL_SENDER=noop): token de redefinicao de senha e aviso de troca de carteira nao chegam ao lojista',
+        'e-mail desativado (EMAIL_SENDER=noop): o aviso de troca de carteira nao chega ao lojista',
       );
     }
-    // authO issuer: codigos por e-mail e anti-robo. Sem ele, o portal usa
-    // tokens locais (so desenvolvimento).
-    const autho = config.autho ? new AuthoIssuerClient(config.autho) : undefined;
-    const auth = new AuthService({
-      repos,
-      clients,
-      config,
-      logger,
-      emailSender,
-      ...(autho ? { autho } : {}),
-    });
     const walletNotifier = new WalletChangeNotifier({ repos, logger, alerts, emailSender });
     const fx = new FxService(
       db.db,
@@ -150,7 +135,6 @@ export async function main(): Promise<void> {
         config.fx.priceCacheMs,
       ),
     );
-    const market = new MarketService({ logger });
     const ledger = new LedgerService(db.db);
     const wallets = new MerchantWalletService(db.db);
     const metrics = new MetricsService({
@@ -159,7 +143,6 @@ export async function main(): Promise<void> {
       ...(lunium ? { luniumLimiter: lunium.rateLimiter } : {}),
     });
     const gasStation = new GasStationService({ repos, config, logger });
-    const reports = new ReportService({ db: db.db });
     const lnbitsFor = config.lightning.enabled
       ? createLnbitsFactory(config, logger)
       : null;
@@ -226,21 +209,17 @@ export async function main(): Promise<void> {
         repos,
         paymentIntents,
         clients,
-        auth,
         fx,
-        market,
         ledger,
         wallets,
         metrics,
         gasStation,
-        reports,
         subscriptions,
         deviceClients,
         operations,
         flags,
         ...(lnbitsFor ? { lnbitsFor } : {}),
         walletNotifier,
-        ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(swap ? { swap } : {}),
         paymentRequests,

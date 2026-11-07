@@ -185,8 +185,6 @@ maybeDescribe('trilhos por carteira do lojista (integration)', () => {
       repos,
       logger: silentLogger,
       emailSender: {
-        async sendVerificationEmail() {},
-        async sendPasswordResetEmail() {},
         async sendSecurityNotice(input) {
           sent.push({ to: input.to, subject: input.subject });
         },

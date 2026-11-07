@@ -23,7 +23,7 @@ fundos.
 
 ## Criando uma cobrança
 
-Pelo portal: `POST /v1/portal/merchants/:id/checkout` (sessão de lojista).
+(O portal do lojista foi aposentado em 2026-11-07: `POST /v1/portal/merchants/:id/checkout` esta em `legacy/portal/`.)
 Pela API direta (HMAC): `POST /v1/payment-intents`.
 
 Exemplo (API direta):
@@ -41,7 +41,7 @@ Content-Type: application/json
 
 ## Checkout Pix
 
-- Pelo portal: `POST /v1/portal/merchants/:id/pix-checkout` (sessão de lojista).
+- (O portal do lojista foi aposentado: `POST /v1/portal/merchants/:id/pix-checkout` esta em `legacy/portal/`.)
 - Pela API direta (HMAC): `POST /v1/checkout/pix` (ou `POST /v1/pix-charges`).
 
 A resposta traz `checkout_url` (a página `/pay/{id}`) e o QR do Pix. O

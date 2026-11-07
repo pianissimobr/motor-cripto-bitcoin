@@ -35,18 +35,19 @@ carteiras que você cadastrar.
 
 ## Primeiro acesso
 
-1. Abra `https://SEU-DOMINIO/signup` (ou `/portal`) e crie a conta com e-mail e
-   senha.
-2. O cadastro cria sua **primeira loja** e devolve **uma única vez**: API key,
-   `request_secret` e `webhook_secret`. Copie e guarde.
-3. Em desenvolvimento/local, o e-mail de verificação não sai: o token é exibido
-   na tela. Copie e use no passo de verificação. Em produção, o serviço precisa
-   de um relay SMTP configurado (`EMAIL_SENDER=smtp`, `SMTP_HOST`, `EMAIL_FROM`);
-   sem isso o token de redefinição de senha e o aviso de troca de carteira não
-   chegam — fale com quem opera o serviço.
+> **O portal do lojista foi aposentado em 2026-11-07.** O login e o dashboard
+> (`/signup`, `/login`, `/portal`) saíram do serviço; o código está em
+> `legacy/portal/` e o cadastro passa a ser feito pela API, com quem opera o
+> serviço ou pelo app.
 
-Depois de logado, o `https://SEU-DOMINIO/portal` é o seu **dashboard**: troca de
-loja, carteiras, criar QR, relatórios e assinaturas.
+1. Peça a quem opera o serviço a criação do seu **cliente** (a loja). O
+   cadastro devolve **uma única vez**: API key, `request_secret` e
+   `webhook_secret`. Copie e guarde.
+2. Cadastre as **carteiras** da loja pela API (`POST /v1/wallets`) — o passo
+   seguinte mostra o que informar em cada trilho.
+3. O aviso de troca de carteira chega por e-mail se o serviço tiver um relay
+   SMTP configurado (`EMAIL_SENDER=smtp`, `SMTP_HOST`, `EMAIL_FROM`); sem isso
+   ele não chega — fale com quem opera o serviço.
 
 ---
 
@@ -235,7 +236,7 @@ JSON (para o seu JS/iframe) fica em `GET /pay/<id>/status`.
 
 ## Webhook de confirmação
 
-Configure a `webhook_url` da loja no portal (ou na criação). Quando o pagamento
+Configure a `webhook_url` da loja na criação (ou em `PATCH /v1/portal/merchants/:id`, que ficou no legado). Quando o pagamento
 chega a um estado final, o motor faz `POST` nela com:
 
 ```http
@@ -338,9 +339,7 @@ conta: cada ciclo é um pagamento novo que o cliente aprova.
 No dashboard, ou via API de sessão:
 
 ```
-GET /v1/portal/merchants/:id/reports/summary?period=7d|30d|all
-GET /v1/portal/merchants/:id/reports/by-rail
-GET /v1/portal/merchants/:id/reports/series
+(as rotas de relatorio e assinatura do portal ficaram em `legacy/portal/`)
 ```
 
 `summary` devolve volume (sats), volume por rail (Lightning × on-chain × PIX),
@@ -372,8 +371,8 @@ quantidade de QRs, pagos, expirados e o valor já pago para você (USDC).
 | Saldos (ledger) | `GET /v1/balances` |
 | Página pública | `GET /pay/:id` e `GET /pay/:id/status` |
 | Snippet | `/checkout.js` |
-| Portal/lojas | `/v1/portal/merchants/...` |
-| Assinaturas | `/v1/portal/merchants/:id/subscriptions` |
-| Relatórios | `/v1/portal/merchants/:id/reports/*` |
+| Portal/lojas | `/v1/portal/merchants/...` (no legado) |
+| Assinaturas | `/v1/portal/merchants/:id/subscriptions` (no legado) |
+| Relatórios | `/v1/portal/merchants/:id/reports/*` (no legado) |
 
 Contrato completo (corpos e códigos): [`docs/API.md`](../../../docs/API.md).

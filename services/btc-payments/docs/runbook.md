@@ -26,7 +26,7 @@ curl https://$DOMAIN/health
 curl https://$DOMAIN/ready
 ```
 
-5. Crie o primeiro cliente (ou deixe o lojista se cadastrar em `/signup`):
+5. Crie o primeiro cliente (`POST /admin/api/clients`; o cadastro no portal foi aposentado):
 
 ```bash
 curl -X POST https://$DOMAIN/admin/api/clients \
@@ -35,7 +35,7 @@ curl -X POST https://$DOMAIN/admin/api/clients \
   -d '{"name":"Loja","webhook_url":"https://loja.example.com/webhooks/btc"}'
 ```
 
-6. O lojista cadastra as carteiras no portal: wallet LNbits (URL + Invoice
+6. O lojista cadastra as carteiras pela API: wallet LNbits (URL + Invoice
    key), xpub on-chain e endereço USDC na Polygon para o PIX.
 7. Confira os limites da chave da Lunium no `.env.production`
    (`PIX_MIN_BRL_CENTS=102`, `PIX_MAX_BRL_CENTS=600000` — leia de
@@ -163,7 +163,7 @@ curl -s https://$DOMAIN/ready     # db e Lunium precisam estar ok
   `falha_criacao` (use outro `external_id`). As outras lojas não são afetadas.
 - Invoices já emitidas são conferidas pelo `lightning-reconcile` quando a wallet
   voltar. Não marque nada como pago sem a confirmação dela.
-- Se o lojista trocou a Invoice key, ele recadastra a carteira no portal.
+- Se o lojista trocou a Invoice key, ele recadastra a carteira pela API.
 
 ### Esplora indisponível
 
@@ -203,7 +203,7 @@ curl -X POST https://$DOMAIN/admin/api/webhooks/<id>/replay \
 
 ### Rotação de chaves
 
-- API key/request secret: o lojista rotaciona no portal
+- API key/request secret: o lojista rotaciona pela API (ou pelo portal, no legado)
   (`.../api-key/rotate`).
 - `DATA_ENCRYPTION_KEY`: use `KEYRING` com a chave antiga e a nova;
   `DATA_ACTIVE_KID` aponta para a nova. Re-cifre os registros antes de remover a
@@ -221,7 +221,7 @@ Detalhes em [failure-drills.md](failure-drills.md).
 
 1. Suba `bitcoind`, Esplora/Electrum e o LNbits FakeWallet (`docker compose up -d`).
 2. `npm run migrate`, `npm run dev` e `npm run worker`.
-3. No portal: crie a conta, cadastre a wallet LNbits (FakeWallet, Invoice key)
+3. Cadastre a wallet LNbits (FakeWallet, Invoice key) pela API
    e um tpub de teste.
 4. Gere um checkout, pague a invoice no LNbits e confira `status=pago` e o
    webhook do cliente.

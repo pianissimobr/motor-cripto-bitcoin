@@ -6,8 +6,7 @@ resumo ao lado do código.
 
 Base: `PUBLIC_BASE_URL` (ex.: `https://payments.example.com`).
 
-> Além da API HMAC, há também o **portal do lojista** (`/auth/*`,
-> `/v1/portal/*`), a **página pública de checkout** (`/pay/:id`) e o **snippet**
+> Além da API HMAC, há a **página pública de checkout** (`/pay/:id`) e o **snippet**
 > (`/checkout.js`). Guia passo a passo em [manual.md](manual.md).
 
 ## Autenticacao
@@ -244,8 +243,8 @@ prova de posse) — sem ele, o USDC vai para a carteira de liquidacao da loja.
 }
 ```
 
-Pelo portal, a mesma coisa sem integracao: `POST /v1/portal/merchants/:id/pix-checkout`
-(sessao de lojista).
+O portal do lojista foi aposentado em 2026-11-07: as rotas `/auth/*` e
+`/v1/portal/*` estao em `legacy/portal/`.
 
 Detalhes em [pix.md](pix.md).
 

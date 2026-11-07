@@ -48,7 +48,7 @@ export function checkoutHtml(dto: Awaited<ReturnType<PaymentIntentService['getPu
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Pagamento ${escapeHtml(value)}</title>
-<link rel="stylesheet" href="/portal.css">
+<link rel="stylesheet" href="/checkout.css">
 </head>
 <body>
 <main>
@@ -112,7 +112,7 @@ export function pixCheckoutHtml(dto: Awaited<ReturnType<PixChargeService['getPub
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>Pagamento ${escapeHtml(value)}</title>
-<link rel="stylesheet" href="/portal.css">
+<link rel="stylesheet" href="/checkout.css">
 </head>
 <body>
 <main>
