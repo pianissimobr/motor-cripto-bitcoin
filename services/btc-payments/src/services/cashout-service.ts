@@ -10,6 +10,7 @@ import {
 import {
   ConflictError,
   NotFoundError,
+  QuoteExpiredError,
   ServiceUnavailableError,
   UpstreamError,
   ValidationError,
@@ -290,7 +291,7 @@ export class CashOutService {
           status: 'expirado',
           error: 'cotacao expirada na LuniumPay; faca uma nova cotacao',
         });
-        throw new ValidationError('cotacao expirada: faca uma nova cotacao');
+        throw new QuoteExpiredError();
       }
       throw err;
     }

@@ -57,6 +57,19 @@ export class ConflictError extends AppError {
   }
 }
 
+/**
+ * Cotacao expirada: o cliente precisa cotar de novo (com outro external_id).
+ *
+ * Continua 400 (era um `validation_error`), mas com codigo proprio: o app
+ * decidia pela mensagem, e mensagem nao e contrato.
+ */
+export class QuoteExpiredError extends AppError {
+  constructor(message = 'cotacao expirada: faca uma nova cotacao') {
+    super(message, { code: 'quote_expired', statusCode: 400 });
+    this.name = 'QuoteExpiredError';
+  }
+}
+
 export class UpstreamError extends AppError {
   constructor(message: string, opts?: { details?: unknown; cause?: unknown }) {
     super(message, {

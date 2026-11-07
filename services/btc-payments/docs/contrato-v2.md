@@ -201,8 +201,9 @@ endereço no aceite). `deposit_tag` é para redes com memo (solana, tron, xrp);
 
 | Rota | Escopo | Request | Response |
 |---|---|---|---|
-| `POST /v1/user/cash-out-charges/quote` | `cashout:write` | `{brl_amount? \| amount_cents?, pix_key?, pix_key_type?, br_code?, refund_address?}` | `{brl_amount, asset, network, amount, fee_total_cents, expires_at}` |
-| `POST /v1/user/cash-out-charges` | `cashout:write` | `{external_id, brl_amount? \| amount_cents?, pix_key?, pix_key_type?, br_code?, refund_address?}` | ordem (C3) |
+| `POST /v1/user/cash-out-charges/quote` | `cashout:read` | `{br_code, amount_cents?}` **ou** `{pix_key, pix_key_type?, amount_cents}`, `refund_address?` (sem `external_id`) | `{brl_amount, asset, network, amount, fee_total_cents, expires_at, merchant_name, pix_key, sandbox}` |
+| `POST /v1/user/cash-out-charges` | `cashout:write` | `{external_id}` + o mesmo destino da cotação, `refund_address?` | ordem (C3), `status: pendente` |
+| `POST /v1/user/cash-out-charges/:id/accept` | `cashout:write` | — | ordem com `deposit_address` e `amount_asset_minor`; cotação expirada → `400 quote_expired` |
 | `GET /v1/user/cash-out-charges/:id` | `cashout:read` | — | ordem (C3) |
 | `POST /v1/user/cash-out-charges/:id/deposit` | `cashout:write` | `{tx_hash}` | 204 |
 | `POST /v1/user/cash-out-charges/:id/refund-address` | `cashout:write` | `{refund_address}` | ordem (C3) |

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { LuniumClient, type LuniumCashOut } from '../src/adapters/lunium/client.js';
+import { LuniumClient, LuniumError, type LuniumCashOut } from '../src/adapters/lunium/client.js';
 import type { AppConfig } from '../src/config.js';
 import { createDb, type DbClient } from '../src/db/client.js';
 import { createRepositories, type Repositories } from '../src/db/repositories.js';
@@ -16,6 +16,7 @@ class FakeLunium {
   createCalls = 0;
   acceptCalls = 0;
   failCreate = false;
+  expireOnAccept = false;
   order: LuniumCashOut = {
     cashout_id: 'co_test_1',
     state: 'QUOTE_CREATED',
@@ -43,6 +44,9 @@ class FakeLunium {
 
   async acceptCashOut() {
     this.acceptCalls++;
+    if (this.expireOnAccept) {
+      throw new LuniumError('cotacao expirada', { statusCode: 400, code: 'cotacao_expirada' });
+    }
     this.order = {
       ...this.order,
       state: 'AWAITING_DEPOSIT',
@@ -167,6 +171,24 @@ maybeDescribe('cash-out: cripto -> Pix (integration)', () => {
     await cashOut.reportDeposit(dto.id, clientId, `0x${'2'.repeat(64)}`);
     expect(await repos.hasUnusedCashOutGasTopUp(clientId)).toBe(false);
     expect(await repos.reserveCashOutGasTopUp(dto.id, clientId, at)).toBeNull();
+  });
+
+  it('cotacao expirada no aceite tem codigo proprio (quote_expired) e expira a ordem', async () => {
+    const clientId = await createClient('app expira');
+    const { dto } = await cashOut.create({
+      clientId,
+      externalId: 'exp-1',
+      amountBrlCents: 650n,
+      originAddress: ORIGIN,
+      pixKey: 'adm@pianolabribeirao.com.br',
+      pixKeyType: 'email',
+    });
+    fake.expireOnAccept = true;
+    await expect(cashOut.accept(dto.id, clientId)).rejects.toMatchObject({
+      code: 'quote_expired',
+      statusCode: 400,
+    });
+    expect((await repos.findCashOutChargeById(dto.id))!.status).toBe('expirado');
   });
 
   it('e idempotente por external_id', async () => {
