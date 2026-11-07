@@ -22,6 +22,8 @@ const challengeSchema = z
   .object({
     purpose: z.string().trim().min(1).max(40),
     address: z.string().trim().max(64).optional(),
+    /** A rede da carteira (o app manda; o registro tambem aceita). */
+    chain: z.string().trim().max(20).optional(),
   })
   .strict();
 
