@@ -22,8 +22,20 @@ COMMIT=$(git rev-parse "$REV")
 echo "deploy de $COMMIT ($REV) para $TARGET:$DEST"
 
 # O arquivo vai por stdin; a senha do admin nao passa pelo shell.
+#
+# O codigo velho e apagado antes: o `git archive` nao apaga o que sumiu do
+# commit. Sem isso, um arquivo retirado do commit continua no servidor (o
+# portal aposentado continuaria no ar) e o build quebra no fonte.
+#
+# O `.env.production` NUNCA e tocado: ele nao esta no git e e onde mora o
+# segredo da VPS.
 git archive --format=tar "$COMMIT" | ssh -o BatchMode=yes "$JUMP" \
-  "ssh -o BatchMode=yes $TARGET 'tar xf - -C $DEST && echo $COMMIT > $DEST/REVISION'"
+  "ssh -o BatchMode=yes $TARGET 'rm -rf $DEST/services/btc-payments/src \
+     $DEST/services/btc-payments/public $DEST/services/btc-payments/migrations \
+     $DEST/services/btc-payments/docs $DEST/services/btc-payments/scripts \
+     $DEST/services/btc-payments/tests $DEST/services/btc-payments/dist \
+     $DEST/legacy $DEST/docs \
+   && tar xf - -C $DEST && echo $COMMIT > $DEST/REVISION'"
 
 # Confere que o codigo chegou: sem isso, um caminho errado no archive deixa a
 # VPS com a versao antiga e o servico sobe com codigo velho.
