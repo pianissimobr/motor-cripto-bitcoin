@@ -62,6 +62,8 @@ export class MerchantWalletService {
     address: string;
     chain: 'base' | 'polygon';
     network: string;
+    /** `loja` (a propria loja) ou `cliente` (endereco de um cliente, F4). */
+    purpose?: 'loja' | 'cliente';
   }): Promise<{ id: string; address: string }> {
     if (!/^0x[a-fA-F0-9]{40}$/.test(input.address)) {
       throw new Error('endereco USDC invalido');
@@ -71,6 +73,7 @@ export class MerchantWalletService {
       .values({
         merchantId: input.merchantId,
         kind: 'usdc_settlement',
+        purpose: input.purpose ?? 'loja',
         chain: input.chain,
         network: input.network,
         address: input.address.toLowerCase(),

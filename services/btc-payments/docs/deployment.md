@@ -11,7 +11,7 @@ Internet
   -> Esplora/electrs -> Bitcoin Core      (on-chain)
 Worker/API -> wallets LNbits dos lojistas  (Lightning; elas chamam /webhooks/lnbits)
 Worker/API -> Lunium                       (PIX -> USDC na carteira do lojista)
-Worker     -> Base RPC                     (confere a entrega do PIX)
+Worker     -> Polygon RPC                  (confere a entrega do PIX)
 ```
 
 Postgres e Esplora nao devem ter porta publica. A API precisa de URL publica
@@ -24,7 +24,7 @@ HTTPS para os webhooks do LNbits e da Lunium.
 | Bitcoin Core + Esplora/electrs | 8 vCPU, 32 GB RAM, 2 TB NVMe, 1 Gbps | 16 vCPU, 64 GB RAM, 4 TB NVMe RAID1 |
 | API + worker | 4 vCPU, 16 GB RAM, 200 GB NVMe | 2x 8 vCPU, 32 GB RAM, 500 GB NVMe |
 | Postgres | 4 vCPU, 16 GB RAM, 200 GB NVMe | Gerenciado com HA + replica |
-| Base RPC | Gerenciado + fallback | Gerenciado + OP node opcional |
+| Polygon RPC | Gerenciado + fallback | Gerenciado + Polygon publico |
 | Monitoramento | 2 vCPU, 4 GB, 100 GB | Separado, HA |
 | Backup | Offsite criptografado | 3-2-1 com teste de restore |
 

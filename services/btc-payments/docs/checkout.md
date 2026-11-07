@@ -5,7 +5,9 @@ fundos.
 
 ## Página hospedada
 
-- `GET /pay/:id` — página pública do pagamento (`id` = id da `payment_intent`).
+- `GET /pay/:id` — página pública do pagamento. O `id` é o da
+  `payment_intent` (checkout em BTC) **ou** da `pix_charge` (checkout Pix):
+  a página mostra o QR do trilho correspondente.
 - `GET /pay/:id/status` — status em JSON:
 
 ```json
@@ -36,6 +38,15 @@ Content-Type: application/json
 
 { "external_id": "pedido-123", "amount_sats": "1000" }
 ```
+
+## Checkout Pix
+
+- Pelo portal: `POST /v1/portal/merchants/:id/pix-checkout` (sessão de lojista).
+- Pela API direta (HMAC): `POST /v1/checkout/pix` (ou `POST /v1/pix-charges`).
+
+A resposta traz `checkout_url` (a página `/pay/{id}`) e o QR do Pix. O
+pagador paga o Pix e a Lunium entrega USDC **direto** na carteira de
+liquidação da loja — a plataforma não custodia.
 
 ## Snippet embutível
 

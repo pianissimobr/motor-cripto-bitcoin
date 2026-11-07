@@ -7,6 +7,7 @@ import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
   ValidationError,
 } from '../domain/errors.js';
@@ -25,7 +26,9 @@ import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
 import type { FxService } from '../services/fx-service.js';
 import type { MarketService } from '../services/market-service.js';
+import type { PixChargeService } from '../services/pix-charge-service.js';
 import { SESSION_COOKIE, csrfHeaderOf, sessionTokenOf } from './auth-routes.js';
+import { createWalletSchema } from './wallet-schema.js';
 
 export type PortalRoutesDeps = {
   config: AppConfig;
@@ -43,10 +46,36 @@ export type PortalRoutesDeps = {
   fx?: FxService;
   /** Precos de mercado so para o grafico do portal. */
   market?: MarketService;
+  /** Cobranca PIX da loja (o USDC cai na carteira de liquidacao dela). */
+  pixCharges?: PixChargeService;
+  /** Prova de posse do endereco (F4/C12). */
+  possession?: {
+    verify: (input: {
+      address: string;
+      purpose: 'client_registration' | 'wallet_registration';
+      proof: { nonce: string; signature: string };
+    }) => Promise<boolean>;
+  };
 };
 
 const createMerchantSchema = z
   .object({ name: z.string().trim().min(1).max(80) })
+  .strict();
+
+/**
+ * Cobranca PIX da loja.
+ *
+ * O valor vai em centavos (`amount_cents`) para nao haver duvida de unidade:
+ * o Pix e o que a loja cobra e o USDC cai direto na carteira dela.
+ */
+const pixCheckoutSchema = z
+  .object({
+    amount_cents: z.string().regex(/^\d+$/),
+    payer_tax_number: z.string().trim().min(11).max(18),
+    payer_name: z.string().trim().max(120).optional(),
+    description: z.string().trim().max(200).optional(),
+    external_id: z.string().trim().min(1).max(64).optional(),
+  })
   .strict();
 
 const updateMerchantSchema = z
@@ -57,27 +86,6 @@ const updateMerchantSchema = z
   .strict()
   .refine((body) => Object.keys(body).length > 0, 'informe ao menos um campo');
 
-const createWalletSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('btc_deposit'),
-      xpub: z.string().min(1),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('usdc_settlement'),
-      address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('lightning_lnbits'),
-      lnbits_url: z.string().trim().min(1).max(300),
-      invoice_key: z.string().trim().min(8).max(200),
-    })
-    .strict(),
-]);
 
 const checkoutSchema = z
   .object({
@@ -150,6 +158,7 @@ function serializeWallet(wallet: MerchantWallet): Record<string, unknown> {
   return {
     id: wallet.id,
     kind: wallet.kind,
+    purpose: wallet.purpose,
     chain: wallet.chain,
     network: wallet.network,
     address: wallet.address,
@@ -302,11 +311,36 @@ export function registerPortalRoutes(
         }
         return reply.status(200).send(serializeWallet(existing));
       }
+      // Endereco de CLIENTE: a prova de posse e obrigatoria. A carteira de
+      // liquidacao da propria loja nao precisa (e o endereco e dela).
+      if (body.purpose === 'cliente') {
+        if (!deps.possession) {
+          throw new ValidationError(
+            'cadastro de endereco de cliente indisponivel: prova de posse obrigatoria',
+          );
+        }
+        if (!body.proof) {
+          throw new ValidationError(
+            'prova de posse obrigatoria para endereco de cliente',
+          );
+        }
+        const proven = await deps.possession.verify({
+          address: body.address,
+          purpose: 'wallet_registration',
+          proof: body.proof,
+        });
+        if (!proven) {
+          throw new ValidationError(
+            'prova de posse do endereco invalida: peça ao cliente para assinar o desafio',
+          );
+        }
+      }
       const wallet = await deps.wallets.createUsdcSettlement({
         merchantId: id,
         address: body.address,
         chain: deps.config.pix.chain,
         network: deps.config.pix.chain,
+        purpose: body.purpose,
       });
       const created = await deps.repos.findMerchantWalletById(wallet.id);
       if (!created) throw new NotFoundError('carteira nao encontrada');
@@ -460,6 +494,30 @@ export function registerPortalRoutes(
         : {}),
     });
     return reply.status(created.reused ? 200 : 201).send(created.dto);
+  });
+
+  app.post('/v1/portal/merchants/:id/pix-checkout', async (request, reply) => {
+    const { id } = parse(idParamsSchema, request.params, 'params');
+    await memberOrThrow(request, id, true);
+    if (!deps.pixCharges) {
+      throw new ServiceUnavailableError('PIX indisponivel');
+    }
+    const body = parse(pixCheckoutSchema, request.body ?? {}, 'corpo');
+    const externalId =
+      body.external_id ??
+      `portal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const created = await deps.pixCharges.create({
+      clientId: id,
+      externalId,
+      amountBrlCents: BigInt(body.amount_cents),
+      payerTaxNumber: body.payer_tax_number,
+      ...(body.payer_name ? { payerName: body.payer_name } : {}),
+      ...(body.description ? { metadata: { description: body.description } } : {}),
+    });
+    return reply.status(created.reused ? 200 : 201).send({
+      ...created.dto,
+      checkout_url: `/pay/${created.dto.id}`,
+    });
   });
 
   app.get('/v1/portal/merchants/:id/intents', async (request) => {

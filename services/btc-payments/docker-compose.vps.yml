@@ -1,0 +1,20 @@
+# VPS com nginx na borda: sem Caddy; a API escuta so em 127.0.0.1:4580.
+#
+# A rede autho_mail e a do servidor de e-mail (Postfix) que o motor usa para
+# o canal de alerta por e-mail e para o e-mail de redefinicao de senha.
+services:
+  api:
+    ports:
+      - "127.0.0.1:4580:4580"
+    networks:
+      - default
+      - autho_mail
+  worker:
+    networks:
+      - default
+      - autho_mail
+
+networks:
+  autho_mail:
+    external: true
+    name: autho_mail

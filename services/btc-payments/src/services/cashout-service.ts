@@ -52,6 +52,14 @@ export type CashOutQuoteDto = {
   expires_at: string | null;
   merchant_name: string | null;
   pix_key: string | null;
+  /**
+   * `true` quando a chave da Lunium e de sandbox.
+   *
+   * No sandbox o endereco de deposito e um endereco EVM sem dono: o app nao
+   * pode assinar. Como a chave fica no motor, quem sabe do sandbox e o motor
+   * — o app precisa da resposta para nao assinar.
+   */
+  sandbox: boolean;
 };
 
 export type CashOutDto = {
@@ -166,6 +174,7 @@ export class CashOutService {
       expires_at: preview.expires_at ?? null,
       merchant_name: preview.merchant_name ?? null,
       pix_key: preview.pix_key ? maskPixKey(preview.pix_key) : null,
+      sandbox: this.isSandbox(),
     };
   }
 

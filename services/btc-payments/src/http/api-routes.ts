@@ -42,6 +42,12 @@ import type { ReportService } from '../services/report-service.js';
 import type { SubscriptionService } from '../services/subscription-service.js';
 import type { GasStationService } from '../services/gas-station-service.js';
 import type { CashOutService } from '../services/cashout-service.js';
+import type { DeviceClientService } from '../services/device-client-service.js';
+import type { OperationsService } from '../services/operations-service.js';
+import type { FlagsService } from '../services/flags-service.js';
+import type { LuniumClient } from '../adapters/lunium/client.js';
+import { registerUserRoutes } from './user-routes.js';
+import { createWalletSchema } from './wallet-schema.js';
 
 export type ApiServices = {
   config: AppConfig;
@@ -65,6 +71,10 @@ export type ApiServices = {
   gasStation?: GasStationService;
   reports?: ReportService;
   subscriptions?: SubscriptionService;
+  deviceClients?: DeviceClientService;
+  operations?: OperationsService;
+  flags?: FlagsService;
+  lunium?: LuniumClient;
 };
 
 /**
@@ -258,31 +268,40 @@ const webhookQuerySchema = z.object({
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
-const createWalletSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('btc_deposit'),
-      xpub: z.string().min(1),
-      derivation_prefix: z
-        .string()
-        .regex(/^\d+(\/\d+)*$/)
-        .optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('usdc_settlement'),
-      address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('lightning_lnbits'),
-      lnbits_url: z.string().trim().min(1).max(300),
-      invoice_key: z.string().trim().min(8).max(200),
-    })
-    .strict(),
-]);
+
+const updateFlagsSchema = z
+  .object({
+    cash_out_enabled: z.boolean().optional(),
+    cash_in_enabled: z.boolean().optional(),
+    min_cash_out_brl: z.number().min(0).optional(),
+    max_cash_out_brl: z.number().min(0).optional(),
+    default_asset: z.enum(['USDC']).optional(),
+    default_chain: z.enum(['polygon']).optional(),
+    max_amount_usd_per_operation: z.number().min(0).optional(),
+  })
+  .strict();
+
+/**
+ * Checkout PIX publico (C9).
+ *
+ * A loja cria a cobranca e publica o link `/pay/{id}`: o pagador paga o Pix
+ * e o USDC vai para o endereco do cliente (que a loja cadastrou com prova de
+ * posse, F4) ou para a carteira da propria loja.
+ */
+const createPixCheckoutSchema = z
+  .object({
+    external_id: z.string().trim().min(1).max(64),
+    amount_cents: z.string().regex(/^\d+$/),
+    payer_tax_number: z.string().trim().min(11).max(18),
+    payer_name: z.string().trim().max(120).optional(),
+    destination_address: z
+      .string()
+      .trim()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
+      .optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict();
 
 function iso(value: Date | null): string | null {
   return value?.toISOString() ?? null;
@@ -371,6 +390,7 @@ function serializeWallet(wallet: MerchantWallet): Record<string, unknown> {
   return {
     id: wallet.id,
     kind: wallet.kind,
+    purpose: wallet.purpose,
     chain: wallet.chain,
     network: wallet.network,
     address: wallet.address,
@@ -410,7 +430,11 @@ export function registerApiRoutes(
     logger: services.logger,
   });
 
-  registerCheckoutRoutes(app, { paymentIntents: services.paymentIntents });
+  registerCheckoutRoutes(app, {
+    paymentIntents: services.paymentIntents,
+    ...(services.pixCharges ? { pixCharges: services.pixCharges } : {}),
+  });
+  registerUserRoutes(app, services);
 
   if (services.auth) {
     registerAuthRoutes(app, {
@@ -434,6 +458,8 @@ export function registerApiRoutes(
         ...(services.walletNotifier ? { walletNotifier: services.walletNotifier } : {}),
         ...(services.fx ? { fx: services.fx } : {}),
         ...(services.market ? { market: services.market } : {}),
+        ...(services.pixCharges ? { pixCharges: services.pixCharges } : {}),
+        ...(services.deviceClients ? { possession: services.deviceClients } : {}),
       });
     }
   }
@@ -760,6 +786,34 @@ export function registerApiRoutes(
     },
   );
 
+  app.post(
+    '/v1/checkout/pix',
+    { preHandler: apiAuth('payments:write') },
+    async (request, reply) => {
+      if (!services.pixCharges) {
+        throw new ServiceUnavailableError('PIX indisponivel');
+      }
+      const body = parse(createPixCheckoutSchema, request.body ?? {}, 'corpo');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      const created = await services.pixCharges.create({
+        clientId: client.id,
+        externalId: body.external_id,
+        amountBrlCents: BigInt(body.amount_cents),
+        payerTaxNumber: body.payer_tax_number,
+        ...(body.payer_name ? { payerName: body.payer_name } : {}),
+        ...(body.destination_address
+          ? { destinationAddress: body.destination_address }
+          : {}),
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+      });
+      return reply.status(created.reused ? 200 : 201).send({
+        ...created.dto,
+        checkout_url: `/pay/${created.dto.id}`,
+      });
+    },
+  );
+
   app.get(
     '/v1/balances',
     { preHandler: apiAuth('balances:read') },
@@ -882,11 +936,36 @@ export function registerApiRoutes(
           }
           return reply.status(200).send(serializeWallet(existing));
         }
+        // Endereco de CLIENTE: a prova de posse e obrigatoria. A carteira de
+        // liquidacao da propria loja nao precisa (e o endereco e dela).
+        if (body.purpose === 'cliente') {
+          if (!services.deviceClients) {
+            throw new ValidationError(
+              'cadastro de endereco de cliente indisponivel: prova de posse obrigatoria',
+            );
+          }
+          if (!body.proof) {
+            throw new ValidationError(
+              'prova de posse obrigatoria para endereco de cliente',
+            );
+          }
+          const proven = await services.deviceClients.verify({
+            address: body.address,
+            purpose: 'wallet_registration',
+            proof: body.proof,
+          });
+          if (!proven) {
+            throw new ValidationError(
+              'prova de posse do endereco invalida: peça ao cliente para assinar o desafio',
+            );
+          }
+        }
         const wallet = await services.wallets.createUsdcSettlement({
           merchantId: client.id,
           address: body.address,
           chain: services.config.pix.chain,
           network: services.config.pix.chain,
+          purpose: body.purpose,
         });
         const created = await services.repos.findMerchantWalletById(wallet.id);
         if (!created) throw new NotFoundError('carteira nao encontrada');
@@ -1059,6 +1138,51 @@ export function registerApiRoutes(
     async () => {
       if (!services.getStatus) return { ok: true };
       return services.getStatus();
+    },
+  );
+
+  app.get(
+    '/admin/api/flags',
+    { preHandler: adminAuth },
+    async () => {
+      if (!services.flags) throw new ServiceUnavailableError('flags indisponiveis');
+      return services.flags.get();
+    },
+  );
+
+  app.patch(
+    '/admin/api/flags',
+    { preHandler: adminAuth },
+    async (request) => {
+      if (!services.flags) throw new ServiceUnavailableError('flags indisponiveis');
+      const body = parse(updateFlagsSchema, request.body ?? {}, 'corpo');
+      const patch: Partial<{
+        cash_out_enabled: boolean;
+        cash_in_enabled: boolean;
+        min_cash_out_brl: number;
+        max_cash_out_brl: number;
+        default_asset: 'USDC';
+        default_chain: 'polygon';
+        max_amount_usd_per_operation: number;
+      }> = {};
+      if (body.cash_out_enabled !== undefined) {
+        patch.cash_out_enabled = body.cash_out_enabled;
+      }
+      if (body.cash_in_enabled !== undefined) {
+        patch.cash_in_enabled = body.cash_in_enabled;
+      }
+      if (body.min_cash_out_brl !== undefined) {
+        patch.min_cash_out_brl = body.min_cash_out_brl;
+      }
+      if (body.max_cash_out_brl !== undefined) {
+        patch.max_cash_out_brl = body.max_cash_out_brl;
+      }
+      if (body.default_asset !== undefined) patch.default_asset = body.default_asset;
+      if (body.default_chain !== undefined) patch.default_chain = body.default_chain;
+      if (body.max_amount_usd_per_operation !== undefined) {
+        patch.max_amount_usd_per_operation = body.max_amount_usd_per_operation;
+      }
+      return services.flags.set(patch);
     },
   );
 

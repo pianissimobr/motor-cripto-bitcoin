@@ -63,10 +63,26 @@
       </div>
     </div>
     <div class="col card">
+      <h2>Cobrar em Pix</h2>
+      <p class="muted">O pagador paga o Pix e o USDC cai direto na carteira de liquidação da loja (cadastre abaixo). O CPF/CNPJ é o de quem paga — a provedora confere antes de entregar.</p>
+      <form id="pix-checkout-form">
+        <label>Valor em R$<input id="pix-amount" inputmode="decimal" autocomplete="off" placeholder="0,00"></label>
+        <label>CPF/CNPJ do pagador<input id="pix-tax" inputmode="numeric" autocomplete="off" placeholder="00000000191"></label>
+        <label>Nome do pagador<input id="pix-name" autocomplete="off" placeholder="Cliente"></label>
+        <label>Descrição<input id="pix-desc" maxlength="200" placeholder="Pedido #123"></label>
+        <button type="submit">Gerar QR do Pix</button>
+      </form>
+      <div id="pix-checkout-result" class="hidden">
+        <div id="pix-checkout-qr" class="qr"></div>
+        <pre id="pix-checkout-uri" class="creds"></pre>
+        <a id="pix-checkout-link" href="#" target="_blank" rel="noopener">Abrir página de pagamento</a>
+      </div>
+    </div>
+    <div class="col card">
       <h2>Carteiras</h2>
       <p class="muted">O dinheiro vai direto para as suas carteiras, sem passar pela plataforma e sem conversão:
         <strong>Lightning</strong> cai na sua wallet LNbits, <strong>on-chain</strong> nos endereços do seu xpub e
-        <strong>PIX</strong> vira USDC na sua carteira Base. Cadastre ao menos uma carteira Bitcoin para cobrar em BTC.</p>
+        <strong>PIX</strong> vira USDC na sua carteira Polygon. Cadastre ao menos uma carteira Bitcoin para cobrar em BTC.</p>
       <div class="wallet-block">
         <h3>⚡ Lightning <span class="muted">(sua wallet LNbits)</span></h3>
         <div id="wallet-current-lightning_lnbits" class="wallet-current"></div>
@@ -85,11 +101,20 @@
         </form>
       </div>
       <div class="wallet-block">
-        <h3>💵 USDC na Base <span class="muted">(recebe o PIX)</span></h3>
+        <h3>💵 USDC na Polygon <span class="muted">(recebe o PIX)</span></h3>
         <div id="wallet-current-usdc_settlement" class="wallet-current"></div>
         <form class="wallet-form" data-kind="usdc_settlement">
-          <label>Endereço USDC na rede Base<input name="address" autocomplete="off" required pattern="0x[0-9a-fA-F]{40}" placeholder="0x..."></label>
-          <p class="muted">Use um endereço seu na rede <strong>Base</strong> (não Ethereum nem Polygon). O PIX pago vira USDC e cai nele.</p>
+          <label>Endereço USDC na rede Polygon<input name="address" autocomplete="off" required pattern="0x[0-9a-fA-F]{40}" placeholder="0x..."></label>
+          <label>Este endereço é
+            <select name="purpose">
+              <option value="loja">da minha loja — recebe o PIX das minhas vendas</option>
+              <option value="cliente">de um cliente — a compra dele liquida nele</option>
+            </select>
+          </label>
+          <label>Prova de posse — nonce (só para endereço de cliente)<input name="proof_nonce" autocomplete="off" placeholder="nonce do desafio"></label>
+          <label>Assinatura (só para endereço de cliente)<input name="proof_signature" autocomplete="off" placeholder="0x..."></label>
+          <p class="muted">Use um endereço seu na rede <strong>Polygon</strong> (não Ethereum nem Base). O PIX pago vira USDC e cai nele.</p>
+          <p class="muted">Endereço de <strong>cliente</strong>: o cliente mostra no app a prova de posse do endereço (QR). Sem ela o cadastro é recusado — é o que impede cadastrar o endereço de outra pessoa.</p>
           <button type="submit">Salvar endereço USDC</button>
         </form>
       </div>
@@ -140,11 +165,11 @@
     <h2>Perguntas frequentes</h2>
     <details>
       <summary>O motor guarda o meu dinheiro?</summary>
-      <p class="muted">Não. Ele cria a cobrança (QR/invoice) e confirma a chegada. O dinheiro cai direto nas suas carteiras: Lightning na sua wallet LNbits, on-chain no seu xpub e PIX como USDC na sua carteira Base. Não há conversão.</p>
+      <p class="muted">Não. Ele cria a cobrança (QR/invoice) e confirma a chegada. O dinheiro cai direto nas suas carteiras: Lightning na sua wallet LNbits, on-chain no seu xpub e PIX como USDC na sua carteira Polygon. Não há conversão.</p>
     </details>
     <details>
       <summary>Como recebo o valor das vendas?</summary>
-      <p class="muted">Em "Carteiras": a sua wallet LNbits (URL + Invoice key) para Lightning, o seu xpub para BTC on-chain e um endereço 0x na Base para receber o PIX em USDC. Cada pagamento vai direto para a carteira do trilho usado.</p>
+      <p class="muted">Em "Carteiras": a sua wallet LNbits (URL + Invoice key) para Lightning, o seu xpub para BTC on-chain e um endereço 0x na Polygon para receber o PIX em USDC. Cada pagamento vai direto para a carteira do trilho usado.</p>
     </details>
     <details>
       <summary>Onde estão a API key e os secrets?</summary>

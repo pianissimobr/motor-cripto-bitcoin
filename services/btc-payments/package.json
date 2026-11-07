@@ -19,6 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "tsx scripts/smoke.ts",
+    "alert:drill": "tsx src/tools/alert-drill.ts",
+    "alert:drill:prod": "node dist/tools/alert-drill.js",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "client:create": "tsx scripts/seed-client.ts",
     "merchant:pix:seed": "tsx scripts/seed-pix-merchant.ts",

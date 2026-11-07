@@ -60,7 +60,7 @@ Payload:
 }
 ```
 
-O dinheiro vai direto para as carteiras do lojista (LNbits, xpub, USDC Base):
+O dinheiro vai direto para as carteiras do lojista (LNbits, xpub, USDC Polygon):
 `payment_intent.paid` e `pix_charge.settled` sao o fim do fluxo. Nao ha eventos
 de conversao nem de payout.
 

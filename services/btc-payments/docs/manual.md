@@ -65,6 +65,15 @@ converte nada:
 No dashboard: **Carteiras → Adicionar**. O endereço USDC é único por loja; o
 mesmo endereço em outra loja é recusado (409).
 
+**Endereço de cliente:** se a compra do cliente vai liquidar na carteira que
+ele criou no app, a loja cadastra esse endereço em **Carteiras → USDC na
+Polygon** escolhendo *de um cliente*. Aí a **prova de posse é obrigatória**: o
+cliente mostra no app um QR com a prova (tela "Provar posse") e a loja cola
+os dados no formulário. Sem a prova o cadastro é recusado — é o que impede
+cadastrar o endereço de outra pessoa e ficar com o dinheiro. O dono do
+endereço pode revogar o cadastro a qualquer momento (o extrato dele passa a
+mostrar a operação como vinda de uma loja).
+
 > O `xpub` é a sua **chave pública** de conta. Com ele o motor deriva endereços,
 > mas **não** pode gastar. Nunca cole um `xprv`, uma seed ou um mnemonic aqui.
 
@@ -266,6 +275,11 @@ function ok(secret, header, rawBody) {
 ---
 
 ## PIX → USDC
+
+**No dashboard:** *Cobrar em Pix* cria a cobrança, mostra o QR do Pix e o
+link da página de pagamento. O pagador paga e o USDC cai na carteira de
+liquidação da loja. É o mesmo fluxo do `POST /v1/pix-charges` da API (abaixo),
+sem integração.
 
 Se habilitado, `POST /v1/pix-charges` cria um PIX que entrega USDC **na
 Polygon** (a rede que a chave da Lunium usa):

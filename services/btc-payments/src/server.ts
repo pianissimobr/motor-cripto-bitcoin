@@ -28,6 +28,9 @@ import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { ReportService } from './services/report-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
+import { DeviceClientService } from './services/device-client-service.js';
+import { OperationsService } from './services/operations-service.js';
+import { FlagsService } from './services/flags-service.js';
 import { AuthoIssuerClient } from './adapters/autho/client.js';
 
 /**
@@ -83,7 +86,12 @@ export async function main(): Promise<void> {
     });
 
     const clients = new ClientService({ repos, config, logger });
-    const alerts = new AlertService({ ...config.alerts, logger });
+    const alerts = new AlertService({
+      ...config.alerts,
+      logger,
+      ...(config.email.smtp ? { smtp: config.email.smtp } : {}),
+      ...(config.email.from ? { emailFrom: config.email.from } : {}),
+    });
     const emailSender =
       config.email.sender === 'smtp' && config.email.smtp && config.email.from
         ? new SmtpEmailSender({
@@ -159,6 +167,10 @@ export async function main(): Promise<void> {
         })
       : null;
 
+    const deviceClients = new DeviceClientService({ repos, config, logger });
+    const operations = new OperationsService({ repos, logger });
+    const flags = new FlagsService({ repos, logger });
+
     const app = buildApp({
       config,
       logger,
@@ -178,12 +190,16 @@ export async function main(): Promise<void> {
         gasStation,
         reports,
         subscriptions,
+        deviceClients,
+        operations,
+        flags,
         ...(lnbitsFor ? { lnbitsFor } : {}),
         walletNotifier,
         ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(cashOut ? { cashOut } : {}),
         ...(luniumWebhook ? { luniumWebhook } : {}),
+        ...(lunium ? { lunium } : {}),
         getStatus: async () => {
           const [counts, esploraHealth, gasStatus] = await Promise.all([
             repos.getStatusCounts(),

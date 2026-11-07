@@ -271,6 +271,43 @@ async function loadRates() {
   if (!fx.source) showRateHint();
 }
 
+async function submitPixCheckout(e) {
+  e.preventDefault();
+  const value = parseMoney(el('pix-amount').value);
+  if (!value) {
+    showError(new Error('Informe o valor em R$.'));
+    return;
+  }
+  const tax = el('pix-tax').value.replace(/\D/g, '');
+  if (tax.length !== 11 && tax.length !== 14) {
+    showError(new Error('CPF/CNPJ do pagador invalido.'));
+    return;
+  }
+  const name = el('pix-name').value.trim();
+  const description = el('pix-desc').value.trim();
+  el('erro').textContent = '';
+  const button = e.target.querySelector('button[type=submit]');
+  button.disabled = true;
+  try {
+    const data = await api('POST', `/v1/portal/merchants/${state.merchantId}/pix-checkout`, {
+      amount_cents: String(Math.round(value * 100)),
+      payer_tax_number: tax,
+      ...(name ? { payer_name: name } : {}),
+      ...(description ? { description } : {}),
+    });
+    el('pix-checkout-result').classList.remove('hidden');
+    el('pix-checkout-qr').innerHTML = data.pix?.qr_svg ?? '';
+    el('pix-checkout-uri').textContent = data.pix?.qr_copypaste ?? '';
+    const link = el('pix-checkout-link');
+    link.href = data.checkout_url ?? `/pay/${data.id}`;
+    link.classList.remove('hidden');
+  } catch (err) {
+    showError(err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function submitCheckout(e) {
   e.preventDefault();
   const description = el('checkout-desc').value.trim();
@@ -329,7 +366,19 @@ async function submitWallet(e) {
       ? { kind, lnbits_url: field('lnbits_url'), invoice_key: field('invoice_key') }
       : kind === 'btc_deposit'
         ? { kind, xpub: field('xpub') }
-        : { kind, address: field('address') };
+        : {
+            kind,
+            address: field('address'),
+            purpose: field('purpose') || 'loja',
+            ...(field('purpose') === 'cliente'
+              ? {
+                  proof: {
+                    nonce: field('proof_nonce'),
+                    signature: field('proof_signature'),
+                  },
+                }
+              : {}),
+          };
   el('erro').textContent = '';
   const button = form.querySelector('button[type=submit]');
   button.disabled = true;
@@ -411,6 +460,7 @@ async function init() {
     window.location.href = '/login.html';
   });
   el('checkout-form').addEventListener('submit', submitCheckout);
+  el('pix-checkout-form').addEventListener('submit', submitPixCheckout);
   for (const form of document.querySelectorAll('.wallet-form')) {
     form.addEventListener('submit', submitWallet);
   }

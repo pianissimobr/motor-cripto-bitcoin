@@ -130,8 +130,29 @@ direto para as carteiras do lojista.
 ```
 
 ```json
-{ "kind": "usdc_settlement", "address": "0x..." }
+{ "kind": "usdc_settlement", "address": "0x...", "purpose": "loja" }
 ```
+
+`purpose` diz de quem e o endereco:
+
+- `loja` (padrao): a carteira de liquidacao da **propria loja** — e onde o PIX
+  que a loja cobra cai. Nao precisa de prova.
+- `cliente`: o endereco de um **cliente** que a loja cadastrou para liquidar
+  a compra dele na carteira que o app gerou (F4). Aqui a prova de posse e
+  obrigatoria:
+
+```json
+{
+  "kind": "usdc_settlement",
+  "address": "0x...",
+  "purpose": "cliente",
+  "proof": { "nonce": "...", "signature": "0x..." }
+}
+```
+
+Sem a prova, o cadastro e recusado (`400`): e o que impede cadastrar o
+endereco de outra pessoa e ficar com o dinheiro. O app mostra a prova (QR)
+na tela "Provar posse".
 
 O endereco USDC e unico por loja. Repetir o mesmo endereco na mesma loja e
 idempotente; em outra loja retorna `409`.
@@ -158,8 +179,9 @@ do ledger batem por ativo.
 
 ## PIX -> USDC
 
-`POST /v1/pix-charges` cria uma cobrança PIX na Lunium que entrega USDC na Base
-direto na carteira `usdc_settlement` da loja. Sem essa carteira a resposta e
+`POST /v1/pix-charges` cria uma cobrança PIX na Lunium que entrega USDC na
+**Polygon** (a rede da chave de producao) direto na carteira
+`usdc_settlement` da loja. Sem essa carteira a resposta e
 `409 settlement_wallet_required`.
 
 ```json
@@ -184,7 +206,7 @@ Resposta:
   "settlement_status": "nao_iniciado",
   "amount_brl_cents": "5000",
   "asset": "USDC",
-  "chain": "base",
+  "chain": "polygon",
   "pix": {
     "qr_copypaste": "000201...",
     "qr_image_url": "https://...",
@@ -201,6 +223,26 @@ Consultas:
 GET /v1/pix-charges/:id
 GET /v1/pix-charges?external_id=pedido-123
 ```
+
+### Checkout PIX (pagina hospedada)
+
+`POST /v1/checkout/pix` cria a mesma cobrança e devolve tambem o
+`checkout_url` (a pagina publica `/pay/{id}`, com o QR do Pix). Aceita
+`destination_address` (o endereco de um cliente, cadastrado pela loja com
+prova de posse) — sem ele, o USDC vai para a carteira de liquidacao da loja.
+
+```json
+{
+  "external_id": "pedido-123",
+  "amount_cents": "5000",
+  "payer_tax_number": "00000000191",
+  "payer_name": "Cliente",
+  "destination_address": "0x..."
+}
+```
+
+Pelo portal, a mesma coisa sem integracao: `POST /v1/portal/merchants/:id/pix-checkout`
+(sessao de lojista).
 
 Detalhes em [pix.md](pix.md).
 

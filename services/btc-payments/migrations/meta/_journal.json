@@ -127,6 +127,20 @@
       "when": 1793766243738,
       "tag": "0017_cool_dexter_bennett",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793773012883,
+      "tag": "0018_device_clients_operations_flags",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793781777829,
+      "tag": "0019_merchant_wallet_purpose",
+      "breakpoints": true
     }
   ]
 }

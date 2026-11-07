@@ -103,6 +103,7 @@ export async function createLightningWallet(
     id: 'probe',
     merchantId,
     kind: 'lightning_lnbits',
+    purpose: 'loja',
     chain: 'lightning',
     network: 'lightning',
     address: 'probe',

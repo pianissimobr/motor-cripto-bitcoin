@@ -7,6 +7,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -14,6 +15,7 @@ import {
 } from 'drizzle-orm';
 import { assertTransition } from '../domain/status.js';
 import type {
+  AddressRevocation,
   ApiClient,
   ConversionLeg,
   ConversionOrder,
@@ -31,6 +33,8 @@ import type {
   Payout,
   PayoutStatus,
   PaymentIntentStatus,
+  PossessionChallenge,
+  ServiceFlag,
   Session,
   SettlementChain,
   Subscription,
@@ -41,6 +45,7 @@ import type {
 } from '../domain/types.js';
 import type { Db } from './client.js';
 import {
+  addressRevocations,
   apiClients,
   apiNonces,
   auditEvents,
@@ -61,8 +66,10 @@ import {
   payouts,
   cashoutCharges,
   pixCharges,
+  possessionChallenges,
   providerEvents,
   reconciliationRuns,
+  serviceFlags,
   sessions,
   subscriptionCharges,
   subscriptions,
@@ -147,6 +154,8 @@ export type CreateClientInput = {
   webhookUrl: string;
   webhookSecretEnc: string;
   scopes?: import('../domain/types.js').ApiScope[];
+  clientType?: import('../domain/types.js').ClientType;
+  settlementAddress?: string | null;
 };
 
 export type UpsertOnchainPaymentInput = {
@@ -690,6 +699,54 @@ export type Repositories = {
     limit: number,
   ) => Promise<CashOutCharge[]>;
 
+  // Prova de posse (C12) e revogacao de endereco (C12.1)
+  createPossessionChallenge: (input: {
+    nonce: string;
+    address: string;
+    purpose: 'client_registration' | 'wallet_registration';
+    message: string;
+    expiresAt: Date;
+  }) => Promise<PossessionChallenge>;
+  consumePossessionChallenge: (
+    nonce: string,
+    now: Date,
+  ) => Promise<PossessionChallenge | null>;
+  deleteExpiredPossessionChallenges: (now: Date) => Promise<number>;
+  findClientBySettlementAddress: (
+    address: string,
+  ) => Promise<ApiClient | null>;
+  createAddressRevocation: (input: {
+    address: string;
+    merchantId: string | null;
+  }) => Promise<AddressRevocation>;
+  listAddressRevocations: (
+    address: string,
+  ) => Promise<AddressRevocation[]>;
+  isAddressRevoked: (
+    address: string,
+    merchantId: string,
+  ) => Promise<boolean>;
+
+  // Flags do servico (F7)
+  getServiceFlag: (key: string) => Promise<ServiceFlag | null>;
+  setServiceFlag: (
+    key: string,
+    value: Record<string, unknown>,
+  ) => Promise<ServiceFlag>;
+  listServiceFlags: () => Promise<ServiceFlag[]>;
+
+  // Extrato por endereco (C5)
+  listPixChargesByDestinationAddress: (
+    address: string,
+    limit: number,
+    before?: { createdAt: Date; id: string } | null,
+  ) => Promise<PixCharge[]>;
+  listCashOutChargesByOriginAddress: (
+    address: string,
+    limit: number,
+    before?: { createdAt: Date; id: string } | null,
+  ) => Promise<CashOutCharge[]>;
+
   // Payout
   createPayout: (input: CreatePayoutInput) => Promise<Payout>;
   findPayoutById: (id: string) => Promise<Payout | null>;
@@ -926,6 +983,10 @@ export function createRepositories(db: Db): Repositories {
         .values({
           ...input,
           ...(input.scopes ? { scopes: input.scopes } : {}),
+          ...(input.clientType ? { clientType: input.clientType } : {}),
+          ...(input.settlementAddress
+            ? { settlementAddress: input.settlementAddress.toLowerCase() }
+            : {}),
         })
         .returning();
       const row = rows[0];
@@ -2466,6 +2527,9 @@ export function createRepositories(db: Db): Repositories {
             eq(merchantWallets.merchantId, clientId),
             eq(merchantWallets.kind, 'usdc_settlement'),
             eq(merchantWallets.status, 'ativo'),
+            // A carteira de liquidacao da LOJA. As carteiras de cliente
+            // (F4) nunca podem ser o destino de uma cobranca da loja.
+            eq(merchantWallets.purpose, 'loja'),
           ),
         )
         .orderBy(asc(merchantWallets.createdAt))
@@ -2899,6 +2963,165 @@ export function createRepositories(db: Db): Repositories {
         .from(cashoutCharges)
         .where(eq(cashoutCharges.originAddress, originAddress.toLowerCase()))
         .orderBy(desc(cashoutCharges.createdAt))
+        .limit(limit);
+      return rows;
+    },
+
+    async createPossessionChallenge(input) {
+      const rows = await db
+        .insert(possessionChallenges)
+        .values({
+          nonce: input.nonce,
+          address: input.address.toLowerCase(),
+          purpose: input.purpose,
+          message: input.message,
+          expiresAt: input.expiresAt,
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao criar desafio de posse');
+      return row;
+    },
+
+    async consumePossessionChallenge(nonce, now) {
+      const rows = await db
+        .update(possessionChallenges)
+        .set({ consumedAt: now })
+        .where(
+          and(
+            eq(possessionChallenges.nonce, nonce),
+            isNull(possessionChallenges.consumedAt),
+            gt(possessionChallenges.expiresAt, now),
+          ),
+        )
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async deleteExpiredPossessionChallenges(now) {
+      const rows = await db
+        .delete(possessionChallenges)
+        .where(lte(possessionChallenges.expiresAt, now))
+        .returning({ nonce: possessionChallenges.nonce });
+      return rows.length;
+    },
+
+    async findClientBySettlementAddress(address) {
+      const rows = await db
+        .select()
+        .from(apiClients)
+        .where(eq(apiClients.settlementAddress, address.toLowerCase()))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async createAddressRevocation(input) {
+      const rows = await db
+        .insert(addressRevocations)
+        .values({
+          address: input.address.toLowerCase(),
+          merchantId: input.merchantId,
+        })
+        .onConflictDoUpdate({
+          target: [addressRevocations.address, addressRevocations.merchantId],
+          set: { revokedAt: new Date() },
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao revogar endereco');
+      return row;
+    },
+
+    async listAddressRevocations(address) {
+      return db
+        .select()
+        .from(addressRevocations)
+        .where(eq(addressRevocations.address, address.toLowerCase()));
+    },
+
+    async isAddressRevoked(address, merchantId) {
+      const rows = await db
+        .select({ id: addressRevocations.id })
+        .from(addressRevocations)
+        .where(
+          and(
+            eq(addressRevocations.address, address.toLowerCase()),
+            eq(addressRevocations.merchantId, merchantId),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    async getServiceFlag(key) {
+      const rows = await db
+        .select()
+        .from(serviceFlags)
+        .where(eq(serviceFlags.key, key))
+        .limit(1);
+      return rows[0] ?? null;
+    },
+
+    async setServiceFlag(key, value) {
+      const rows = await db
+        .insert(serviceFlags)
+        .values({ key, value })
+        .onConflictDoUpdate({
+          target: serviceFlags.key,
+          set: { value, updatedAt: new Date() },
+        })
+        .returning();
+      const row = rows[0];
+      if (!row) throw new Error('falha ao gravar flag');
+      return row;
+    },
+
+    async listServiceFlags() {
+      return db.select().from(serviceFlags);
+    },
+
+    async listPixChargesByDestinationAddress(address, limit, before) {
+      const rows = await db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            eq(pixCharges.destinationAddress, address.toLowerCase()),
+            before
+              ? or(
+                  lt(pixCharges.createdAt, before.createdAt),
+                  and(
+                    eq(pixCharges.createdAt, before.createdAt),
+                    lt(pixCharges.id, before.id),
+                  ),
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(desc(pixCharges.createdAt), desc(pixCharges.id))
+        .limit(limit);
+      return rows;
+    },
+
+    async listCashOutChargesByOriginAddress(address, limit, before) {
+      const rows = await db
+        .select()
+        .from(cashoutCharges)
+        .where(
+          and(
+            eq(cashoutCharges.originAddress, address.toLowerCase()),
+            before
+              ? or(
+                  lt(cashoutCharges.createdAt, before.createdAt),
+                  and(
+                    eq(cashoutCharges.createdAt, before.createdAt),
+                    lt(cashoutCharges.id, before.id),
+                  ),
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(desc(cashoutCharges.createdAt), desc(cashoutCharges.id))
         .limit(limit);
       return rows;
     },

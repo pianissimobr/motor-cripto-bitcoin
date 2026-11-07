@@ -76,6 +76,26 @@ export const DEFAULT_API_SCOPES: readonly ApiScope[] = [
   'payouts:read',
 ];
 
+/**
+ * Escopos do cliente de device (perfil pessoal do app).
+ *
+ * O perfil nao fatura ninguem, nao converte BTC e nao saca: ele compra e
+ * vende cripto por Pix, le o proprio extrato e pede gas. `payouts:read` e
+ * `conversions:read` ficam de fora de proposito.
+ */
+export const USER_API_SCOPES: readonly ApiScope[] = [
+  'payments:write',
+  'payments:read',
+  'cashout:write',
+  'cashout:read',
+  'operations:read',
+  'gas:write',
+  'wallets:read',
+  'balances:read',
+];
+
+export type ClientType = 'loja' | 'usuario';
+
 export type VerificationStatus = 'unverified' | 'pending' | 'verified';
 
 export type SettlementStatus =
@@ -354,6 +374,8 @@ export type MerchantWallet = {
   id: string;
   merchantId: string | null;
   kind: MerchantWalletKind;
+  /** `loja` (liquidacao da loja) ou `cliente` (endereco de um cliente, F4). */
+  purpose: 'loja' | 'cliente';
   chain: string;
   network: string;
   address: string;
@@ -632,4 +654,31 @@ export type SubscriptionCharge = {
   status: 'criada' | 'paga' | 'falhou';
   attemptedAt: Date;
   createdAt: Date;
+};
+
+export type PossessionPurpose = 'client_registration' | 'wallet_registration';
+
+export type PossessionChallenge = {
+  id: string;
+  nonce: string;
+  address: string;
+  purpose: PossessionPurpose;
+  message: string;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  createdAt: Date;
+};
+
+export type AddressRevocation = {
+  id: string;
+  address: string;
+  merchantId: string | null;
+  revokedAt: Date;
+  createdAt: Date;
+};
+
+export type ServiceFlag = {
+  key: string;
+  value: Record<string, unknown>;
+  updatedAt: Date;
 };

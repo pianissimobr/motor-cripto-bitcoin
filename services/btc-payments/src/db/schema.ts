@@ -155,6 +155,17 @@ export const merchantWallets = pgTable(
     network: text('network').notNull(),
     address: text('address').notNull(),
     xpub: text('xpub'),
+    /**
+     * Para quem e a carteira `usdc_settlement`.
+     *
+     * `loja`: a carteira de liquidacao da propria loja (o PIX que a loja
+     * cobra cai nela). `cliente`: o endereco de um cliente que a loja
+     * cadastrou para liquidar a compra dele (F4) — esse exige prova de posse.
+     */
+    purpose: text('purpose')
+      .$type<'loja' | 'cliente'>()
+      .notNull()
+      .default('loja'),
     /** URL da instancia LNbits do lojista (so `lightning_lnbits`). */
     lnbitsUrl: text('lnbits_url'),
     /** Invoice key da wallet LNbits do lojista, cifrada (so `lightning_lnbits`). */
@@ -174,6 +185,10 @@ export const merchantWallets = pgTable(
     check(
       'merchant_wallets_kind_chk',
       sql`${table.kind} in ('btc_deposit', 'usdc_settlement', 'btc_cold', 'lightning_lnbits')`,
+    ),
+    check(
+      'merchant_wallets_purpose_chk',
+      sql`${table.purpose} in ('loja', 'cliente')`,
     ),
     check(
       'merchant_wallets_status_chk',
@@ -949,6 +964,80 @@ export const cashoutCharges = pgTable(
     check('cashout_charges_amount_chk', sql`${table.amountBrlCents} > 0`),
   ],
 );
+
+/**
+ * Desafio de prova de posse (C12).
+ *
+ * O motor emite o nonce, o app assina a mensagem com a chave EVM da carteira
+ * e o motor confere a assinatura. O nonce e de uso unico e expira: e o que
+ * impede que alguem registre um endereco que nao e dele.
+ */
+export const possessionChallenges = pgTable(
+  'possession_challenges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    nonce: text('nonce').notNull(),
+    address: text('address').notNull(),
+    purpose: text('purpose')
+      .$type<'client_registration' | 'wallet_registration'>()
+      .notNull(),
+    /** Mensagem exata que o app assinou (o motor reconfere byte a byte). */
+    message: text('message').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('possession_challenges_nonce_uq').on(table.nonce),
+    index('possession_challenges_address_idx').on(table.address),
+    index('possession_challenges_expires_idx').on(table.expiresAt),
+    check(
+      'possession_challenges_purpose_chk',
+      sql`${table.purpose} in ('client_registration','wallet_registration')`,
+    ),
+  ],
+);
+
+/**
+ * Revogacao de endereco (C12.1).
+ *
+ * A loja cadastrou o endereco de um usuario como destino de liquidacao. O
+ * dono do endereco revoga esse registro: e o controle que substitui a prova
+ * da loja (C14) enquanto ela nao existe.
+ */
+export const addressRevocations = pgTable(
+  'address_revocations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    address: text('address').notNull(),
+    merchantId: uuid('merchant_id').references(() => apiClients.id, {
+      onDelete: 'cascade',
+    }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('address_revocations_address_merchant_uq').on(
+      table.address,
+      table.merchantId,
+    ),
+    index('address_revocations_address_idx').on(table.address),
+  ],
+);
+
+/**
+ * Flags do servico (F7).
+ *
+ * O rollback remoto nao pode depender de publicar nova versao do app: as flags
+ * ficam no motor e o app le por HTTP.
+ */
+export const serviceFlags = pgTable('service_flags', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<Record<string, unknown>>().notNull(),
+  updatedAt: updatedAt(),
+});
 
 export const payouts = pgTable(
   'payouts',

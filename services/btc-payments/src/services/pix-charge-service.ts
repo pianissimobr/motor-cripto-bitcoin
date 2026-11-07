@@ -38,6 +38,12 @@ export type CreatePixChargeInput = {
   payerName?: string | null;
   metadata?: Record<string, unknown> | null;
   sandboxScenario?: string | null;
+  /**
+   * Endereco que recebe o USDC, quando a loja esta vendendo para um cliente
+   * que tem carteira no app (F4). O endereco precisa estar cadastrado pela
+   * loja (com prova de posse) e nao pode estar revogado.
+   */
+  destinationAddress?: string | null;
 };
 
 export type PixChargeDto = {
@@ -60,6 +66,25 @@ export type PixChargeDto = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type PixPublicDto = {
+  id: string;
+  status: PixCharge['status'];
+  settlement_status: PixCharge['settlementStatus'];
+  amount_brl_cents: string;
+  asset: 'USDC';
+  chain: SettlementChain;
+  pix: {
+    qr_copypaste: string | null;
+    qr_image_url: string | null;
+    qr_svg: string | null;
+  };
+  e2e: string | null;
+  paid_at: string | null;
+  settled_at: string | null;
+  expires_at: string | null;
+  error: string | null;
 };
 
 export type PixChargeServiceDeps = {
@@ -242,7 +267,10 @@ export class PixChargeService {
     // O destino tem duas fontes (D18/D22): o `settlement_address` do
     // cliente (perfil `usuario`, a carteira criada no app) ou a carteira
     // `usdc_settlement` da loja (perfil `loja`).
-    const destination = await this.resolveDestinationAddress(input.clientId);
+    const destination = await this.resolveDestinationAddress(
+      input.clientId,
+      input.destinationAddress ?? null,
+    );
     if (!destination) throw new SettlementWalletRequiredError();
 
     try {
@@ -369,6 +397,64 @@ export class PixChargeService {
     return this.toDto(charge);
   }
 
+  /**
+   * Visao publica da cobranca (checkout).
+   *
+   * Nao expoe `client_id` nem dado do lojista: o pagador nao tem conta. O
+   * estado e atualizado junto com o provedor, mas no maximo uma vez a cada
+   * 10 s — a pagina de checkout consulta a cada 5 s e a Lunium aceita 60
+   * requisicoes por minuto no total.
+   */
+  async getPublicById(id: string): Promise<PixPublicDto> {
+    let charge = await this.deps.repos.findPixChargeById(id);
+    if (!charge) throw new NotFoundError('cobranca PIX nao encontrada');
+    const lastChecked = charge.lastCheckedAt?.getTime() ?? 0;
+    const stale = Date.now() - lastChecked > 10_000;
+    if (stale && !isFinalPixStatus(charge.status)) {
+      try {
+        const providerCharge = await this.fetchProviderCharge(charge);
+        if (providerCharge) {
+          charge = await this.applyProviderCharge(charge, providerCharge);
+        }
+      } catch (err) {
+        this.deps.logger.warn(
+          { err, pixChargeId: charge.id },
+          'falha ao atualizar status publico da cobranca PIX',
+        );
+      }
+    }
+    let qrSvg: string | null = null;
+    if (!charge.qrImageUrl && charge.qrCopypaste) {
+      try {
+        qrSvg = await QRCode.toString(charge.qrCopypaste, {
+          type: 'svg',
+          margin: 1,
+          width: 256,
+        });
+      } catch {
+        qrSvg = null;
+      }
+    }
+    return {
+      id: charge.id,
+      status: charge.status,
+      settlement_status: charge.settlementStatus,
+      amount_brl_cents: charge.amountBrlCents.toString(),
+      asset: charge.asset,
+      chain: charge.chain,
+      pix: {
+        qr_copypaste: charge.qrCopypaste,
+        qr_image_url: charge.qrImageUrl,
+        qr_svg: qrSvg,
+      },
+      e2e: charge.e2e,
+      paid_at: charge.paidAt?.toISOString() ?? null,
+      settled_at: charge.settledAt?.toISOString() ?? null,
+      expires_at: charge.expiresAt?.toISOString() ?? null,
+      error: charge.error,
+    };
+  }
+
   async listForMerchant(clientId: string, limit: number): Promise<PixChargeDto[]> {
     const charges = await this.deps.repos.listPixChargesForMerchant(
       clientId,
@@ -431,13 +517,40 @@ export class PixChargeService {
    * Endereco que recebe o USDC do cash-in.
    *
    * `usuario` (perfil pessoal do app): o `settlement_address` do cliente.
-   * `loja`: a carteira `usdc_settlement` cadastrada.
+   * `loja`: a carteira `usdc_settlement` da propria loja ou, quando a loja
+   * esta vendendo para um cliente com carteira no app (F4), o endereco
+   * cadastrado pela loja — que precisa estar registrado e nao revogado.
    */
   private async resolveDestinationAddress(
     clientId: string,
+    explicit: string | null,
   ): Promise<string | null> {
+    if (explicit) {
+      const address = explicit.toLowerCase();
+      const revoked = await this.deps.repos.isAddressRevoked(address, clientId);
+      if (revoked) {
+        throw new ValidationError(
+          'o dono do endereco revogou o uso dele por esta loja',
+        );
+      }
+      const wallet = await this.deps.repos.findMerchantWalletByChainAddress(
+        this.deps.config.pix.chain,
+        address,
+      );
+      if (!wallet || wallet.merchantId !== clientId || wallet.status !== 'ativo') {
+        throw new ValidationError(
+          'endereco nao cadastrado por esta loja para liquidacao USDC',
+        );
+      }
+      // A carteira da propria loja e a de um cliente (F4) sao destinos validos;
+      // o que nao pode e o endereco de outra loja.
+      return address;
+    }
     const client = await this.deps.repos.findClientById(clientId);
     if (client?.clientType === 'usuario' && client.settlementAddress) {
+      return client.settlementAddress.toLowerCase();
+    }
+    if (client?.settlementAddress) {
       return client.settlementAddress.toLowerCase();
     }
     const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(

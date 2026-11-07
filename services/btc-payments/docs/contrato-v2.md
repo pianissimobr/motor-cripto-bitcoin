@@ -183,10 +183,14 @@ endereço no aceite). `deposit_tag` é para redes com memo (solana, tron, xrp);
 | `POST /v1/user/cash-out-charges/:id/deposit` | `cashout:write` | `{tx_hash}` | 204 |
 | `POST /v1/user/cash-out-charges/:id/refund-address` | `cashout:write` | `{refund_address}` | ordem (C3) |
 | `GET /v1/user/operations` | `operations:read` | `?limit=&cursor=` | extrato (C5) |
+| `GET /v1/addresses/:address/operations` | `operations:read` | `?limit=&cursor=` | extrato de um endereco (F3) |
 | `POST /v1/user/gas/topup` | `gas:write` | `{address, chain, amount_wei?}` | `{amount_wei, tx_hash, chain}` |
 | `GET /v1/user/payer-limits` | `operations:read` | `?payer_tax=` | escada do pagador (da Lunium) |
+| `GET /v1/user/flags` | `operations:read` | — | flags do app (F7) |
+| `POST /v1/user/address-revocations` | `operations:read` | `{address, merchant_id?}` | revogacao (C12.1) |
 | `POST /v1/user/challenges` | — (público) | `{purpose, address?}` | `{nonce, message, expires_at}` |
 | `POST /v1/user/clients` | — (público) | `{address, chain, proof}` | `{client_id, api_key, request_secret}` (C6) |
+| `POST /v1/checkout/pix` | `payments:write` | `{external_id, amount_cents, payer_tax_number, destination_address?}` | cobranca + `checkout_url` (C9) |
 | `POST /v1/pix-charges` | `payments:write` | `{external_id, amount_cents \| amount, currency, payer_tax_number, payer_name?, metadata?}` | cobrança (como hoje, com `amount_cents`) |
 
 Envelope de erro (nos dois lados): `{error: {code, message, details?}}` — o app
@@ -557,13 +561,13 @@ primeira entrega real não travar em `manual`.
 | Fase | Situação |
 |---|---|
 | F0 (contrato e schema) | ✅ este documento (v3) |
-| F1 (cash-out no motor + Polygon) | 🟡 **em andamento**: a chain, a verificação on-chain e o **fluxo real do cash-out** (app → Lunium → Pix pago) estão validados em produção; falta o serviço no motor (tabela `cashout_charges`, rotas, job) |
-| F2 (cliente de device + prova de posse + rate limiter) | 🟡 o **rate limiter** está pronto; falta o cliente de device (`/v1/user/clients`) e a prova de posse |
-| F3 (checkout PIX público + extrato) | ⬜ (o checkout público de BTC existe; o extrato por endereço, não) |
-| F4 (site: cadastro da loja com o endereço do app) | ⬜ |
-| F5 (app: gateway abstrato) | ✅ pronto e verificado contra o motor real (HMAC aceito, escopo `gas:write` recusado sem permissão, gas station respondendo) |
-| F6 (app: perfil pessoal) | 🟡 falta a **tela de registro do device** (sem ela o app ainda fala direto com a LuniumPay) e a tela de extrato |
-| F7 (operação: e-mail, alertas, conformidade) | 🟡 limite, conciliação e SMTP prontos; falta ligar o relay e a decisão regulatória |
+| F1 (cash-out no motor + Polygon) | ✅ serviço no motor (tabela `cashout_charges`, rotas e job) e validado em producao: o fluxo app -> motor -> Lunium -> Pix assinado localmente funcionou; o ultimo teste parou em `MANUAL_REVIEW` **na Lunium** (o motor mapeou, alertou e rastreou) |
+| F2 (cliente de device + prova de posse + rate limiter) | ✅ `POST /v1/user/challenges` + `POST /v1/user/clients` com prova de posse EIP-191 conferida por `viem`; rate limiter pronto; tela de registro no app |
+| F3 (checkout PIX publico + extrato) | ✅ `POST /v1/checkout/pix` + pagina publica `/pay/{id}` com QR do Pix; extrato por endereco em `GET /v1/addresses/:address/operations` |
+| F4 (site: cadastro da loja com o endereco do app) | ✅ a loja so cadastra carteira `usdc_settlement` **com prova de posse** (`proof`), e o dono do endereco pode revogar (`POST /v1/user/address-revocations`) |
+| F5 (app: gateway abstrato) | ✅ pronto e verificado contra o motor real (HMAC aceito, escopo `gas:write` recusado sem permissao, gas station respondendo) |
+| F6 (app: perfil pessoal) | ✅ tela de registro do device, tela de extrato e tela de prova de posse; a chave da LuniumPay e apagada do aparelho no registro |
+| F7 (operacao: e-mail, alertas, conformidade) | 🟡 canal de alerta por e-mail + drill (`npm run alert:drill`) e flags remotas (`GET/PATCH /admin/api/flags`) prontos; falta apontar o relay SMTP para um provedor real e a decisao regulatoria |
 
 **Validações de ponta a ponta em produção:**
 
@@ -650,8 +654,9 @@ reinventar.
 14. 🔶 E-mail do motor sem relay SMTP: sem ele, ninguém redefine senha.
 15. 🔶 Os limites da chave não são relidos em runtime: se a LuniumPay mudar a
     faixa, o motor só descobre no erro.
-16. 🔶 `GET /v1/user/payer-limits` não existe no motor (o app já chama):
-    falta a rota que delega `GET /cashin/limits?payer_tax=`.
-17. 🔶 Cota: com uma chave, o teto é 60 req/min no total. O fair-share por
-    `client_id` está no desenho (D25) e ainda não foi implementado; a
-    cadência de polling do app também (D27).
+16. ✅ `GET /v1/user/payer-limits` existe no motor (delega `GET /cashin/limits?payer_tax=`).
+17. 🔶 Cota: com uma chave, o teto é 60 req/min no total. O fair-share por `client_id` está no desenho (D25) e ainda não foi implementado; a cadência de polling do app também (D27).
+18. ✅ Canal de alerta por e-mail ligado em produção: `EMAIL_SENDER=smtp` com o
+    Postfix da VPS (rede `autho_mail`), `ALERT_EMAIL_TO` com a caixa de
+    operação e o drill (`npm run alert:drill`) entregando de verdade
+    (delivery conferido no log do Postfix). Falta o mesmo para o webhook.

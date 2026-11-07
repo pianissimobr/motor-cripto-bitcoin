@@ -1,0 +1,2 @@
+ALTER TABLE "merchant_wallets" ADD COLUMN "purpose" text DEFAULT 'loja' NOT NULL;--> statement-breakpoint
+ALTER TABLE "merchant_wallets" ADD CONSTRAINT "merchant_wallets_purpose_chk" CHECK ("merchant_wallets"."purpose" in ('loja', 'cliente'));

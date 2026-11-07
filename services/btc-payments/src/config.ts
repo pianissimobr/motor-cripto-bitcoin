@@ -231,6 +231,16 @@ const EnvSchema = z
       (v) => (v === '' ? undefined : v),
       z.string().min(1).optional(),
     ),
+    /**
+     * Destinatarios do alerta por e-mail (separados por virgula).
+     *
+     * O canal de e-mail usa o mesmo relay SMTP do restante do motor; sem
+     * `ALERT_EMAIL_TO` o alerta so sai pelo webhook.
+     */
+    ALERT_EMAIL_TO: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(3).optional(),
+    ),
 
     // --- E-mail ---
     // smtp = relay configurado; noop = nada sai (so desenvolvimento).
@@ -514,6 +524,8 @@ export type AppConfig = {
     webhookUrl?: string;
     token?: string;
     timeoutMs: number;
+    /** Destinatarios do canal de e-mail. */
+    emailTo?: string[];
   };
   gasStation: {
     enabled: boolean;
@@ -773,6 +785,13 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
     alerts: {
       ...(env.ALERT_WEBHOOK_URL ? { webhookUrl: env.ALERT_WEBHOOK_URL } : {}),
       ...(env.ALERT_WEBHOOK_TOKEN ? { token: env.ALERT_WEBHOOK_TOKEN } : {}),
+      ...(env.ALERT_EMAIL_TO
+        ? {
+            emailTo: env.ALERT_EMAIL_TO.split(',')
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0),
+          }
+        : {}),
       timeoutMs: 5_000,
     },
     gasStation: {
