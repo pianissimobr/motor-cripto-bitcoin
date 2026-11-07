@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ApiScope } from '../domain/types.js';
 import {
+  ForbiddenError,
   UnauthorizedError,
   ValidationError,
 } from '../domain/errors.js';
@@ -154,6 +155,14 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
         throw new ValidationError('extrato indisponivel');
       }
       const params = parse(addressQuerySchema, request.params, 'endereco');
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
+      // O extrato e do dono do endereco: o cadastro de device e aberto, entao
+      // sem esta trava qualquer um leria o historico de qualquer carteira.
+      const own = (client.settlementAddress ?? '').toLowerCase();
+      if (!own || own !== params.address.toLowerCase()) {
+        throw new ForbiddenError('so da para ler o extrato do proprio endereco');
+      }
       const query = parse(operationsQuerySchema, request.query, 'query string');
       return services.operations.list({
         address: params.address,
