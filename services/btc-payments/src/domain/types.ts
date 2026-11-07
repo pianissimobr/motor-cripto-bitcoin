@@ -578,6 +578,13 @@ export type SwapStatus =
 
 /** Estado cru da SwapKit no rastreio de um swap. */
 export type SwapProviderState =
+  | 'unknown'
+  | 'not_started'
+  | 'starting'
+  | 'broadcasted'
+  | 'mempool'
+  | 'inbound'
+  | 'outbound'
   | 'pending'
   | 'waiting'
   | 'created'
@@ -596,7 +603,13 @@ export type SwapProviderState =
   | 'error'
   | 'refunded'
   | 'refund'
+  | 'partially_refunded'
   | 'expired'
+  | 'dropped'
+  | 'reverted'
+  | 'replaced'
+  | 'retries_exceeded'
+  | 'parsing_error'
   | 'manual_review'
   | 'under_review';
 
@@ -623,6 +636,8 @@ export type SwapOrder = {
   destinationAddress: string;
   /** Endereco de BTC do pagador (unico por pedido). */
   depositAddress: string | null;
+  /** Endereco Bitcoin de origem da rota. */
+  sourceAddress: string | null;
   depositChannelId: string | null;
   /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
   expectedAssetMinor: bigint | null;

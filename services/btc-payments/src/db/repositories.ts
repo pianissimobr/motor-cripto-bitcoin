@@ -372,6 +372,7 @@ export type CreateSwapOrderInput = {
   buyAsset: string;
   network?: 'polygon';
   destinationAddress: string;
+  sourceAddress?: string | null;
   metadata?: Record<string, unknown> | null;
 };
 
@@ -846,6 +847,14 @@ export type Repositories = {
   ) => Promise<SwapOrder | null>;
   updateSwapOrder: (input: UpdateSwapOrderInput) => Promise<SwapOrder | null>;
   listSwapOrdersToReconcile: (limit: number) => Promise<SwapOrder[]>;
+  /**
+   * Pedido aberto com o mesmo valor em sats.
+   *
+   * O provedor deriva o endereco de deposito do valor (no FLASHNET), entao dois
+   * pedidos com o mesmo valor cairiam no mesmo endereco e a atribuicao do
+   * pagamento ficaria ambigua.
+   */
+  findOpenSwapOrderByAmountSats: (amountSats: bigint) => Promise<SwapOrder | null>;
 
   // Prova de posse (C12) e revogacao de endereco (C12.1)
   createPossessionChallenge: (input: {
@@ -3164,6 +3173,7 @@ export function createRepositories(db: Db): Repositories {
           buyAsset: input.buyAsset,
           network: input.network ?? 'polygon',
           destinationAddress: input.destinationAddress,
+          sourceAddress: input.sourceAddress ?? null,
           metadata: input.metadata ?? null,
         })
         .onConflictDoNothing({
@@ -3270,6 +3280,27 @@ export function createRepositories(db: Db): Repositories {
         })
         .where(eq(swapOrders.id, input.id))
         .returning();
+      return rows[0] ?? null;
+    },
+
+    async findOpenSwapOrderByAmountSats(amountSats) {
+      const rows = await db
+        .select()
+        .from(swapOrders)
+        .where(
+          and(
+            eq(swapOrders.amountSats, amountSats),
+            inArray(swapOrders.status, [
+              'criando',
+              'pendente',
+              'aguardando_deposito',
+              'depositado',
+              'trocado',
+              'incerto',
+            ]),
+          ),
+        )
+        .limit(1);
       return rows[0] ?? null;
     },
 

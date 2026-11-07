@@ -171,7 +171,15 @@ export async function main(): Promise<void> {
       ? new PixChargeService({ repos, lunium, config, logger, alerts })
       : null;
     const swap = swapkit
-      ? new SwapService({ repos, swapkit, config, logger, alerts, fx })
+      ? new SwapService({
+          repos,
+          swapkit,
+          config,
+          logger,
+          alerts,
+          fx,
+          ...(esplora ? { esplora } : {}),
+        })
       : null;
     const cashOut =
       lunium && config.cashout.enabled

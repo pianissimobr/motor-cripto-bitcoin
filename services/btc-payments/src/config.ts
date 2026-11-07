@@ -236,6 +236,17 @@ const EnvSchema = z
      * chave real confirma.
      */
     SWAPKIT_AMOUNT_UNIT: z.enum(['decimal', 'base']).default('decimal'),
+    /**
+     * Endereco Bitcoin que a SwapKit usa como origem da rota.
+     *
+     * A API exige um endereco de origem valido (e o tela contra a lista de
+     * sanctions). No trilho de deposito o pagador e um terceiro: o endereço
+     * aqui e o da plataforma, e o destino padrao do reembolso.
+     */
+    SWAPKIT_SOURCE_ADDRESS: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().trim().min(14).max(120).optional(),
+    ),
     SWAPKIT_TIMEOUT_MS: intFromEnv(15_000, 1_000),
     /**
      * A chave da SwapKit aceita 10 requisicoes por minuto por servico.
@@ -428,6 +439,13 @@ const EnvSchema = z
         message: 'obrigatorio quando PIX_ENABLED=true',
       });
     }
+    if (env.SWAPKIT_ENABLED && !env.SWAPKIT_SOURCE_ADDRESS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SWAPKIT_SOURCE_ADDRESS'],
+        message: 'obrigatorio quando SWAPKIT_ENABLED=true (a SwapKit exige um endereco de origem)',
+      });
+    }
     if (env.SWAPKIT_ENABLED && !env.SWAPKIT_API_KEY) {
       ctx.addIssue({
         code: 'custom',
@@ -583,6 +601,8 @@ export type AppConfig = {
     /** Ativo que o cliente recebe (ex.: `POL.USDC-0x3c499c...`). */
     buyAsset: string;
     amountUnit: 'decimal' | 'base';
+    /** Endereco Bitcoin de origem da rota (a SwapKit exige). */
+    sourceAddress?: string;
     timeoutMs: number;
     slippageBps: number;
     minBrlCents: bigint;
@@ -862,6 +882,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       sellAsset: env.SWAPKIT_SELL_ASSET,
       buyAsset: env.SWAPKIT_BUY_ASSET,
       amountUnit: env.SWAPKIT_AMOUNT_UNIT,
+      ...(env.SWAPKIT_SOURCE_ADDRESS ? { sourceAddress: env.SWAPKIT_SOURCE_ADDRESS } : {}),
       timeoutMs: env.SWAPKIT_TIMEOUT_MS,
       slippageBps: env.SWAPKIT_SLIPPAGE_BPS,
       minBrlCents: env.SWAPKIT_MIN_BRL_CENTS,

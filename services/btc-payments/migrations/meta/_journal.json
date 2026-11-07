@@ -155,6 +155,13 @@
       "when": 1794062591072,
       "tag": "0021_client_pix_keys_payment_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794072211923,
+      "tag": "0022_swap_source_address",
+      "breakpoints": true
     }
   ]
 }

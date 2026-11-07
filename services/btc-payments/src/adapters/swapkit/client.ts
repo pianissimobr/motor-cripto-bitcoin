@@ -57,13 +57,18 @@ export type SwapKitQuoteRoute = {
   routeId: string;
   providers?: string[] | null;
   sellAsset?: string | null;
+  /** Valor vendido, em unidade base do ativo (ex.: `0.001` BTC). */
   sellAmount?: string | null;
   buyAsset?: string | null;
-  buyAmount?: string | null;
+  /** Quanto deve chegar na outra ponta (a API chama de `expectedBuyAmount`). */
+  expectedBuyAmount?: string | null;
+  expectedBuyAmountMaxSlippage?: string | null;
   fees?: SwapKitFee[] | null;
   estimatedTime?: SwapKitEstimatedTime | null;
   totalSlippageBps?: number | null;
   warnings?: string[] | null;
+  /** `simpleTransfer` | `transferWithMemo` | `contractCall`. */
+  txHint?: string | null;
   legs?: unknown[] | null;
 };
 
@@ -87,21 +92,35 @@ export type SwapKitSwap = {
   swapId?: string | null;
   routeId?: string | null;
   txType?: string | null;
+  /**
+   * Endereco de deposito.
+   *
+   * No trilho de deposito e o endereco onde o pagador envia o BTC: no NEAR e
+   * de uso unico por pedido, no FLASHNET e derivado do valor (por isso cada
+   * pedido usa um valor proprio).
+   */
   inboundAddress?: string | null;
   memo?: string | null;
   txHint?: string | null;
   targetAddress?: string | null;
   /** Quanto o pagador envia e quanto o cliente recebe. */
   sellAmount?: string | null;
-  buyAmount?: string | null;
+  expectedBuyAmount?: string | null;
+  expectedBuyAmountMaxSlippage?: string | null;
+  /** Prazo da cotacao, em unix (string). O prazo do deposito e outro. */
+  expiration?: string | null;
   meta?: SwapKitSwapMeta | null;
   tx?: string | null;
   fees?: SwapKitFee[] | null;
   estimatedTime?: SwapKitEstimatedTime | null;
+  warnings?: string[] | null;
 };
 
 export type SwapKitTrack = {
+  /** `not_started` | `pending` | `swapping` | `completed` | `refunded` | `failed`. */
   status?: string | null;
+  /** Detalhe do rastreio (`inbound`, `outbound`, `broadcasted`, ...). */
+  trackingStatus?: string | null;
   swapId?: string | null;
   routeId?: string | null;
   provider?: string | null;
@@ -270,6 +289,15 @@ export class SwapKitClient {
     buyAsset: string;
     sellAmount: string;
     destinationAddress: string;
+    /**
+     * Endereco que "envia" o ativo na rota.
+     *
+     * A API exige um endereco valido (e o faz passar pela tela de sanctions
+     * da Chainalysis/Elliptic). No trilho de deposito ele nao e o pagador:
+     * e o endereco da plataforma, que a SwapKit usa para montar a rota e como
+     * destino padrao do reembolso.
+     */
+    sourceAddress: string;
     providers?: string[];
     slippageBps?: number;
   }): Promise<SwapKitQuote> {
@@ -278,6 +306,7 @@ export class SwapKitClient {
       buyAsset: input.buyAsset,
       sellAmount: input.sellAmount,
       destinationAddress: input.destinationAddress,
+      sourceAddress: input.sourceAddress,
       ...(input.providers && input.providers.length > 0
         ? { providers: input.providers }
         : {}),
@@ -295,13 +324,19 @@ export class SwapKitClient {
    */
   async swap(input: {
     routeId: string;
-    sourceAddress?: string;
+    sourceAddress: string;
     destinationAddress: string;
   }): Promise<SwapKitSwap> {
     return this.request<SwapKitSwap>('POST', '/v3/swap', {
       routeId: input.routeId,
+      sourceAddress: input.sourceAddress,
       destinationAddress: input.destinationAddress,
-      ...(input.sourceAddress ? { sourceAddress: input.sourceAddress } : {}),
+      // Sem transacao: quem paga e o pagador, nao o motor. O que a SwapKit
+      // devolve e o endereco de deposito.
+      disableBuildTx: true,
+      // O endereco de origem e da plataforma e nao tem saldo: o saldo esta
+      // com o pagador, que manda o BTC direto para o endereco de deposito.
+      disableBalanceCheck: true,
     });
   }
 

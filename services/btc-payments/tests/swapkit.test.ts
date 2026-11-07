@@ -30,6 +30,7 @@ describe('SwapKitClient', () => {
       buyAsset: 'POL.USDC-0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
       sellAmount: '0.001',
       destinationAddress: '0x1111111111111111111111111111111111111111',
+      sourceAddress: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
       providers: ['NEAR'],
     });
 
@@ -41,6 +42,7 @@ describe('SwapKitClient', () => {
       sellAsset: 'BTC.BTC',
       buyAsset: 'POL.USDC-0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
       sellAmount: '0.001',
+      sourceAddress: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
       providers: ['NEAR'],
     });
   });
@@ -58,6 +60,7 @@ describe('SwapKitClient', () => {
         buyAsset: 'POL.USDC-0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
         sellAmount: '0.001',
         destinationAddress: '0x1111111111111111111111111111111111111111',
+        sourceAddress: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
       }),
     ).rejects.toBeInstanceOf(SwapKitError);
   });
@@ -76,10 +79,36 @@ describe('SwapKitClient', () => {
     await expect(
       client.swap({
         routeId: 'route_1',
+        sourceAddress: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
         destinationAddress: '0x1111111111111111111111111111111111111111',
       }),
     ).rejects.toThrow(SwapKitError);
     expect(calls).toBe(1);
+  });
+
+  it('pede o deposito sem montar transacao e sem conferir saldo', async () => {
+    // Quem paga e o pagador: o motor nao monta PSBT e o endereco de origem da
+    // plataforma nao tem saldo para ter.
+    let captured: { url: string; init: RequestInit } | null = null;
+    const client = new SwapKitClient({
+      apiUrl: 'https://swapkit.test',
+      apiKey: 'sk_test',
+      fetchImpl: async (url, init) => {
+        captured = { url: String(url), init: init ?? {} };
+        return jsonResponse({ swapId: 'swap_1', inboundAddress: 'bc1pdepósito' });
+      },
+    });
+
+    await client.swap({
+      routeId: 'route_1',
+      sourceAddress: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
+      destinationAddress: '0x1111111111111111111111111111111111111111',
+    });
+
+    const body = JSON.parse(String(captured!.init.body));
+    expect(body.disableBuildTx).toBe(true);
+    expect(body.disableBalanceCheck).toBe(true);
+    expect(body.sourceAddress).toBe('bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98');
   });
 
   it('leva o endereco de deposito e o canal no rastreio', async () => {

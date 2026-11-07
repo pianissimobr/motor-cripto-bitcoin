@@ -197,6 +197,13 @@ const createSwapChargeSchema = z
       .trim()
       .regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido')
       .optional(),
+    /**
+     * Endereco Bitcoin de quem recebe.
+     *
+     * A SwapKit exige um endereco de origem na rota (e o tela contra a lista
+     * de sanctions). Sem esse campo, o motor usa o do `.env`.
+     */
+    source_address: z.string().trim().min(14).max(120).optional(),
     description: z.string().trim().max(200).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
@@ -925,6 +932,7 @@ export function registerApiRoutes(
         ...(body.destination_address
           ? { destinationAddress: body.destination_address }
           : {}),
+        ...(body.source_address ? { sourceAddress: body.source_address } : {}),
         ...(body.description ? { description: body.description } : {}),
         ...(body.metadata ? { metadata: body.metadata } : {}),
       });

@@ -16,6 +16,8 @@ import {
   mapSwapKitStatus,
 } from '../domain/swap.js';
 import type { SwapOrder, SwapProviderState, SwapStatus } from '../domain/types.js';
+import type { EsploraClient } from '../adapters/chain/esplora.js';
+import { isBitcoinAddress } from '../domain/btc-address.js';
 import {
   formatBtcAmount,
   usdcToMinor,
@@ -40,6 +42,8 @@ export type SwapServiceDeps = {
   logger: Logger;
   alerts?: AlertService;
   fx?: FxService;
+  /** Esplora: para ver o BTC do pagador chegar no endereco de deposito. */
+  esplora?: Pick<EsploraClient, 'getAddressUtxos'>;
   now?: () => Date;
   /**
    * Prova da entrega. Injetavel para os testes nao dependerem da chain.
@@ -56,6 +60,11 @@ export type CreateSwapOrderInput = {
   amountFiatCents: bigint;
   currency: 'BRL' | 'USD';
   destinationAddress?: string | null;
+  /**
+   * Endereco Bitcoin de quem recebe (o app manda o da carteira Bitcoin do
+   * usuario). E o "envio" da rota e o destino padrao do reembolso.
+   */
+  sourceAddress?: string | null;
   description?: string | null;
   expiresInSeconds?: number;
   metadata?: Record<string, unknown> | null;
@@ -205,7 +214,9 @@ export class SwapService {
       );
     }
 
-    const amountSats = await this.resolveAmountSats(input);
+    const amountSats = await this.resolveUniqueAmountSats(
+      await this.resolveAmountSats(input),
+    );
     const id = randomUUID();
     // A linha nasce antes de qualquer chamada de rede: se a cotacao ou a
     // criacao do deposito falhar, o `external_id` ja esta gravado e a
@@ -221,6 +232,7 @@ export class SwapService {
       buyAsset: this.deps.config.swapkit.buyAsset,
       network: 'polygon',
       destinationAddress: destination,
+      sourceAddress: input.sourceAddress ?? this.deps.config.swapkit.sourceAddress ?? null,
       metadata: input.metadata ?? null,
     });
 
@@ -238,6 +250,7 @@ export class SwapService {
     input: CreateSwapOrderInput,
   ): Promise<{ dto: SwapOrderDto; reused: boolean }> {
     try {
+      const sourceAddress = this.sourceAddress(order.sourceAddress ?? null);
       const quote = await this.deps.swapkit.quote({
         sellAsset: this.deps.config.swapkit.sellAsset,
         buyAsset: this.deps.config.swapkit.buyAsset,
@@ -246,16 +259,20 @@ export class SwapService {
           this.deps.config.swapkit.amountUnit,
         ),
         destinationAddress: order.destinationAddress,
+        sourceAddress,
         providers: this.deps.config.swapkit.providers,
         slippageBps: this.deps.config.swapkit.slippageBps,
       });
       const route = this.pickRoute(quote);
       const swap = await this.deps.swapkit.swap({
         routeId: route.routeId,
+        sourceAddress,
         destinationAddress: order.destinationAddress,
       });
 
-      const depositAddress = swap.meta?.depositAddress ?? null;
+      // O endereco de deposito e o `inboundAddress`: no NEAR e de uso unico por
+      // pedido, no FLASHNET e derivado do valor.
+      const depositAddress = swap.inboundAddress ?? swap.meta?.depositAddress ?? null;
       if (!depositAddress) {
         throw new ValidationError(
           'a SwapKit nao devolveu endereco de deposito para este pedido',
@@ -266,7 +283,8 @@ export class SwapService {
         ? new Date(expiration * 1000)
         : new Date(this.now().getTime() + 30 * 60 * 1000);
       const expectedAssetMinor =
-        usdcToMinor(route.buyAmount) ?? usdcToMinor(swap.buyAmount ?? null);
+        usdcToMinor(route.expectedBuyAmount) ??
+        usdcToMinor(swap.expectedBuyAmount ?? null);
 
       const updated = await this.deps.repos.updateSwapOrder({
         id: order.id,
@@ -284,7 +302,7 @@ export class SwapService {
           txType: swap.txType ?? null,
           txHint: swap.txHint ?? null,
           inboundAddress: swap.inboundAddress ?? null,
-          buyAmount: route.buyAmount ?? null,
+          expectedBuyAmount: route.expectedBuyAmount ?? null,
           estimatedTime: route.estimatedTime ?? null,
         },
         error: null,
@@ -344,6 +362,49 @@ export class SwapService {
       0,
     );
     return total > 0 ? total : null;
+  }
+
+  /**
+   * Endereco de origem da rota.
+   *
+   * A SwapKit exige um endereco de origem valido na cotacao e na criacao do
+   * deposito. No trilho de deposito o pagador e um terceiro: o endereco aqui e
+   * o da plataforma, e o destino padrao do reembolso.
+   */
+  private sourceAddress(explicit: string | null): string {
+    if (explicit) {
+      if (!isBitcoinAddress(explicit)) {
+        throw new ValidationError('endereco Bitcoin de origem invalido');
+      }
+      return explicit.trim();
+    }
+    const address = this.deps.config.swapkit.sourceAddress;
+    if (!address) {
+      throw new ServiceUnavailableError(
+        'swap sem endereco de origem (SWAPKIT_SOURCE_ADDRESS)',
+      );
+    }
+    return address;
+  }
+
+  /**
+   * Deixa o valor do pedido unico entre os pedidos abertos.
+   *
+   * O provedor deriva o endereco de deposito do valor (no FLASHNET): dois
+   * pedidos com o mesmo valor cairiam no mesmo endereco e o motor nao saberia
+   * qual pagamento pertencia a qual pedido. Some-se o menor numero de sats
+   * que nao colide — o preco do Bitcoin move a cada centavo, e o dust e
+   * invisivel para quem paga.
+   */
+  private async resolveUniqueAmountSats(amountSats: bigint): Promise<bigint> {
+    for (let bump = 0n; bump < 64n; bump++) {
+      const candidate = amountSats + bump;
+      const clash = await this.deps.repos.findOpenSwapOrderByAmountSats(candidate);
+      if (!clash) return candidate;
+    }
+    throw new ConflictError(
+      'nao foi possivel reservar um valor unico para o pedido (tente de novo)',
+    );
   }
 
   /** Converte o valor fiat em sats pela cotacao do motor. */
@@ -509,6 +570,69 @@ export class SwapService {
       ...extra,
     } as SwapOrderUpdate);
     return updated ?? order;
+  }
+
+  /**
+   * Vigia o endereco de deposito de cada pedido em aberto.
+   *
+   * A SwapKit avisa o estado do swap, mas o motor nao confia so nisso: o
+   * pagador manda o Bitcoin direto no endereco de deposito e o motor precisa
+   * ver isso na chain para saber que o dinheiro chegou.
+   */
+  async watchDeposits(limit: number): Promise<{
+    checked: number;
+    seen: number;
+    errors: number;
+  }> {
+    if (!this.deps.esplora) {
+      return { checked: 0, seen: 0, errors: 0 };
+    }
+    const orders = await this.deps.repos.listSwapOrdersToReconcile(limit);
+    let seen = 0;
+    let errors = 0;
+    for (const order of orders) {
+      if (!order.depositAddress || order.status !== 'aguardando_deposito') {
+        continue;
+      }
+      try {
+        const utxos = await this.deps.esplora.getAddressUtxos(order.depositAddress);
+        if (utxos.length === 0) continue;
+        const received = utxos.reduce((sum, utxo) => sum + BigInt(utxo.value), 0n);
+        const expected = order.amountSats;
+        // O endereco e o do pedido (no NEAR e de uso unico; no FLASHNET vem
+        // do valor), entao qualquer UTXO nele e o pagamento. O valor e
+        // conferido a parte: o pagador pode pagar menos que o cotado e o
+        // provedor nao troca.
+        if (received !== expected) {
+          await this.deps.alerts?.send({
+            level: 'warn',
+            title: 'pagamento em bitcoin com valor diferente do pedido',
+            message: `recebido ${received} sats, esperado ${expected}`,
+            metadata: { swapOrderId: order.id, depositAddress: order.depositAddress },
+          });
+        }
+        await this.applyStatus(order, 'depositado', order.providerState, {
+          providerPayload: {
+            ...(order.providerPayload ?? {}),
+            deposit: {
+              txid: utxos[0]?.txid ?? null,
+              receivedSats: received.toString(),
+              expectedSats: expected.toString(),
+              confirmed: utxos.some((utxo) => utxo.status.confirmed),
+            },
+          },
+          error: null,
+        });
+        seen++;
+      } catch (err) {
+        errors++;
+        this.deps.logger.error(
+          { err, swapOrderId: order.id },
+          'erro ao vigiar o deposito do swap',
+        );
+      }
+    }
+    return { checked: orders.length, seen, errors };
   }
 
   /** Reconcilia os pedidos em aberto (chamado pelo worker). */

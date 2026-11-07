@@ -1014,6 +1014,8 @@ export const swapOrders = pgTable(
     destinationAddress: text('destination_address').notNull(),
     /** Endereco de BTC do pagador (unico por pedido). */
     depositAddress: text('deposit_address'),
+    /** Endereco Bitcoin de origem da rota (quem "vende" o BTC na SwapKit). */
+    sourceAddress: text('source_address'),
     depositChannelId: text('deposit_channel_id'),
     /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
     expectedAssetMinor: bigint('expected_asset_minor', { mode: 'bigint' }),

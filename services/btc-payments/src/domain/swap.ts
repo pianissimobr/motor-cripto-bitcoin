@@ -75,7 +75,11 @@ export function mapSwapKitStatus(status: SwapProviderState | null): SwapStatus {
     case 'awaiting_deposit':
     case 'deposit_pending':
     case 'funding':
+    case 'not_started':
       return 'aguardando_deposito';
+    case 'pending':
+    case 'swapping':
+      return 'depositado';
     case 'failed':
     case 'error':
       return 'falhou';
@@ -87,10 +91,10 @@ export function mapSwapKitStatus(status: SwapProviderState | null): SwapStatus {
     case 'manual_review':
     case 'under_review':
       return 'manual';
-    case 'pending':
     case 'waiting':
     case 'created':
     case 'new':
+    case 'unknown':
     default:
       return 'pendente';
   }

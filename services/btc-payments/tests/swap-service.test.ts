@@ -30,6 +30,7 @@ function order(overrides: Partial<SwapOrder> = {}): FakeOrder {
     network: 'polygon',
     destinationAddress: DESTINATION,
     depositAddress: null,
+    sourceAddress: null,
     depositChannelId: null,
     expectedAssetMinor: null,
     feeTotalBps: null,
@@ -59,6 +60,7 @@ function build(
     trackStatus?: string;
     existing?: FakeOrder | null;
     verification?: 'ok' | 'pending' | 'invalid';
+    utxos?: Array<{ txid: string; vout: number; value: number; status: { confirmed: boolean } }>;
   } = {},
 ): Harness {
   const rows: FakeOrder[] = [];
@@ -66,7 +68,8 @@ function build(
   let stored = options.existing ?? null;
 
   const repos = {
-    findSwapOrderByClientAndExternalId: async () => stored,
+    findSwapOrderByClientAndExternalId: async (_clientId: string, externalId: string) =>
+      stored && stored.externalId === externalId ? stored : null,
     createSwapOrder: async (input: Record<string, unknown>) => {
       const created = order({
         id: String(input.id),
@@ -101,6 +104,14 @@ function build(
     isAddressRevoked: async () => false,
     findMerchantWalletByChainAddress: async () => null,
     listSwapOrdersToReconcile: async () => rows,
+    findOpenSwapOrderByAmountSats: async (amountSats: bigint) =>
+      rows.find(
+        (row) =>
+          row.amountSats === amountSats &&
+          ['criando', 'pendente', 'aguardando_deposito', 'depositado', 'trocado', 'incerto'].includes(
+            row.status,
+          ),
+      ) ?? null,
   } as unknown as Repositories;
 
   const swapkit = {
@@ -114,7 +125,7 @@ function build(
               routeId: 'route_1',
               providers: ['NEAR'],
               buyAsset: 'POL.USDC-0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
-              buyAmount: '99.5',
+              expectedBuyAmount: '99.5',
               fees: [{ amountBps: 15 }],
             },
           ],
@@ -128,9 +139,11 @@ function build(
         routeId: 'route_1',
         txType: 'psbt',
         txHint: 'simpleTransfer',
+        // O endereco de deposito vem no `inboundAddress`.
+        inboundAddress: DEPOSIT,
+        expectedBuyAmount: '99.5',
         meta: {
           providerDepositChannelId: 'dc_1',
-          depositAddress: DEPOSIT,
           depositChannelExpiration: 1_800_000_000,
           ...(options.swapMeta ?? {}),
         },
@@ -146,6 +159,7 @@ function build(
   const config = testConfig({
     SWAPKIT_ENABLED: 'true',
     SWAPKIT_API_KEY: 'sk_test',
+    SWAPKIT_SOURCE_ADDRESS: 'bc1qgkju4yvvtuz0s8vqn837q396jezu2h8ex7gk98',
     PIX_ENABLED: 'true',
     LUNIUM_API_KEY: 'lun_test_key',
     LUNIUM_WEBHOOK_SECRET: 'whk_test',
@@ -162,12 +176,17 @@ function build(
 
   const verification = options.verification ?? 'pending';
 
+  const esplora = {
+    getAddressUtxos: async () => options.utxos ?? [],
+  };
+
   const service = new SwapService({
     repos,
     swapkit,
     config,
     logger: silentLogger,
     fx,
+    esplora: esplora as never,
     verifyDelivery: async () =>
       verification === 'ok'
         ? { kind: 'ok' as const, detail: 'ok' }
@@ -281,6 +300,46 @@ describe('SwapService', () => {
     });
     const synced = await service.sync(rows[0]!.id);
     expect(synced?.status).toBe('manual');
+  });
+
+  it('o valor do pedido e unico entre os pedidos abertos', async () => {
+    // O provedor deriva o endereco de deposito do valor: dois pedidos com o
+    // mesmo valor cairiam no mesmo endereco.
+    const { service, rows } = build();
+    await service.create({
+      clientId: CLIENT_ID,
+      externalId: 'pedido_1',
+      amountFiatCents: 10_000n,
+      currency: 'BRL',
+    });
+    const first = rows[0]!;
+    expect(first.amountSats).toBe(200_000n);
+
+    const second = await service.create({
+      clientId: CLIENT_ID,
+      externalId: 'pedido_2',
+      amountFiatCents: 10_000n,
+      currency: 'BRL',
+    });
+    expect(second.dto.amount_sats).not.toBe(first.amountSats.toString());
+  });
+
+  it('ve o deposito do pagador na chain', async () => {
+    const { service, rows } = build({
+      utxos: [{ txid: 'tx1', vout: 0, value: 200_000, status: { confirmed: true } }],
+    });
+    await service.create({
+      clientId: CLIENT_ID,
+      externalId: 'pedido_1',
+      amountFiatCents: 10_000n,
+      currency: 'BRL',
+    });
+
+    const result = await service.watchDeposits(10);
+    expect(result.seen).toBe(1);
+    expect(rows[0]?.status).toBe('depositado');
+    const deposit = (rows[0]?.providerPayload as { deposit?: { txid?: string } } | null)?.deposit;
+    expect(deposit?.txid).toBe('tx1');
   });
 
   it('acompanha o estado do provedor sem chamar a chain', async () => {

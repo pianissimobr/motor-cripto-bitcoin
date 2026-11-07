@@ -87,6 +87,19 @@ motor é o único que fala com a LuniumPay e o único que guarda a chave.
 | D37 | **`payment_requests` é o pedido com mais de um trilho**: o `external_id` do site é a idempotência e cada trilho tem sua própria tabela (`pix_charges`, `swap_orders`) mais o BR Code do Pix direto. | O site manda o valor uma vez e escolhe o QR; o motor acompanha os três e sabe qual foi pago. |
 | D38 | **`amount_cents` é o canônico** em toda cobrança nova (Pix, swap e pedido). O `amount` em reais continua aceito só por compatibilidade. | D23 na prática: o app mandava centavos no `amount` e o motor lia reais — a cobrança saía 100× maior. |
 
+### Decisões do v5 (2026-11-07, spike com a chave real da SwapKit)
+
+O spike rodou contra `api.swapkit.dev` com a chave de producao e mudou
+algumas coisas do desenho:
+
+| # | Decisão | Porquê |
+|---|---|---|
+| D39 | **`/v3/swap` com `disableBuildTx` e `disableBalanceCheck`.** O motor nao monta PSBT e nao confere saldo do endereco de origem. | Quem paga e o pagador, nao o motor: o Bitcoin sai da carteira de quem paga direto para o endereco de deposito. Sem esses dois flags, a SwapKit tenta montar a transacao e recusa por `insufficientBalance`. |
+| D40 | **O endereco de deposito e o `inboundAddress`.** No **NEAR** ele e de uso unico por pedido; no **FLASHNET** ele e derivado do valor. Por isso **cada pedido usa um valor proprio** (o motor soma sats ate o valor nao colidir com outro pedido aberto). | Com o endereco compartilhado, dois pagadores com o mesmo valor cairiam no mesmo endereco e o motor nao saberia qual pagamento era de qual pedido. O dust de alguns sats e invisivel para quem paga. |
+| D41 | **A rota exige um `sourceAddress` real** (a SwapKit tela o endereco contra a lista de sanctions e recusa endereco invalido ou de burn). O motor usa o endereco Bitcoin de quem recebe (o app manda o da carteira Bitcoin do usuario) e, na falta, o do `.env` (`SWAPKIT_SOURCE_ADDRESS`). | Sem endereco de origem a cotacao cai. E o endereco tambem e o destino padrao do reembolso. |
+| D42 | **O valor esperado vem de `expectedBuyAmount`** (a rota tem `expectedBuyAmount` e `expectedBuyAmountMaxSlippage`). E `meta.depositChannelExpiration` (numero) e o prazo do deposito — `expiration` (string) e so o prazo da cotacao. | A documentacao da SwapKit chama o campo de `expectedBuyAmount`; `buyAmount` nao existe. E usar `expiration` no contador mostraria uma janela ~23h menor que a real. |
+| D43 | **O provedor e o da cotacao, nao o da preferencia.** A ordem de `SWAPKIT_PROVIDERS` e so preferencia: o motor escolhe entre as rotas que a SwapKit devolveu. Hoje o **NEAR nao tem rota para BTC -> USDC na Polygon** (so ETH/SOL/BASE USDC) e quem serve a Polygon e o **FLASHNET**. | A liquidez muda todo dia. O NEAR e o que da endereco de uso unico; o FLASHNET e o que da Polygon. A lista no `.env` muda quando a SwapKit avisar. |
+
 ### Por que D18 (e não uma linha em `merchant_wallets`)
 
 `merchant_wallets` tem índice único em `(chain, address)`. O mesmo endereço não
@@ -529,7 +542,16 @@ Estados: `criando` → `aguardando_deposito` → `depositado` → `trocado` →
   `usdc_settlement` da loja), resolvido pelo motor — o corpo não manda
   endereço;
 - `GET /v1/swap-charges/:id` devolve o estado;
-- o motor acompanha pelo job `swap-reconcile` (`POST /track` na SwapKit).
+- o motor acompanha pelo job `swap-reconcile` (`POST /track` na SwapKit) e
+  pelo job `swap-deposit-watch`, que ve o Bitcoin do pagador chegar no
+  endereco de deposito (Esplora);
+- o pedido aceita `source_address` (o endereco Bitcoin de quem recebe). Sem
+  ele, o motor usa o `SWAPKIT_SOURCE_ADDRESS` do `.env`;
+- cada pedido usa um valor proprio: o provedor deriva o endereco de deposito
+  do valor (D40);
+- o limite da chave e de US$ 1.000 por operacao (403 `swapSizeExceeded`
+  acima disso) e o pedido so e criado se o valor couber;
+- `POST /v3/swap` vai com `disableBuildTx` e `disableBalanceCheck` (D39).
 
 ### C17 — Chave Pix do próprio usuário
 

@@ -118,7 +118,14 @@ export async function startWorker(): Promise<WorkerHandle> {
         })
       : null;
   const swap = swapkit
-    ? new SwapService({ repos, swapkit, config, logger, alerts })
+    ? new SwapService({
+        repos,
+        swapkit,
+        config,
+        logger,
+        alerts,
+        ...(esplora ? { esplora } : {}),
+      })
     : null;
   const luniumWebhook = pixCharges && lunium
     ? new LuniumWebhookService({
@@ -204,6 +211,11 @@ export async function startWorker(): Promise<WorkerHandle> {
       name: 'swap-reconcile',
       intervalMs: config.jobs.pixPollMs,
       run: () => service.reconcile(config.jobs.pixBatchSize),
+    });
+    jobs.push({
+      name: 'swap-deposit-watch',
+      intervalMs: config.jobs.pixPollMs,
+      run: () => service.watchDeposits(config.jobs.pixBatchSize),
     });
   }
 

@@ -316,6 +316,14 @@ entrega do USDC na Polygon. **So `liquidado` e sucesso.**
 
 Consulta: `GET /v1/swap-charges/:id`.
 
+O pedido aceita `source_address` (o endereco Bitcoin de quem recebe — a
+SwapKit exige um endereco de origem na rota e o tela contra a lista de
+sanctions). Sem ele, o motor usa o `SWAPKIT_SOURCE_ADDRESS` do `.env`.
+
+Cada pedido usa um valor proprio (em sats): o provedor deriva o endereco de
+deposito do valor, e dois pagadores com o mesmo valor cairiam no mesmo
+endereco.
+
 Desligado por padrao (`SWAPKIT_ENABLED=false`): sem chave da SwapKit nao ha
 cota nem endereco de deposito.
 
