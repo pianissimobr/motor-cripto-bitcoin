@@ -20,20 +20,31 @@ type FxSource = {
   parse: (payload: unknown) => string | null;
 };
 
-const asString = (value: unknown): string | null =>
-  typeof value === 'string' ? value : null;
+/**
+ * Preco como texto.
+ *
+ * Algumas fontes vem com numero (a exchangerate-api devolve `5.42`, a
+ * blockchain.info devolve `75698.5`) e outras com texto. Um numero tem que
+ * virar texto antes de virar centavos, senao a fonte e descartada como se
+ * nao tivesse respondido.
+ */
+const asDecimal = (value: unknown): string | null => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+};
 
 const BTC_USD_SOURCES: FxSource[] = [
   {
     url: 'https://api.coinbase.com/v2/prices/BTC-USD/spot',
     parse: (payload) => {
       const data = (payload as { data?: { amount?: unknown } })?.data;
-      return asString(data?.amount);
+      return asDecimal(data?.amount);
     },
   },
   {
     url: 'https://www.bitstamp.net/api/v2/ticker/btcusd/',
-    parse: (payload) => asString((payload as { last?: unknown })?.last),
+    parse: (payload) => asDecimal((payload as { last?: unknown })?.last),
   },
   {
     url: 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD',
@@ -41,14 +52,14 @@ const BTC_USD_SOURCES: FxSource[] = [
       const result = (payload as { result?: Record<string, { c?: unknown }> })?.result;
       const first = result ? Object.values(result)[0] : undefined;
       const close = first?.c;
-      return Array.isArray(close) ? asString(close[0]) : null;
+      return Array.isArray(close) ? asDecimal(close[0]) : null;
     },
   },
   {
     url: 'https://blockchain.info/ticker?base=BTC&currency=USD',
     parse: (payload) => {
       const ticker = (payload as { USD?: { last?: unknown } })?.USD;
-      return asString(ticker?.last);
+      return asDecimal(ticker?.last);
     },
   },
 ];
@@ -56,13 +67,13 @@ const BTC_USD_SOURCES: FxSource[] = [
 const USD_BRL_SOURCES: FxSource[] = [
   {
     url: 'https://economia.awesomeapi.com.br/json/last/USD-BRL',
-    parse: (payload) => asString((payload as { USDBRL?: { bid?: unknown } })?.USDBRL?.bid),
+    parse: (payload) => asDecimal((payload as { USDBRL?: { bid?: unknown } })?.USDBRL?.bid),
   },
   {
     url: 'https://open.er-api.com/v6/latest/USD',
     parse: (payload) => {
       const rates = (payload as { rates?: { BRL?: unknown } })?.rates;
-      return asString(rates?.BRL);
+      return asDecimal(rates?.BRL);
     },
   },
 ];

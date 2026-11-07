@@ -29,6 +29,30 @@ describe('fonte de taxa', () => {
     expect(price.btcPriceCents).toBe(41_250_000n);
   });
 
+  it('aceita preco que vem como numero', async () => {
+    // A exchangerate-api devolve {"rates":{"BRL":5.42}} e a blockchain.info
+    // devolve o last como numero: um numero tem que virar texto antes de
+    // virar centavos, senao a fonte e descartada.
+    const provider = new HttpFxPriceProvider({
+      fetchImpl: async (url) => {
+        const address = String(url);
+        if (address.includes('coinbase')) {
+          return new Response(JSON.stringify({ data: { amount: 75000 } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ rates: { BRL: 5.5 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+
+    const price = await provider.getBtcPrice('BRL');
+    expect(price.btcPriceCents).toBe(41_250_000n);
+  });
+
   it('cai para a fonte seguinte quando a primeira falha', async () => {
     let calls = 0;
     const provider = new HttpFxPriceProvider({
