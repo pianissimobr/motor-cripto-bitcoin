@@ -80,6 +80,38 @@ const revocationSchema = z
   .strict();
 
 /**
+ * Quantos CPFs distintos um cliente pode consultar por dia em
+ * `/v1/user/payer-limits`. O usuario consulta o proprio CPF; o teto impede
+ * usar a chave da Lunium do motor para levantar dados de terceiros.
+ */
+export const PAYER_LIMITS_MAX_TAX_PER_DAY = 3;
+
+/** Teto de CPFs distintos por cliente por dia (em memoria, por processo). */
+export function createPayerTaxGuard(
+  maxPerDay = PAYER_LIMITS_MAX_TAX_PER_DAY,
+  now: () => number = Date.now,
+) {
+  const seen = new Map<string, { day: number; taxes: Set<string> }>();
+  return (clientId: string, payerTax: string): boolean => {
+    const day = Math.floor(now() / 86_400_000);
+    let entry = seen.get(clientId);
+    if (!entry || entry.day !== day) {
+      // Entradas de dias anteriores nao servem mais: limpa antes de crescer.
+      if (seen.size >= 10_000) {
+        for (const [key, value] of seen) if (value.day !== day) seen.delete(key);
+      }
+      entry = { day, taxes: new Set() };
+      seen.set(clientId, entry);
+    }
+    const tax = payerTax.replace(/\D/g, '');
+    if (entry.taxes.has(tax)) return true;
+    if (entry.taxes.size >= maxPerDay) return false;
+    entry.taxes.add(tax);
+    return true;
+  };
+}
+
+/**
  * Rotas do perfil pessoal (F2/C5/C12).
  *
  * `challenges` e `clients` sao publicas de proposito: e o proprio app que
@@ -96,6 +128,7 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
       },
       scope,
     );
+  const allowPayerTax = createPayerTaxGuard();
 
   app.post('/v1/user/challenges', async (request, reply) => {
     if (!services.deviceClients) {
@@ -192,7 +225,12 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
       if (!services.lunium) {
         throw new ValidationError('PIX indisponivel');
       }
+      const client = request.apiClient;
+      if (!client) throw new UnauthorizedError('cliente nao autenticado');
       const query = parse(payerLimitsQuerySchema, request.query, 'query string');
+      if (!allowPayerTax(client.id, query.payer_tax)) {
+        throw new ForbiddenError('limite de consultas de CPF distintos atingido hoje');
+      }
       return services.lunium.getLimits(query.payer_tax);
     },
   );
