@@ -82,6 +82,7 @@ maybeDescribe('cash-out: cripto -> Pix (integration)', () => {
       PIX_ENABLED: 'true',
       CASHOUT_ENABLED: 'true',
       LUNIUM_API_KEY: 'lun_test_key',
+      LUNIUM_WEBHOOK_SECRET: 'whk_test',
     });
     fake = new FakeLunium();
     cashOut = new CashOutService({
@@ -130,6 +131,42 @@ maybeDescribe('cash-out: cripto -> Pix (integration)', () => {
     expect(accepted.status).toBe('aguardando_deposito');
     expect(accepted.deposit_address).toBe('0x59B40519ac007AFffA8571d2966DdbCd8b59E585');
     expect(accepted.deposit_tag).toBeNull();
+  });
+
+  it('reserva a reposicao de gas uma vez so, e so com a ordem aceita', async () => {
+    const clientId = await createClient('app gas');
+    const other = await createClient('outro');
+    const { dto } = await cashOut.create({
+      clientId,
+      externalId: 'gas-1',
+      amountBrlCents: 650n,
+      originAddress: ORIGIN,
+      pixKey: 'adm@pianolabribeirao.com.br',
+      pixKeyType: 'email',
+    });
+    const at = new Date();
+    // Sem aceite (sem endereco de deposito): nada feito.
+    expect(await repos.reserveCashOutGasTopUp(dto.id, clientId, at)).toBeNull();
+
+    await cashOut.accept(dto.id, clientId);
+    // De outro cliente: nada feito.
+    expect(await repos.reserveCashOutGasTopUp(dto.id, other, at)).toBeNull();
+
+    // Duas reservas concorrentes: uma so vence.
+    const [a, b] = await Promise.all([
+      repos.reserveCashOutGasTopUp(dto.id, clientId, at),
+      repos.reserveCashOutGasTopUp(dto.id, clientId, at),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+
+    await repos.finishCashOutGasTopUp(dto.id, `0x${'1'.repeat(64)}`);
+    expect(await repos.hasUnusedCashOutGasTopUp(clientId)).toBe(true);
+    expect(await repos.countCashOutGasTopUpsSince(new Date(at.getTime() - 1000))).toBe(1);
+
+    // Depois do deposito o gas foi usado e nao ha nova reserva.
+    await cashOut.reportDeposit(dto.id, clientId, `0x${'2'.repeat(64)}`);
+    expect(await repos.hasUnusedCashOutGasTopUp(clientId)).toBe(false);
+    expect(await repos.reserveCashOutGasTopUp(dto.id, clientId, at)).toBeNull();
   });
 
   it('e idempotente por external_id', async () => {

@@ -532,6 +532,8 @@ export type CashOutCharge = {
   brCode: string | null;
   providerPath: string | null;
   txHash: string | null;
+  gasToppedUpAt: Date | null;
+  gasTopUpTxHash: string | null;
   pixE2e: string | null;
   pixPaidAt: Date | null;
   receiptUrl: string | null;

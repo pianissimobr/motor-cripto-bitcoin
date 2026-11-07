@@ -1,19 +1,36 @@
 import type { AppConfig } from '../config.js';
 import {
   GasStationError,
+  nativeBalanceOf,
   sendNative,
   treasuryBalance,
   type GasStationConfig,
 } from '../adapters/chain/gas-station.js';
 import type { Repositories } from '../db/repositories.js';
-import { ValidationError } from '../domain/errors.js';
+import { ConflictError, NotFoundError, ValidationError } from '../domain/errors.js';
 import type { Logger } from '../logger.js';
+
+/** Acesso a rede (injetavel nos testes). */
+export type GasStationChain = {
+  balanceOf: (config: GasStationConfig, address: string) => Promise<bigint>;
+  send: (
+    config: GasStationConfig,
+    to: string,
+    amountWei: bigint,
+  ) => Promise<{ hash: string; from: string }>;
+};
+
+const defaultChain: GasStationChain = {
+  balanceOf: (config, address) => nativeBalanceOf({ config, address }),
+  send: (config, to, amountWei) => sendNative({ config, to, amountWei }),
+};
 
 export type GasStationServiceDeps = {
   repos: Repositories;
   config: AppConfig;
   logger: Logger;
   now?: () => Date;
+  chain?: GasStationChain;
 };
 
 /**
@@ -33,6 +50,88 @@ export class GasStationService {
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
+  }
+
+  private chain(): GasStationChain {
+    return this.deps.chain ?? defaultChain;
+  }
+
+  /**
+   * Repoe o gas de uma venda (cash-out) do proprio cliente.
+   *
+   * E a unica porta publica da gas station. As regras fecham o abuso:
+   *  - a ordem precisa ser do cliente (senao 404);
+   *  - so ordem aceita, com endereco de deposito e ainda sem `tx_hash`;
+   *  - o destino e o `origin_address` da ordem, nunca um endereco do corpo;
+   *  - uma reposicao por ordem, reservada antes do envio;
+   *  - so o que falta para chegar a folga (`maxTopUpWei`), lido na chain.
+   */
+  async topUpForCashOut(input: {
+    clientId: string;
+    cashOutId: string;
+    reason?: string;
+  }): Promise<{ hash: string | null; amountWei: bigint; address: string }> {
+    const order = await this.deps.repos.findCashOutChargeByIdForClient(
+      input.cashOutId,
+      input.clientId,
+    );
+    if (!order) throw new NotFoundError('cash-out nao encontrado');
+
+    // O cadastro de device e aberto: sem estes tetos, abrir ordens e nunca
+    // depositar viraria uma torneira de POL.
+    if (await this.deps.repos.hasUnusedCashOutGasTopUp(input.clientId)) {
+      throw new ConflictError(
+        'ja existe uma reposicao de gas nao usada: deposite ou deixe a ordem expirar',
+      );
+    }
+    const maxPerDay = this.deps.config.gasStation.maxTopUpsPerDay;
+    const since = new Date(this.now().getTime() - 24 * 60 * 60 * 1000);
+    if ((await this.deps.repos.countCashOutGasTopUpsSince(since)) >= maxPerDay) {
+      throw new GasStationError(
+        'teto diario de reposicoes de gas atingido',
+        'gas_station_daily_cap',
+      );
+    }
+
+    const reserved = await this.deps.repos.reserveCashOutGasTopUp(
+      order.id,
+      input.clientId,
+      this.now(),
+    );
+    if (!reserved) {
+      throw new ConflictError(
+        'reposicao de gas indisponivel para esta ordem (ja reposta, sem aceite ou ja depositada)',
+      );
+    }
+
+    const address = reserved.originAddress;
+    const config = this.stationConfig();
+    let sent: { hash: string; amountWei: bigint } | null = null;
+    try {
+      const balance = await this.chain().balanceOf(config, address);
+      const missing = config.maxTopUpWei - balance;
+      if (missing > 0n) {
+        const result = await this.topUp({
+          clientId: input.clientId,
+          address,
+          chain: 'polygon',
+          amountWei: missing,
+          reason: input.reason ?? `cashout:${order.id}`,
+        });
+        sent = { hash: result.hash, amountWei: result.amountWei };
+      }
+    } catch (err) {
+      await this.deps.repos.releaseCashOutGasTopUp(order.id);
+      throw err;
+    }
+
+    if (!sent) {
+      // Nada a enviar: a vaga volta (a carteira ja tem a folga).
+      await this.deps.repos.releaseCashOutGasTopUp(order.id);
+      return { hash: null, amountWei: 0n, address };
+    }
+    await this.deps.repos.finishCashOutGasTopUp(order.id, sent.hash);
+    return { hash: sent.hash, amountWei: sent.amountWei, address };
   }
 
   private stationConfig(): GasStationConfig {
@@ -77,11 +176,7 @@ export class GasStationService {
       throw new GasStationError('gas station desabilitada', 'gas_station_off');
     }
 
-    const sent = await sendNative({
-      config,
-      to: input.address,
-      amountWei: input.amountWei,
-    });
+    const sent = await this.chain().send(config, input.address, input.amountWei);
 
     await this.deps.repos.insertAuditEvent({
       actor: 'gas_station',

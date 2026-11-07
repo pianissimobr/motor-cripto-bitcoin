@@ -804,6 +804,26 @@ export type Repositories = {
     providerCashoutId: string,
   ) => Promise<CashOutCharge | null>;
   updateCashOutCharge: (input: UpdateCashOutChargeInput) => Promise<CashOutCharge | null>;
+  /**
+   * Reserva a unica reposicao de gas da ordem. Devolve `null` quando a ordem
+   * nao esta aguardando deposito, ja tem `tx_hash` ou ja teve reposicao.
+   */
+  reserveCashOutGasTopUp: (
+    id: string,
+    clientId: string,
+    at: Date,
+  ) => Promise<CashOutCharge | null>;
+  /** Grava o hash da reposicao feita. */
+  finishCashOutGasTopUp: (id: string, txHash: string) => Promise<void>;
+  /** Devolve a vaga quando o envio falhou ou nada precisou ser enviado. */
+  releaseCashOutGasTopUp: (id: string) => Promise<void>;
+  /** Reposicoes feitas (com hash) desde `since`, em todas as ordens. */
+  countCashOutGasTopUpsSince: (since: Date) => Promise<number>;
+  /**
+   * `true` quando o cliente tem uma ordem aberta que ja recebeu gas e ainda
+   * nao foi depositada: o gas dela ainda nao foi usado.
+   */
+  hasUnusedCashOutGasTopUp: (clientId: string) => Promise<boolean>;
   listCashOutChargesToReconcile: (limit: number) => Promise<CashOutCharge[]>;
   listCashOutChargesForOriginAddress: (
     originAddress: string,
@@ -3411,6 +3431,67 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(cashoutCharges.id, input.id))
         .returning();
       return rows[0] ?? null;
+    },
+
+    async reserveCashOutGasTopUp(id, clientId, at) {
+      const rows = await db
+        .update(cashoutCharges)
+        .set({ gasToppedUpAt: at, updatedAt: new Date() })
+        .where(
+          and(
+            eq(cashoutCharges.id, id),
+            eq(cashoutCharges.clientId, clientId),
+            eq(cashoutCharges.status, 'aguardando_deposito'),
+            isNotNull(cashoutCharges.depositAddress),
+            isNull(cashoutCharges.txHash),
+            isNull(cashoutCharges.gasToppedUpAt),
+          ),
+        )
+        .returning();
+      return rows[0] ?? null;
+    },
+
+    async finishCashOutGasTopUp(id, txHash) {
+      await db
+        .update(cashoutCharges)
+        .set({ gasTopUpTxHash: txHash, updatedAt: new Date() })
+        .where(eq(cashoutCharges.id, id));
+    },
+
+    async releaseCashOutGasTopUp(id) {
+      await db
+        .update(cashoutCharges)
+        .set({ gasToppedUpAt: null, gasTopUpTxHash: null, updatedAt: new Date() })
+        .where(eq(cashoutCharges.id, id));
+    },
+
+    async countCashOutGasTopUpsSince(since) {
+      const rows = await db
+        .select({ total: sql<number>`count(*)::int` })
+        .from(cashoutCharges)
+        .where(
+          and(
+            isNotNull(cashoutCharges.gasTopUpTxHash),
+            gt(cashoutCharges.gasToppedUpAt, since),
+          ),
+        );
+      return Number(rows[0]?.total ?? 0);
+    },
+
+    async hasUnusedCashOutGasTopUp(clientId) {
+      const rows = await db
+        .select({ id: cashoutCharges.id })
+        .from(cashoutCharges)
+        .where(
+          and(
+            eq(cashoutCharges.clientId, clientId),
+            isNotNull(cashoutCharges.gasTopUpTxHash),
+            isNull(cashoutCharges.txHash),
+            inArray(cashoutCharges.status, ['criando', 'pendente', 'aguardando_deposito']),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
     },
 
     async listCashOutChargesToReconcile(limit) {

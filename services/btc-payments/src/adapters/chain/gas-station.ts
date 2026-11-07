@@ -135,3 +135,17 @@ export async function treasuryBalance(options: {
   const balanceWei = await client.getBalance({ address: account.address });
   return { address: account.address, balanceWei };
 }
+
+/** Saldo nativo de um endereco qualquer (o destino da reposicao). */
+export async function nativeBalanceOf(options: {
+  config: GasStationConfig;
+  address: string;
+  timeoutMs?: number;
+}): Promise<bigint> {
+  const chain = buildChain(options.config.chainId);
+  const transport = http(options.config.rpcUrls[0] ?? '', {
+    timeout: options.timeoutMs ?? 15_000,
+  });
+  const client = createPublicClient({ chain, transport });
+  return client.getBalance({ address: options.address as `0x${string}` });
+}

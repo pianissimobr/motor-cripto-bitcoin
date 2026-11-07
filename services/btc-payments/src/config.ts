@@ -344,6 +344,8 @@ const EnvSchema = z
     GAS_STATION_MAX_TOPUP_WEI: bigintFromEnv('50000000000000000'),
     /** Piso da tesouraria: abaixo disso, o motor nao repõe. */
     GAS_STATION_MIN_TREASURY_WEI: bigintFromEnv('100000000000000000'),
+    /** Teto global de reposicoes por dia (o cadastro de device e aberto). */
+    GAS_STATION_MAX_TOPUPS_PER_DAY: intFromEnv(50, 0),
   })
   .superRefine((env, ctx) => {
     if (!env.LIGHTNING_ENABLED && !env.ONCHAIN_ENABLED && !env.PIX_ENABLED) {
@@ -633,6 +635,7 @@ export type AppConfig = {
     chainId: number;
     maxTopUpWei: bigint;
     minTreasuryWei: bigint;
+    maxTopUpsPerDay: number;
   };
   email: {
     sender: 'smtp' | 'noop';
@@ -918,6 +921,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       chainId: env.GAS_STATION_CHAIN_ID,
       maxTopUpWei: env.GAS_STATION_MAX_TOPUP_WEI,
       minTreasuryWei: env.GAS_STATION_MIN_TREASURY_WEI,
+      maxTopUpsPerDay: env.GAS_STATION_MAX_TOPUPS_PER_DAY,
     },
     email: {
       sender: env.EMAIL_SENDER,

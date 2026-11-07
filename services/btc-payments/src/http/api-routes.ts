@@ -299,12 +299,16 @@ const cashOutRefundSchema = z
   })
   .strict();
 
+/**
+ * Reposicao de gas: sempre amarrada a uma venda (cash-out) do cliente.
+ *
+ * O destino e o valor sao do motor (o `origin_address` da ordem e o que falta
+ * para a folga), nunca do corpo: o cadastro de device e aberto e um endereco
+ * livre aqui viraria torneira de POL.
+ */
 const gasTopUpSchema = z
   .object({
-    address: z.string().trim().regex(/^0x[a-fA-F0-9]{40}$/, 'endereco invalido'),
-    chain: z.literal('polygon').default('polygon'),
-    /** Em wei do nativo. Ausente: o motor usa o valor padrao (a folga). */
-    amount_wei: z.string().regex(/^\d+$/, 'amount_wei invalido').optional(),
+    cash_out_id: z.string().uuid('cash_out_id invalido'),
     reason: z.string().trim().max(80).optional(),
   })
   .strict();
@@ -619,21 +623,17 @@ export function registerApiRoutes(
       if (!services.gasStation.isEnabled()) {
         throw new ServiceUnavailableError('gas station desabilitada');
       }
-      const amountWei = body.amount_wei
-        ? BigInt(body.amount_wei)
-        : services.config.gasStation.maxTopUpWei;
       try {
-        const result = await services.gasStation.topUp({
+        const result = await services.gasStation.topUpForCashOut({
           clientId: client.id,
-          address: body.address,
-          chain: body.chain,
-          amountWei,
+          cashOutId: body.cash_out_id,
           ...(body.reason ? { reason: body.reason } : {}),
         });
-        return reply.status(201).send({
+        return reply.status(result.hash ? 201 : 200).send({
+          address: result.address,
           amount_wei: result.amountWei.toString(),
           tx_hash: result.hash,
-          chain: body.chain,
+          chain: 'polygon',
         });
       } catch (err) {
         if (err instanceof GasStationError) {

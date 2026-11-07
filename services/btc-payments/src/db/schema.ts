@@ -923,6 +923,13 @@ export const cashoutCharges = pgTable(
     providerPath: text('provider_path'),
     /** Hash da transacao que o app assinou (o motor nao assina). */
     txHash: text('tx_hash'),
+    /**
+     * Reposicao de gas desta ordem: no maximo uma. A data reserva a vaga
+     * antes do envio (update condicional), o que impede duas reposicoes em
+     * paralelo para a mesma ordem.
+     */
+    gasToppedUpAt: timestamp('gas_topped_up_at', { withTimezone: true, mode: 'date' }),
+    gasTopUpTxHash: text('gas_topup_tx_hash'),
     pixE2e: text('pix_e2e'),
     pixPaidAt: timestamp('pix_paid_at', { withTimezone: true, mode: 'date' }),
     receiptUrl: text('receipt_url'),

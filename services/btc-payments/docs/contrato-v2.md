@@ -208,7 +208,7 @@ endereço no aceite). `deposit_tag` é para redes com memo (solana, tron, xrp);
 | `POST /v1/user/cash-out-charges/:id/refund-address` | `cashout:write` | `{refund_address}` | ordem (C3) |
 | `GET /v1/user/operations` | `operations:read` | `?limit=&cursor=` | extrato (C5) |
 | `GET /v1/addresses/:address/operations` | `operations:read` | `?limit=&cursor=` | extrato de um endereco (F3) |
-| `POST /v1/user/gas/topup` | `gas:write` | `{address, chain, amount_wei?}` | `{amount_wei, tx_hash, chain}` |
+| `POST /v1/user/gas/topup` | `gas:write` | `{cash_out_id, reason?}` | `{address, amount_wei, tx_hash, chain}` |
 | `GET /v1/user/payer-limits` | `operations:read` | `?payer_tax=` | escada do pagador (da Lunium) |
 | `GET /v1/user/flags` | `operations:read` | — | flags do app (F7) |
 | `POST /v1/user/address-revocations` | `operations:read` | `{address, merchant_id?}` | revogacao (C12.1) |
@@ -399,9 +399,22 @@ tesouraria de POL e reembolsa o gas:
 
 ```http
 POST /v1/user/gas/topup
-{ "address": "0xABC...", "chain": "polygon", "amount_wei": "50000000000000000" }
-→ { "amount_wei": "50000000000000000", "tx_hash": "0x...", "chain": "polygon" }
+{ "cash_out_id": "<id da venda aceita>" }
+→ 201 { "address": "0x<origin da ordem>", "amount_wei": "31000000000000000", "tx_hash": "0x...", "chain": "polygon" }
+→ 200 { ..., "amount_wei": "0", "tx_hash": null }   (a carteira ja tem a folga)
 ```
+
+A reposição é sempre amarrada a uma venda (o cadastro de device é aberto, então
+um endereço livre no corpo viraria torneira de POL — corrigido em 2026-11-07):
+
+- a ordem precisa ser do cliente (`404`), estar aceita (`aguardando_deposito`,
+  com endereço de depósito) e ainda sem `tx_hash` (`409`);
+- o destino é o `origin_address` da ordem e o valor é o que falta para a folga
+  (`GAS_STATION_MAX_TOPUP_WEI`), lido na chain — nada disso vem do corpo;
+- uma reposição por ordem, reservada antes do envio (`gas_topped_up_at`);
+- o cliente não recebe outra enquanto houver uma ordem aberta com gas não usado
+  (`409`);
+- teto global por dia (`GAS_STATION_MAX_TOPUPS_PER_DAY`, padrão 50).
 
 - escopo `gas:write` (fora do padrão dos clientes novos: uma chave vazada não
   podeples para repor gas);
