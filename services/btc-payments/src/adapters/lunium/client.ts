@@ -117,6 +117,20 @@ export type CatalogRail = {
   }[];
 };
 
+/** `GET /webhooks/deliveries` (entregas de webhook da Lunium para o motor). */
+export type LuniumWebhookDelivery = {
+  event_id: string;
+  event: string;
+  operation_id?: string;
+  status: 'pending' | 'sent' | 'failed';
+  attempts?: number;
+  last_error?: string | null;
+  url?: string;
+  next_attempt_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+};
+
 /** `GET /cashin/events`. */
 export type LuniumEventFeed = {
   projeto?: string;
@@ -475,6 +489,25 @@ export class LuniumClient {
    */
   async getEvents(limit = 200): Promise<LuniumEventFeed> {
     return this.request<LuniumEventFeed>('GET', `/cashin/events?limit=${Math.min(Math.max(limit, 1), 200)}`, undefined, 'normal');
+  }
+
+  /** `GET /webhooks/deliveries` — historico das entregas para o motor. */
+  async listWebhookDeliveries(input: { status?: 'pending' | 'sent' | 'failed'; limit?: number } = {}) {
+    const query = new URLSearchParams({ limit: String(Math.min(Math.max(input.limit ?? 50, 1), 200)), ...(input.status ? { status: input.status } : {}) });
+    return this.request<{ deliveries?: LuniumWebhookDelivery[]; failed_count?: number }>('GET', `/webhooks/deliveries?${query}`);
+  }
+
+  /** `POST /webhooks/deliveries/{event_id}/retry` — reenvia (ganha mais 12 tentativas se falhar). */
+  async retryWebhookDelivery(eventId: string) {
+    return this.request<{ event_id: string; delivered: boolean; status_code?: number }>(
+      'POST',
+      `/webhooks/deliveries/${encodeURIComponent(eventId)}/retry`,
+    );
+  }
+
+  /** `POST /webhooks/test` — dispara um webhook.test agora (6 por minuto). */
+  async sendTestWebhook() {
+    return this.request<{ ok: boolean; event_id?: string; status_code?: number; ms?: number; url?: string }>('POST', '/webhooks/test');
   }
 
   async health(): Promise<{ ok: boolean; detail?: string }> {

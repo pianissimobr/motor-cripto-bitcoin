@@ -1294,6 +1294,18 @@ export function registerApiRoutes(
     },
   );
 
+  // Entregas de webhook da Lunium para o motor (diagnostico) e teste.
+  app.get('/admin/api/lunium/webhooks', { preHandler: adminAuth }, async (request) => {
+    if (!services.lunium) throw new ServiceUnavailableError('PIX indisponivel');
+    const query = request.query as { status?: string };
+    const status = query.status === 'failed' || query.status === 'pending' || query.status === 'sent' ? query.status : undefined;
+    return services.lunium.listWebhookDeliveries({ limit: 100, ...(status ? { status } : {}) });
+  });
+  app.post('/admin/api/lunium/webhooks/test', { preHandler: adminAuth }, async () => {
+    if (!services.lunium) throw new ServiceUnavailableError('PIX indisponivel');
+    return services.lunium.sendTestWebhook();
+  });
+
   app.get(
     '/admin/api/flags',
     { preHandler: adminAuth },

@@ -8,6 +8,7 @@ import { EsploraClient } from './adapters/chain/esplora.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { OnchainWatcher } from './services/onchain-watcher.js';
 import { InvoiceService } from './services/invoice-service.js';
+import { LuniumWebhookMonitor } from './services/lunium-webhook-monitor.js';
 import { PixDiretoService } from './services/pix-direto-service.js';
 import { NuvemshopService } from './services/nuvemshop-service.js';
 import { BlingService } from './services/bling-service.js';
@@ -189,6 +190,12 @@ export async function startWorker(): Promise<WorkerHandle> {
       intervalMs: config.jobs.onchainPollMs,
       run: () => watcher.runCycle(batch),
     });
+  }
+
+  if (lunium) {
+    // A Lunium esgotou as tentativas de nos avisar: reenvia e alerta.
+    const monitor = new LuniumWebhookMonitor({ lunium, logger, alerts });
+    jobs.push({ name: 'lunium-webhook-monitor', intervalMs: 600_000, run: () => monitor.runCycle() });
   }
 
   // Faturas hospedadas: estado pelas cobrancas, validade e IPN.
