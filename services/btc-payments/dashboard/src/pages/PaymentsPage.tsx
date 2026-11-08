@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { Card, Empty, PageHeader, Spinner, StatusBadge } from '../components/ui';
@@ -7,11 +7,77 @@ import { dateTime, money, shortHash } from '../format';
 import { useMerchantId } from '../session';
 import type { PaymentKind, PaymentPage } from '../types';
 
-const TABS: { id: PaymentKind; label: string }[] = [
+const TABS: { id: PaymentKind | 'invoice'; label: string }[] = [
+  { id: 'invoice', label: 'Faturas' },
   { id: 'pix', label: 'Pix' },
   { id: 'bitcoin', label: 'Bitcoin' },
   { id: 'request', label: 'Pedidos' },
 ];
+
+type InvoiceRow = {
+  id: string;
+  order_id: string;
+  mode: string;
+  status: string;
+  price_amount: string;
+  price_currency: string;
+  invoice_url: string;
+  paid_rail: string | null;
+  created_at: string;
+};
+
+const INVOICE_STATUS: Record<string, string> = { aguardando: 'pendente', confirmando: 'depositado', pago: 'pago', expirado: 'expirado', cancelado: 'cancelado' };
+
+function InvoicesTab({ merchantId }: { merchantId: string }) {
+  const [mode, setMode] = useState<'live' | 'test'>('live');
+  const query = useQuery({
+    queryKey: ['invoices', merchantId, mode],
+    queryFn: () => api<{ invoices: InvoiceRow[] }>(`/v1/dash/merchants/${merchantId}/invoices?mode=${mode}&limit=100`),
+  });
+  const rows = query.data?.invoices ?? [];
+  return (
+    <Card>
+      <div className="filters">
+        <div className="segmented">
+          <button className={mode === 'live' ? 'active' : ''} onClick={() => setMode('live')}>Produção</button>
+          <button className={mode === 'test' ? 'active' : ''} onClick={() => setMode('test')}>Teste</button>
+        </div>
+      </div>
+      {query.isLoading && <Spinner />}
+      {!query.isLoading && rows.length === 0 && <Empty>Nenhuma fatura criada pelas lojas virtuais ainda.</Empty>}
+      {rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Criada</th>
+                <th>Pedido</th>
+                <th>Status</th>
+                <th>Meio</th>
+                <th className="num">Valor</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id}>
+                  <td>{dateTime(row.created_at)}</td>
+                  <td className="mono">{row.order_id}</td>
+                  <td><StatusBadge status={INVOICE_STATUS[row.status] ?? row.status} /></td>
+                  <td>{row.paid_rail === 'pix' ? 'Pix' : row.paid_rail === 'bitcoin' ? 'Bitcoin' : '—'}</td>
+                  <td className="num">{money(row.price_amount.replace('.', ''), row.price_currency)}</td>
+                  <td>
+                    <a href={row.invoice_url} target="_blank" rel="noreferrer noopener">Abrir</a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
 
 const STATUS: Record<PaymentKind, { id: string; label: string }[]> = {
   pix: [
@@ -38,12 +104,14 @@ export default function PaymentsPage() {
   const merchantId = useMerchantId();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const kind = (params.get('tipo') as PaymentKind | null) ?? 'pix';
+  const tipo = params.get('tipo') ?? 'invoice';
+  const kind = (tipo === 'invoice' ? 'pix' : tipo) as PaymentKind;
   const status = params.get('status') ?? '';
   const [search, setSearch] = useState(params.get('pedido') ?? '');
   const externalId = params.get('pedido') ?? '';
 
   const query = useInfiniteQuery({
+    enabled: tipo !== 'invoice',
     queryKey: ['payments', merchantId, kind, status, externalId],
     initialPageParam: '',
     queryFn: ({ pageParam }) => {
@@ -72,11 +140,14 @@ export default function PaymentsPage() {
       <PageHeader title="Pagamentos" subtitle="Tudo o que seus clientes pagaram ou ainda vão pagar." />
       <div className="tabs">
         {TABS.map((tab) => (
-          <button key={tab.id} className={tab.id === kind ? 'active' : ''} onClick={() => update({ tipo: tab.id, status: '' })}>
+          <button key={tab.id} className={tab.id === tipo ? 'active' : ''} onClick={() => update({ tipo: tab.id, status: '' })}>
             {tab.label}
           </button>
         ))}
       </div>
+      {tipo === 'invoice' ? (
+        <InvoicesTab merchantId={merchantId} />
+      ) : (
       <Card>
         <div className="filters">
           <select value={status} onChange={(e) => update({ status: e.target.value })} aria-label="Status">
@@ -134,6 +205,7 @@ export default function PaymentsPage() {
           </div>
         )}
       </Card>
+      )}
     </>
   );
 }

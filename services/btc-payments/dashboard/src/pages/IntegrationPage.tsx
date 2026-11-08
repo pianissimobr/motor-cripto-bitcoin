@@ -6,6 +6,7 @@ import { Alert, Card, CopyButton, Empty, Field, PageHeader, Secret, StatusBadge 
 import { dateTime } from '../format';
 import { useMerchantId } from '../session';
 import type { Integration, WebhookEvent } from '../types';
+import { StoreKeys } from './StoreKeys';
 
 type Credentials = { api_key: string; request_secret: string; webhook_secret: string };
 
@@ -184,25 +185,7 @@ export default function IntegrationPage() {
         )}
       </Card>
 
-      <Card title="Plugins e lojas virtuais">
-        <div className="platforms">
-          <div className="platform">
-            <strong>WooCommerce / WordPress</strong>
-            <p className="muted small">Plugin oficial: instale, cole a chave e pronto.</p>
-            <span className="badge badge-muted">Em breve</span>
-          </div>
-          <div className="platform">
-            <strong>Shopify</strong>
-            <p className="muted small">Pagamento por link enviado ao cliente após o pedido.</p>
-            <span className="badge badge-muted">Em breve</span>
-          </div>
-          <div className="platform">
-            <strong>API direta</strong>
-            <p className="muted small">Para sistemas próprios. Veja os exemplos abaixo.</p>
-            <span className="badge badge-ok">Disponível</span>
-          </div>
-        </div>
-      </Card>
+      <StoreKeys merchantId={merchantId} apiBase={data?.api_base_url ?? ''} />
 
       <Card title="Exemplos">
         <h3>Chamada assinada (curl)</h3>

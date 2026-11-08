@@ -772,3 +772,11 @@ pre.json {
   flex-wrap: wrap;
   font-size: 0.9rem;
 }
+
+.steps {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
