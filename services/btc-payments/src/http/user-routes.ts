@@ -63,7 +63,8 @@ const payerLimitsQuerySchema = z.object({
  */
 const pixKeySchema = z
   .object({
-    pix_key: z.string().trim().min(1).max(140),
+    /** 77 e o maior tamanho de chave no DICT (e-mail); acima disso o BR Code quebra. */
+    pix_key: z.string().trim().min(1).max(77),
     pix_key_type: z
       .enum(['cpf', 'cnpj', 'email', 'phone', 'random'])
       .optional(),

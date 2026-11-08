@@ -16,7 +16,6 @@ function buildBrCode(fields: { key: string; amount?: string }): string {
   const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', fields.key);
   const parts = [
     '000201',
-    tag('00', '01'),
     tag('26', accountInfo),
     tag('52', '0000'),
     tag('53', '986'),

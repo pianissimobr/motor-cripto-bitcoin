@@ -23,7 +23,6 @@ function buildFixture(fields: {
   const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', fields.key);
   const parts = [
     '000201',
-    tag('00', '01'),
     tag('26', accountInfo),
     tag('52', '0000'),
     tag('53', '986'),
@@ -77,7 +76,7 @@ describe('BR Code do Pix', () => {
     const tag = (id: string, value: string) =>
       `${id}${String(value.length).padStart(2, '0')}${value}`;
     const accountInfo = tag('00', 'br.gov.bcb.pix') + tag('01', '12345678909');
-    const parts = ['000201', tag('00', '01'), tag('26', accountInfo), tag('53', '978')].join('');
+    const parts = ['000201', tag('26', accountInfo), tag('53', '978')].join('');
     const code = `${parts}6304${brCodeCrc16(`${parts}6304`)}`;
     expect(() => parseBrCode(code)).toThrow(/moeda nao suportada/);
   });
@@ -116,4 +115,27 @@ describe('BR Code do Pix', () => {
     expect(maskPixKey('adm@pianolabribeirao.com.br')).toBe('a•@pianolabribeirao.com.br');
     expect(maskPixKey('12345678909')).toContain('•');
   });
+
+  it('gera exatamente o exemplo do manual do BR Code do Banco Central', () => {
+    const bcb =
+      '00020126580014br.gov.bcb.pix0136123e4567-e12b-12d1-a456-4266554400005204000053039865802BR5913Fulano de Tal6008BRASILIA62070503***63041D3D';
+    expect(
+      buildBrCode({ key: '123e4567-e12b-12d1-a456-426655440000', merchantName: 'Fulano de Tal', city: 'BRASILIA' }),
+    ).toBe(bcb);
+  });
+
+  it('o codigo gerado tem a tag 00 uma vez so e passa no proprio parser', () => {
+    const code = buildBrCode({ key: 'adm@pianolabribeirao.com.br', amount: '6.50', txid: 'PR123' });
+    expect(code.startsWith('000201')).toBe(true);
+    expect(code.startsWith('000201000201')).toBe(false);
+    expect(parseBrCode(code).amount).toBe('6.50');
+  });
+
+  it('tira acento do nome e da cidade e recusa campo acima de 99 caracteres', () => {
+    const code = buildBrCode({ key: 'a@b.co', merchantName: 'Pianolab Ribeirão', city: 'Ribeirão Preto' });
+    expect(code).toContain('5917Pianolab Ribeirao');
+    expect(code).toContain('6014Ribeirao Preto');
+    expect(() => buildBrCode({ key: `${'a'.repeat(80)}@b.co` })).toThrow(/99 caracteres/);
+  });
+
 });

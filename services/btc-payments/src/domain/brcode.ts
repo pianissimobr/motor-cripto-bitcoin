@@ -194,9 +194,22 @@ export function maskPixKey(key: string): string {
   return `${key.slice(0, 2)}${'•'.repeat(Math.max(1, key.length - 4))}${key.slice(-2)}`;
 }
 
-/** Tag EMV: `id` (2) + `len` (2) + valor. */
+/** Tag EMV: `id` (2) + `len` (2) + valor. O tamanho tem 2 digitos: max 99. */
 function buildTag(id: string, value: string): string {
+  if (value.length > 99) {
+    throw new BrCodeError(`campo ${id} do BR Code passa de 99 caracteres`);
+  }
   return `${id}${String(value.length).padStart(2, '0')}${value}`;
+}
+
+/** Nome e cidade do BR Code: sem acento e so letras, numeros e espaco. */
+function emvText(value: string, max: number): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9 ]/g, '')
+    .trim()
+    .slice(0, max);
 }
 
 /**
@@ -223,17 +236,14 @@ export function buildBrCode(options: {
     throw new BrCodeError('chave Pix vazia');
   }
   const accountInfo = buildTag('00', 'br.gov.bcb.pix') + buildTag('01', key);
-  const merchantName = (options.merchantName ?? 'MERCHANT')
-    .slice(0, 25)
-    .replace(/[^\p{L}\p{N} ]/gu, '');
-  const city = (options.city ?? 'SAO PAULO').slice(0, 15).replace(/[^\p{L}\p{N} ]/gu, '');
-  const txid = (options.txid ?? '***')
-    .replace(/[^A-Za-z0-9]/g, '')
-    .slice(0, 25);
+  const merchantName = emvText(options.merchantName ?? '', 25) || 'MERCHANT';
+  const city = emvText(options.city ?? '', 15) || 'SAO PAULO';
+  // Sem txid (ou so com caracteres invalidos) o padrao e `***`: limpar o
+  // `***` deixava a tag 05 vazia, o que o padrao nao aceita.
+  const txid = (options.txid ?? '').replace(/[^A-Za-z0-9]/g, '').slice(0, 25) || '***';
 
   const parts = [
     BR_CODE_PREFIX,
-    buildTag('00', '01'),
     buildTag('26', accountInfo),
     buildTag('52', '0000'),
     buildTag('53', '986'),
