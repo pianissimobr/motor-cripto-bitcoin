@@ -204,6 +204,13 @@
       "when": 1794145860119,
       "tag": "0028_merchant_pix_banks",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794147595711,
+      "tag": "0029_nuvemshop",
+      "breakpoints": true
     }
   ]
 }

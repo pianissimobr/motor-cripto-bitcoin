@@ -1798,3 +1798,54 @@ export const merchantPixBanks = pgTable(
     check('merchant_pix_banks_env_chk', sql`${table.environment} in ('producao','homologacao')`),
   ],
 );
+
+/** Loja Nuvemshop conectada a uma loja do motor (app de pagamento instalado). */
+export const nuvemshopStores = pgTable(
+  'nuvemshop_stores',
+  {
+    storeId: text('store_id').primaryKey(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    /** Token de acesso (nao expira), cifrado (AAD = store id). */
+    accessTokenEnc: text('access_token_enc').notNull(),
+    scope: text('scope'),
+    paymentProviderId: text('payment_provider_id'),
+    installedAt: timestamp('installed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    uninstalledAt: timestamp('uninstalled_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [index('nuvemshop_stores_client_idx').on(table.clientId)],
+);
+
+/**
+ * Cada tentativa de pagamento do checkout Nuvemshop. O process_payment so
+ * traz o carrinho: o pedido e achado depois (webhook order/created) e a
+ * transacao e criada nele quando a fatura muda.
+ */
+export const nuvemshopPayments = pgTable(
+  'nuvemshop_payments',
+  {
+    attemptId: text('attempt_id').primaryKey(),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => nuvemshopStores.storeId, { onDelete: 'cascade' }),
+    invoiceId: uuid('invoice_id')
+      .notNull()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    cartId: text('cart_id').notNull(),
+    email: text('email'),
+    totalCents: bigint('total_cents', { mode: 'bigint' }).notNull(),
+    currency: text('currency').notNull(),
+    orderId: text('order_id'),
+    transactionId: text('transaction_id'),
+    /** Ultimo estado avisado a Nuvemshop (pending, success). */
+    reportedStatus: text('reported_status'),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    index('nuvemshop_payments_open_idx').on(table.storeId, table.orderId),
+    uniqueIndex('nuvemshop_payments_order_uq').on(table.storeId, table.orderId),
+  ],
+);

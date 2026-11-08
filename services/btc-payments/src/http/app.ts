@@ -14,6 +14,7 @@ import { registerApiRoutes, type ApiServices } from './api-routes.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { registerDashRoutes } from './dash-routes.js';
 import { registerInvoiceRoutes } from './invoice-routes.js';
+import { registerNuvemshopRoutes } from './nuvemshop-routes.js';
 
 export type AppDeps = {
   config: {
@@ -94,7 +95,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // dominio; o Helmet manda CORP same-origin por padrao, o que o bloqueia.
   app.addHook('onSend', async (request, reply, payload) => {
     const path = request.url.split('?')[0] ?? '';
-    if (path === '/checkout.js') {
+    // Recursos carregados por outros dominios: o snippet do checkout e os
+    // logotipos que a Nuvemshop mostra no checkout e no admin dela.
+    if (path === '/checkout.js' || path.startsWith('/nuvemshop/')) {
       reply.header('cross-origin-resource-policy', 'cross-origin');
     }
     // Assets do painel levam hash no nome: podem ficar em cache para sempre.
@@ -164,6 +167,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (deps.services) {
       registerApiRoutes(routes, deps.services);
       if (deps.services.invoices) registerInvoiceRoutes(routes, { invoices: deps.services.invoices });
+      if (deps.services.nuvemshop?.enabled) {
+        registerNuvemshopRoutes(routes, {
+          nuvemshop: deps.services.nuvemshop,
+          publicBaseUrl: deps.services.config.service.publicBaseUrl,
+          publicDir,
+        });
+      }
       if (deps.services.dashAuth && deps.services.config.dashboard.enabled) {
         registerAuthRoutes(routes, {
           config: deps.services.config,
@@ -177,6 +187,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             dash: deps.services.dash,
             ...(deps.services.invoices ? { invoices: deps.services.invoices } : {}),
             ...(deps.services.pixDireto ? { pixDireto: deps.services.pixDireto } : {}),
+            ...(deps.services.nuvemshop?.enabled ? { nuvemshop: deps.services.nuvemshop } : {}),
           });
         }
         registerPainelPages(routes, publicDir);

@@ -52,6 +52,7 @@ import type { DashAuthService } from '../services/dash-auth-service.js';
 import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
 import type { PixDiretoService } from '../services/pix-direto-service.js';
+import type { NuvemshopService } from '../services/nuvemshop-service.js';
 import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export type ApiServices = {
@@ -86,6 +87,8 @@ export type ApiServices = {
   invoices?: InvoiceService;
   /** API Pix do banco da loja (Pix direto confirmado). */
   pixDireto?: PixDiretoService;
+  /** App de pagamento da Nuvemshop (com NUVEMSHOP_* configurado). */
+  nuvemshop?: NuvemshopService;
   autho?: AuthoIssuerClient;
 };
 

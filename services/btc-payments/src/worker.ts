@@ -9,6 +9,7 @@ import { PaymentIntentService } from './services/payment-intent-service.js';
 import { OnchainWatcher } from './services/onchain-watcher.js';
 import { InvoiceService } from './services/invoice-service.js';
 import { PixDiretoService } from './services/pix-direto-service.js';
+import { NuvemshopService } from './services/nuvemshop-service.js';
 import { WebhookDeliveryService } from './services/webhook-delivery-service.js';
 import { AlertService } from './services/alert-service.js';
 import { LedgerService } from './ledger/ledger-service.js';
@@ -204,6 +205,15 @@ export async function startWorker(): Promise<WorkerHandle> {
     intervalMs: config.jobs.webhookPollMs,
     run: () => invoiceService.runSyncCycle(batch),
   });
+
+  if (config.nuvemshop) {
+    const nuvemshop = new NuvemshopService({ db: db.db, repos, config, logger, invoices: invoiceService });
+    jobs.push({
+      name: 'nuvemshop-sync',
+      intervalMs: config.jobs.webhookPollMs,
+      run: () => nuvemshop.runSyncCycle(batch),
+    });
+  }
 
   if (pixCharges) {
     const service = pixCharges;

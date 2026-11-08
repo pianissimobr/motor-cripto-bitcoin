@@ -823,6 +823,17 @@ export class InvoiceService {
     return this.paymentFor(updated[0] ?? row, 'pix_direto');
   }
 
+  /**
+   * Cancela a fatura que ainda nao foi paga (ex.: a plataforma desistiu da
+   * tentativa). Idempotente; fatura paga ou em confirmacao nao muda.
+   */
+  async cancel(id: string): Promise<InvoiceRow | null> {
+    const row = await this.findPublic(id);
+    if (!row) return null;
+    if (row.status !== 'aguardando' && row.status !== 'expirado') return row;
+    return this.transition(row, 'cancelado', null, row.txHash);
+  }
+
   /** So no modo teste: marca como paga e dispara o IPN de verdade. */
   async simulatePayment(id: string) {
     const row = await this.findPublic(id);

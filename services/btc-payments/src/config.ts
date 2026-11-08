@@ -312,6 +312,18 @@ const EnvSchema = z
       (v) => (v === '' ? undefined : v),
       z.string().min(1).max(100).optional(),
     ),
+    /**
+     * App de pagamento da Nuvemshop (programa de parceiros). Sem os tres, a
+     * integracao fica desligada.
+     */
+    NUVEMSHOP_APP_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(40).optional()),
+    NUVEMSHOP_CLIENT_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(100).optional()),
+    NUVEMSHOP_CLIENT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).max(200).optional()),
+    NUVEMSHOP_API_BASE: httpUrl('NUVEMSHOP_API_BASE invalida').default('https://api.tiendanube.com/2025-03'),
+    /** CNPJ do provedor de pagamento, exigido nas transacoes no Brasil. */
+    NUVEMSHOP_PROVIDER_TAX_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().max(20).optional()),
+    /** Chave publica (PEM) que confere o X-Signature das chamadas da Nuvemshop. */
+    NUVEMSHOP_SIGNING_PUBLIC_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().max(5000).optional()),
     AUTHO_ISSUER_SECRET: z.preprocess(
       (v) => (v === '' ? undefined : v),
       z.string().min(16, 'AUTHO_ISSUER_SECRET precisa ter ao menos 16 caracteres').optional(),
@@ -560,6 +572,14 @@ export type AppConfig = {
     rateLimitMax: number;
     sessionTtlSeconds: number;
   };
+  nuvemshop: {
+    appId: string;
+    clientId: string;
+    clientSecret: string;
+    apiBase: string;
+    providerTaxId: string | null;
+    signingPublicKey: string | null;
+  } | null;
   dashboard: {
     enabled: boolean;
     signupEnabled: boolean;
@@ -858,6 +878,17 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       rateLimitMax: env.RATE_LIMIT_MAX,
       sessionTtlSeconds: env.SESSION_TTL_SECONDS,
     },
+    nuvemshop:
+      env.NUVEMSHOP_APP_ID && env.NUVEMSHOP_CLIENT_ID && env.NUVEMSHOP_CLIENT_SECRET
+        ? {
+            appId: env.NUVEMSHOP_APP_ID,
+            clientId: env.NUVEMSHOP_CLIENT_ID,
+            clientSecret: env.NUVEMSHOP_CLIENT_SECRET,
+            apiBase: env.NUVEMSHOP_API_BASE.replace(/\/+$/, ''),
+            providerTaxId: env.NUVEMSHOP_PROVIDER_TAX_ID ?? null,
+            signingPublicKey: env.NUVEMSHOP_SIGNING_PUBLIC_KEY?.replace(/\\n/g, '\n') ?? null,
+          }
+        : null,
     dashboard: {
       enabled: env.DASHBOARD_ENABLED,
       signupEnabled: env.DASHBOARD_SIGNUP_ENABLED,

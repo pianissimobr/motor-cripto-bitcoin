@@ -61,6 +61,16 @@ const PLATFORMS = [
     download: '/downloads/libreflow-whmcs.zip',
   },
   {
+    id: 'nuvemshop',
+    name: 'Nuvemshop',
+    steps: [
+      'Clique em "Conectar Nuvemshop" e autorize o app LibreFlow Pay na sua loja.',
+      'O meio de pagamento "Pix, Bitcoin ou USDC" aparece em Configurações → Meios de pagamento da Nuvemshop.',
+      'Quando o cliente paga, o pedido é marcado como pago na Nuvemshop.',
+    ],
+    download: null,
+  },
+  {
     id: 'shopify',
     name: 'Shopify',
     steps: [
@@ -96,12 +106,50 @@ function invoiceSample(base: string): string {
 # -> { "id": "...", "invoice_url": "${base}/i/...", "status": "aguardando" }`;
 }
 
+type NuvemshopStatus = { available: boolean; stores: { store_id: string; installed_at: string; active: boolean; payment_provider: boolean }[] };
+
+function NuvemshopConnect({ merchantId }: { merchantId: string }) {
+  const url = `/v1/dash/merchants/${merchantId}/nuvemshop`;
+  const status = useQuery({ queryKey: ['nuvemshop', merchantId], queryFn: () => api<NuvemshopStatus>(url) });
+  const [error, setError] = useState<string | null>(null);
+  const result = new URLSearchParams(window.location.search).get('nuvemshop');
+  async function connect() {
+    try {
+      const { authorize_url } = await api<{ authorize_url: string }>(`${url}/connect`, { method: 'POST' });
+      window.location.assign(authorize_url);
+    } catch (err) {
+      setError(errorText(err));
+    }
+  }
+  if (status.data && !status.data.available) {
+    return <Alert kind="info">A integração com a Nuvemshop ainda não foi liberada nesta instalação.</Alert>;
+  }
+  return (
+    <div className="stack">
+      {result === 'ok' && <Alert kind="ok">Loja Nuvemshop conectada.</Alert>}
+      {result === 'erro' && <Alert>Não foi possível conectar a Nuvemshop. Tente de novo.</Alert>}
+      {error && <Alert>{error}</Alert>}
+      {(status.data?.stores ?? []).map((s) => (
+        <div className="kv" key={s.store_id}>
+          <span>Loja Nuvemshop {s.store_id}</span>
+          <span>{s.active ? <span className="badge badge-ok">Conectada</span> : <span className="badge badge-muted">Desinstalada</span>}</span>
+        </div>
+      ))}
+      <div>
+        <button className="btn btn-primary" onClick={() => void connect()}>
+          Conectar Nuvemshop
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function StoreKeys({ merchantId, apiBase }: { merchantId: string; apiBase: string }) {
   const base = `/v1/dash/merchants/${merchantId}/store-keys`;
   const keys = useQuery({ queryKey: ['store-keys', merchantId], queryFn: () => api<{ keys: StoreKey[] }>(base) });
   const [created, setCreated] = useState<Created | null>(null);
   const [askLive, setAskLive] = useState(false);
-  const [platform, setPlatform] = useState('woocommerce');
+  const [platform, setPlatform] = useState(new URLSearchParams(window.location.search).get('nuvemshop') ? 'nuvemshop' : 'woocommerce');
   const [error, setError] = useState<string | null>(null);
 
   async function create(mode: 'live' | 'test', stepUp?: StepUp) {
@@ -152,6 +200,7 @@ export function StoreKeys({ merchantId, apiBase }: { merchantId: string; apiBase
           </a>
         )}
         {chosen.id === 'api' && <pre className="code">{invoiceSample(apiBase)}</pre>}
+        {chosen.id === 'nuvemshop' && <NuvemshopConnect merchantId={merchantId} />}
       </Card>
 
       <Card

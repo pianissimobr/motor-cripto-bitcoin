@@ -7,6 +7,7 @@ import type { DashAuthService } from '../services/dash-auth-service.js';
 import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
 import type { PixDiretoService } from '../services/pix-direto-service.js';
+import type { NuvemshopService } from '../services/nuvemshop-service.js';
 import { dashSessionGuard } from './dash-session.js';
 
 export type DashRoutesDeps = {
@@ -15,6 +16,7 @@ export type DashRoutesDeps = {
   dash: DashService;
   invoices?: InvoiceService;
   pixDireto?: PixDiretoService;
+  nuvemshop?: NuvemshopService;
 };
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
@@ -294,6 +296,22 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
       const rows = await invoices.listForClient(merchant.id, { limit: query.limit, mode: query.mode });
       return { invoices: rows.map((row) => invoices.dto(row)) };
     });
+  }
+
+  // ---- Nuvemshop
+
+  const nuvemshop = deps.nuvemshop;
+  app.get('/v1/dash/merchants/:merchantId/nuvemshop', opts, async (request) => {
+    const merchant = await merchantOf(request);
+    if (!nuvemshop) return { available: false, stores: [] };
+    return { available: true, stores: await nuvemshop.storesFor(merchant.id) };
+  });
+  if (nuvemshop) {
+    // So devolve a URL de autorizacao (state assinado com a loja): o
+    // navegador do lojista vai ate a Nuvemshop e volta no callback.
+    app.post('/v1/dash/merchants/:merchantId/nuvemshop/connect', opts, async (request) => ({
+      authorize_url: nuvemshop.authorizeUrl((await merchantOf(request)).id),
+    }));
   }
 
   // ---- banco da loja (Pix direto confirmado pela API Pix)

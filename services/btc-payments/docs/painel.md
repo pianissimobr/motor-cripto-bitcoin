@@ -145,3 +145,50 @@ Testes feitos:
 - **Magento, OpenCart e WHMCS:** lint em PHP 7.4 e 8.3, e teste do cliente
   compartilhado (assinatura do motor conferida em PHP). Ainda não foram testados
   numa instalação real.
+
+## Nuvemshop
+
+App de pagamento no programa de parceiros da Nuvemshop. Liga com
+`NUVEMSHOP_APP_ID`, `NUVEMSHOP_CLIENT_ID` e `NUVEMSHOP_CLIENT_SECRET`.
+
+### Instalação
+
+1. O lojista clica em "Conectar Nuvemshop" no painel e autoriza o app. O OAuth
+   usa um `state` assinado que identifica a loja do motor.
+2. No retorno (`/integrations/nuvemshop/callback`), o motor:
+   - troca o code pelo token e guarda o token cifrado;
+   - registra o provedor de pagamento, com `checkout_js_url` em
+     `/integrations/nuvemshop/checkout.js`, opção `libreflow_redirect` do tipo
+     `redirect`;
+   - registra os webhooks `order/created`, `app/uninstalled` e os de LGPD.
+
+### Pagamento
+
+- O checkout chama `POST /integrations/nuvemshop/process`, que a Nuvemshop
+  assina com `X-Signature` RSA. O motor cria a fatura (uma por `attemptId`) e
+  devolve `redirect_url` para `/i/:id`, que leva de volta ao `callbackUrls.success`
+  da loja.
+- `POST /integrations/nuvemshop/cancel?payment_attempt_id=` cancela a fatura,
+  sem efeito se já estiver cancelada.
+
+### Aviso de pago
+
+O `process_payment` não traz o número do pedido. Por isso:
+
+1. O webhook `order/created` liga o pedido à tentativa da mesma loja, com o mesmo
+   valor e e-mail, feita nas últimas 2 horas.
+2. O job `nuvemshop-sync` do worker cria a transação no pedido (`pending`).
+3. Quando a fatura é paga, o mesmo job manda o evento `sale`/`success`.
+
+### Depende da Nuvemshop
+
+- Aprovação do app no programa de parceiros e liberação da API de pagamentos
+  pelo suporte.
+- Cadastro do `process_payment_api` e do `cancel_payment_api` apontando para as
+  rotas acima.
+- Chave pública da assinatura (`NUVEMSHOP_SIGNING_PUBLIC_KEY`).
+- Confirmação, na homologação, do casamento pedido ↔ tentativa e do formato da
+  tabela de taxas.
+
+O fluxo foi testado com a API da Nuvemshop simulada, a partir da documentação
+deles (versão 2025-03).
