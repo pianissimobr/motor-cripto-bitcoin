@@ -126,6 +126,27 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
     });
   });
 
+  app.get('/v1/dash/merchants/:merchantId/export.csv', opts, async (request, reply) => {
+    const merchant = await merchantOf(request);
+    const query = parse(
+      z.object({
+        kind: z.enum(['all', 'invoices', 'pix', 'bitcoin']).default('all'),
+        from: z.coerce.date(),
+        to: z.coerce.date(),
+      }),
+      request.query,
+      'consulta',
+    );
+    // `to` e o dia inteiro informado.
+    const to = new Date(query.to.getTime() + 86_400_000 - 1);
+    const csv = await dash.exportCsv(merchant, { kind: query.kind, from: query.from, to });
+    const name = `vendas-${query.from.toISOString().slice(0, 10)}-a-${query.to.toISOString().slice(0, 10)}.csv`;
+    return reply
+      .type('text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="${name}"`)
+      .send(csv);
+  });
+
   app.get('/v1/dash/merchants/:merchantId/payments/:kind/:id', opts, async (request) => {
     const merchant = await merchantOf(request);
     const { kind, id } = parse(paymentParams, request.params, 'pagamento');

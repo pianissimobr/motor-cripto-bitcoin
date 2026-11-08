@@ -43,6 +43,7 @@ maybeDescribe('painel: API /v1/dash (integration)', () => {
       logger: silentLogger,
       repos,
       queries: createDashQueries(db.db),
+      db: db.db,
       clients,
       auth,
       emailSender: mail,
@@ -194,6 +195,18 @@ maybeDescribe('painel: API /v1/dash (integration)', () => {
 
     const overview = (await get(a, `/v1/dash/merchants/${a.merchantId}/overview?period=7d`)).json();
     expect(overview).toMatchObject({ payments_created: 5, payments_paid: 2, received_cents: '3000', conversion_rate: 40 });
+
+    const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const csv = await get(a, `/v1/dash/merchants/${a.merchantId}/export.csv?kind=pix&from=${day(-1)}&to=${day(1)}`);
+    expect(csv.headers['content-type']).toContain('text/csv');
+    expect(csv.headers['content-disposition']).toContain('attachment');
+    const lines = csv.body.replace('\uFEFF', '').trim().split('\r\n');
+    expect(lines[0]).toBe('data;tipo;id;pedido;status;valor;moeda;meio;pago_em;carteira;transacao');
+    expect(lines).toHaveLength(6);
+    expect(csv.body).toContain(';50,00;BRL;');
+    expect(csv.body).not.toContain('de-outra-loja');
+    const tooLong = await get(a, `/v1/dash/merchants/${a.merchantId}/export.csv?from=2020-01-01&to=2099-12-31`);
+    expect(tooLong.statusCode).toBe(400);
 
     const detailOther = await get(b, `/v1/dash/merchants/${b.merchantId}/payments/pix/${p1.items[0].id}`);
     expect(detailOther.statusCode).toBe(404);

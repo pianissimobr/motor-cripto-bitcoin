@@ -3,6 +3,8 @@ import { createPublicClient, erc20Abi, fallback, getAddress, http, isAddress } f
 import type { AppConfig } from '../config.js';
 import { decodeCursor, encodeCursor, type DashQueries } from '../db/dash-queries.js';
 import type { Repositories } from '../db/repositories.js';
+import type { Db } from '../db/client.js';
+import { exportRows, toCsv, type ExportKind } from './export-service.js';
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../domain/errors.js';
 import type { ApiClient, MerchantWallet, User } from '../domain/types.js';
 import type { Logger } from '../logger.js';
@@ -18,6 +20,8 @@ export type DashServiceDeps = {
   logger: Logger;
   repos: Repositories;
   queries: DashQueries;
+  /** Banco direto, para a exportacao. */
+  db?: Db;
   clients: ClientService;
   auth: DashAuthService;
   emailSender?: EmailSender;
@@ -450,6 +454,18 @@ export class DashService {
       }
       return total;
     };
+  }
+
+  // ------------------------------------------------------------ exportacao
+
+  /** CSV das vendas no periodo (no maximo 366 dias), para o contador. */
+  async exportCsv(merchant: ApiClient, input: { kind: ExportKind; from: Date; to: Date }): Promise<string> {
+    if (!this.deps.db) throw new ValidationError('exportacao indisponivel');
+    if (input.to.getTime() < input.from.getTime()) throw new ValidationError('periodo invalido');
+    if (input.to.getTime() - input.from.getTime() > 366 * 86_400_000) {
+      throw new ValidationError('exporte no maximo um ano por vez');
+    }
+    return toCsv(await exportRows(this.deps.db, merchant.id, input));
   }
 
   // ------------------------------------------------------------- integracao

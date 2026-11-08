@@ -100,6 +100,23 @@ const STATUS: Record<PaymentKind, { id: string; label: string }[]> = {
   ],
 };
 
+function ExportForm({ merchantId }: { merchantId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const monthStart = today.slice(0, 8) + '01';
+  const [from, setFrom] = useState(monthStart);
+  const [to, setTo] = useState(today);
+  const href = `/v1/dash/merchants/${merchantId}/export.csv?kind=all&from=${from}&to=${to}`;
+  return (
+    <div className="export">
+      <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} aria-label="De" />
+      <input type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} aria-label="Até" />
+      <a className="btn btn-ghost" href={href} download>
+        Exportar CSV
+      </a>
+    </div>
+  );
+}
+
 export default function PaymentsPage() {
   const merchantId = useMerchantId();
   const navigate = useNavigate();
@@ -137,7 +154,11 @@ export default function PaymentsPage() {
 
   return (
     <>
-      <PageHeader title="Pagamentos" subtitle="Tudo o que seus clientes pagaram ou ainda vão pagar." />
+      <PageHeader
+        title="Pagamentos"
+        subtitle="Tudo o que seus clientes pagaram ou ainda vão pagar."
+        actions={<ExportForm merchantId={merchantId} />}
+      />
       <div className="tabs">
         {TABS.map((tab) => (
           <button key={tab.id} className={tab.id === tipo ? 'active' : ''} onClick={() => update({ tipo: tab.id, status: '' })}>

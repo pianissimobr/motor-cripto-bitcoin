@@ -780,3 +780,13 @@ pre.json {
   flex-direction: column;
   gap: 6px;
 }
+
+.export {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.export input {
+  width: auto;
+}

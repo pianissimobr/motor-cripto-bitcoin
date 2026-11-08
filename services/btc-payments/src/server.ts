@@ -223,6 +223,7 @@ export async function main(): Promise<void> {
           logger,
           repos,
           queries: createDashQueries(db.db),
+          db: db.db,
           clients,
           auth: dashAuth,
           emailSender,
