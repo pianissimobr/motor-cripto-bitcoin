@@ -35,6 +35,7 @@ async function withAltcha<T>(run: (altcha: string | undefined) => Promise<T>): P
 }
 
 export function LoginPage() {
+  const config = useAuthConfig();
   const { refresh } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
@@ -72,9 +73,11 @@ export function LoginPage() {
       footer={
         <>
           <Link to="/esqueci">Esqueci a senha</Link>
-          <span>
-            Novo por aqui? <Link to="/cadastro">Criar conta</Link>
-          </span>
+          {config.data?.signup_enabled !== false && (
+            <span>
+              Novo por aqui? <Link to="/cadastro">Criar conta</Link>
+            </span>
+          )}
         </>
       }
     >
