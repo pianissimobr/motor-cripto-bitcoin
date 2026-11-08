@@ -1849,3 +1849,39 @@ export const nuvemshopPayments = pgTable(
     uniqueIndex('nuvemshop_payments_order_uq').on(table.storeId, table.orderId),
   ],
 );
+
+/** Conta Bling da loja (OAuth): as vendas pagas viram contas a receber. */
+export const blingConnections = pgTable('bling_connections', {
+  clientId: uuid('client_id')
+    .primaryKey()
+    .references(() => apiClients.id, { onDelete: 'cascade' }),
+  accessTokenEnc: text('access_token_enc').notNull(),
+  refreshTokenEnc: text('refresh_token_enc').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+  /** Conta financeira (portador) e categoria de receita para dar baixa. */
+  portadorId: bigint('portador_id', { mode: 'bigint' }),
+  categoriaId: bigint('categoria_id', { mode: 'bigint' }),
+  consumidorFinalId: bigint('consumidor_final_id', { mode: 'bigint' }),
+  connectedAt: timestamp('connected_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastError: text('last_error'),
+});
+
+/** Cada fatura paga lancada no Bling (uma vez so). */
+export const blingExports = pgTable(
+  'bling_exports',
+  {
+    invoiceId: uuid('invoice_id')
+      .primaryKey()
+      .references(() => invoices.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    contaId: bigint('conta_id', { mode: 'bigint' }),
+    settled: boolean('settled').notNull().default(false),
+    attempts: integer('attempts').notNull().default(0),
+    error: text('error'),
+    exportedAt: timestamp('exported_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (table) => [index('bling_exports_client_idx').on(table.clientId)],
+);

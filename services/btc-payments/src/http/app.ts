@@ -167,6 +167,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (deps.services) {
       registerApiRoutes(routes, deps.services);
       if (deps.services.invoices) registerInvoiceRoutes(routes, { invoices: deps.services.invoices });
+      if (deps.services.bling?.enabled) {
+        const bling = deps.services.bling;
+        const base = deps.services.config.service.publicBaseUrl.replace(/\/+$/, '');
+        routes.get('/integrations/bling/callback', async (request, reply) => {
+          const query = request.query as { code?: string; state?: string };
+          try {
+            if (!query.code || !query.state) throw new Error('sem code');
+            await bling.completeInstall(String(query.code).slice(0, 200), String(query.state).slice(0, 1000));
+            return reply.redirect(`${base}/painel/integracao?bling=ok`);
+          } catch (err) {
+            request.log.warn({ err }, 'conexao Bling falhou');
+            return reply.redirect(`${base}/painel/integracao?bling=erro`);
+          }
+        });
+      }
       if (deps.services.nuvemshop?.enabled) {
         registerNuvemshopRoutes(routes, {
           nuvemshop: deps.services.nuvemshop,
@@ -188,6 +203,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             ...(deps.services.invoices ? { invoices: deps.services.invoices } : {}),
             ...(deps.services.pixDireto ? { pixDireto: deps.services.pixDireto } : {}),
             ...(deps.services.nuvemshop?.enabled ? { nuvemshop: deps.services.nuvemshop } : {}),
+            ...(deps.services.bling?.enabled ? { bling: deps.services.bling } : {}),
           });
         }
         registerPainelPages(routes, publicDir);

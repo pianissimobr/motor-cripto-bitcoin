@@ -8,6 +8,7 @@ import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
 import type { PixDiretoService } from '../services/pix-direto-service.js';
 import type { NuvemshopService } from '../services/nuvemshop-service.js';
+import type { BlingService } from '../services/bling-service.js';
 import { dashSessionGuard } from './dash-session.js';
 
 export type DashRoutesDeps = {
@@ -17,6 +18,7 @@ export type DashRoutesDeps = {
   invoices?: InvoiceService;
   pixDireto?: PixDiretoService;
   nuvemshop?: NuvemshopService;
+  bling?: BlingService;
 };
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
@@ -312,6 +314,34 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
     app.post('/v1/dash/merchants/:merchantId/nuvemshop/connect', opts, async (request) => ({
       authorize_url: nuvemshop.authorizeUrl((await merchantOf(request)).id),
     }));
+  }
+
+  // ---- Bling (contabilidade)
+
+  const bling = deps.bling;
+  app.get('/v1/dash/merchants/:merchantId/bling', opts, async (request) => {
+    const merchant = await merchantOf(request);
+    if (!bling) return { available: false, connected: false };
+    return bling.status(merchant.id);
+  });
+  if (bling) {
+    app.post('/v1/dash/merchants/:merchantId/bling/connect', opts, async (request) => ({
+      authorize_url: bling.authorizeUrl((await merchantOf(request)).id),
+    }));
+    app.get('/v1/dash/merchants/:merchantId/bling/options', opts, async (request) => bling.options((await merchantOf(request)).id));
+    app.put('/v1/dash/merchants/:merchantId/bling/settings', opts, async (request) => {
+      const merchant = await merchantOf(request);
+      const body = parse(
+        z.object({ portador_id: z.string().max(20).nullable(), categoria_id: z.string().max(20).nullable() }).strict(),
+        request.body ?? {},
+        'corpo',
+      );
+      return bling.setSettings(merchant.id, { portadorId: body.portador_id, categoriaId: body.categoria_id });
+    });
+    app.delete('/v1/dash/merchants/:merchantId/bling', opts, async (request) => {
+      await bling.disconnect((await merchantOf(request)).id);
+      return { connected: false };
+    });
   }
 
   // ---- banco da loja (Pix direto confirmado pela API Pix)

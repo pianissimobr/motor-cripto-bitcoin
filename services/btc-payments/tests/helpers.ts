@@ -89,6 +89,8 @@ export async function truncateAll(db: DbClient): Promise<void> {
         merchant_pix_banks,
         nuvemshop_payments,
         nuvemshop_stores,
+        bling_exports,
+        bling_connections,
         onchain_payments,
         onchain_sweeps,
         lightning_payments,

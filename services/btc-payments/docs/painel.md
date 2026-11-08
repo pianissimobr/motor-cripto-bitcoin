@@ -192,3 +192,26 @@ O `process_payment` não traz o número do pedido. Por isso:
 
 O fluxo foi testado com a API da Nuvemshop simulada, a partir da documentação
 deles (versão 2025-03).
+
+## Bling (contabilidade)
+
+Liga com `BLING_CLIENT_ID` e `BLING_CLIENT_SECRET`, de um app criado na Central
+de Extensões do Bling, com o redirect em `/integrations/bling/callback`. O
+contrato segue a especificação OpenAPI oficial da API v3.
+
+- **Conectar:** "Conectar Bling" em Integração e API faz o OAuth com `state`
+  assinado. Os tokens ficam cifrados. O access token é renovado antes de
+  vencer, e o refresh token muda a cada renovação.
+- **Lançar:** o job `bling-export` do worker pega cada fatura de produção paga
+  em real depois da conexão e cria uma conta a receber (`POST /contas/receber`):
+  - contato "Consumidor Final", sem dado pessoal do pagador;
+  - número do documento = número do pedido;
+  - histórico com o meio de pagamento e o comprovante.
+- **Dar baixa:** se a loja escolheu conta financeira e categoria de receita, a
+  conta entra já recebida (`POST /contas/receber/{id}/baixar`).
+- **Um lançamento por venda:** cada venda é lançada uma vez. Em caso de erro, o
+  motor tenta de novo até 5 vezes, e o último erro aparece no painel.
+- **Ritmo:** no máximo 3 chamadas por segundo, o limite do Bling.
+
+O que foi pago antes da conexão não é lançado; para isso há o "Exportar CSV".
+Testado com a API do Bling simulada.

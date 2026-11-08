@@ -7,6 +7,7 @@ import { dateTime } from '../format';
 import { useMerchantId } from '../session';
 import type { Integration, WebhookEvent } from '../types';
 import { StoreKeys } from './StoreKeys';
+import { BlingCard } from './BlingCard';
 
 type Credentials = { api_key: string; request_secret: string; webhook_secret: string };
 
@@ -186,6 +187,8 @@ export default function IntegrationPage() {
       </Card>
 
       <StoreKeys merchantId={merchantId} apiBase={data?.api_base_url ?? ''} />
+
+      <BlingCard merchantId={merchantId} />
 
       <Card title="Exemplos">
         <h3>Chamada assinada (curl)</h3>

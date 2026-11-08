@@ -53,6 +53,7 @@ import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
 import type { PixDiretoService } from '../services/pix-direto-service.js';
 import type { NuvemshopService } from '../services/nuvemshop-service.js';
+import type { BlingService } from '../services/bling-service.js';
 import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export type ApiServices = {
@@ -89,6 +90,8 @@ export type ApiServices = {
   pixDireto?: PixDiretoService;
   /** App de pagamento da Nuvemshop (com NUVEMSHOP_* configurado). */
   nuvemshop?: NuvemshopService;
+  /** Bling: vendas pagas viram contas a receber. */
+  bling?: BlingService;
   autho?: AuthoIssuerClient;
 };
 

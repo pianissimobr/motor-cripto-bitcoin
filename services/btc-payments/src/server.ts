@@ -34,6 +34,7 @@ import { DashService } from './services/dash-service.js';
 import { InvoiceService } from './services/invoice-service.js';
 import { PixDiretoService } from './services/pix-direto-service.js';
 import { NuvemshopService } from './services/nuvemshop-service.js';
+import { BlingService } from './services/bling-service.js';
 import { createDashQueries } from './db/dash-queries.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
@@ -221,6 +222,7 @@ export async function main(): Promise<void> {
       ...(swap ? { swap } : {}),
     });
     const nuvemshop = new NuvemshopService({ db: db.db, repos, config, logger, invoices });
+    const bling = new BlingService({ db: db.db, repos, config, logger });
     const dash = dashAuth
       ? new DashService({
           config,
@@ -264,6 +266,7 @@ export async function main(): Promise<void> {
         invoices,
         pixDireto,
         nuvemshop,
+        bling,
         ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(swap ? { swap } : {}),

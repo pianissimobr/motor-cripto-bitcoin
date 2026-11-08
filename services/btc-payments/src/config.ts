@@ -324,6 +324,9 @@ const EnvSchema = z
     NUVEMSHOP_PROVIDER_TAX_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().max(20).optional()),
     /** Chave publica (PEM) que confere o X-Signature das chamadas da Nuvemshop. */
     NUVEMSHOP_SIGNING_PUBLIC_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().max(5000).optional()),
+    /** App do Bling (Central de extensoes). Sem os dois, desligado. */
+    BLING_CLIENT_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(1).max(200).optional()),
+    BLING_CLIENT_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).max(300).optional()),
     AUTHO_ISSUER_SECRET: z.preprocess(
       (v) => (v === '' ? undefined : v),
       z.string().min(16, 'AUTHO_ISSUER_SECRET precisa ter ao menos 16 caracteres').optional(),
@@ -572,6 +575,7 @@ export type AppConfig = {
     rateLimitMax: number;
     sessionTtlSeconds: number;
   };
+  bling: { clientId: string; clientSecret: string } | null;
   nuvemshop: {
     appId: string;
     clientId: string;
@@ -878,6 +882,10 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       rateLimitMax: env.RATE_LIMIT_MAX,
       sessionTtlSeconds: env.SESSION_TTL_SECONDS,
     },
+    bling:
+      env.BLING_CLIENT_ID && env.BLING_CLIENT_SECRET
+        ? { clientId: env.BLING_CLIENT_ID, clientSecret: env.BLING_CLIENT_SECRET }
+        : null,
     nuvemshop:
       env.NUVEMSHOP_APP_ID && env.NUVEMSHOP_CLIENT_ID && env.NUVEMSHOP_CLIENT_SECRET
         ? {

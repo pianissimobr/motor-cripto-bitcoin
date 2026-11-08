@@ -155,7 +155,8 @@ maybeDescribe('painel: conta e sessao (integration)', () => {
     }
     expect(codes.slice(0, 9).every((c) => c === 401)).toBe(true);
     expect(codes.at(-1)).toBe(429);
-  });
+    // 13 logins com scrypt de verdade: passa dos 5 s padrao em maquina ocupada.
+  }, 30_000);
 
   it('cadastro fechado por flag', async () => {
     const app = buildDashApp({ config: testConfig({ DASHBOARD_ENABLED: 'true', DASHBOARD_SIGNUP_ENABLED: 'false' }), repos });
