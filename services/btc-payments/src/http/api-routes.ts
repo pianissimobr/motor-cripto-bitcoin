@@ -51,6 +51,7 @@ import type { EmailSender } from '../services/email-sender.js';
 import type { DashAuthService } from '../services/dash-auth-service.js';
 import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
+import type { PixDiretoService } from '../services/pix-direto-service.js';
 import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export type ApiServices = {
@@ -83,6 +84,8 @@ export type ApiServices = {
   dash?: DashService;
   /** Faturas hospedadas e chaves de loja (plugins). */
   invoices?: InvoiceService;
+  /** API Pix do banco da loja (Pix direto confirmado). */
+  pixDireto?: PixDiretoService;
   autho?: AuthoIssuerClient;
 };
 

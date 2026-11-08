@@ -6,6 +6,7 @@ import { Alert, Card, CopyButton, Empty, Field, PageHeader, Spinner } from '../c
 import { dateTime, usdc } from '../format';
 import { useMerchantId } from '../session';
 import type { Wallet } from '../types';
+import { PixBank } from './PixBank';
 
 type Pending =
   | { kind: 'add'; address: string; label: string }
@@ -158,6 +159,7 @@ export default function WalletsPage() {
           Outras redes e USDT: em breve.
         </p>
       </Card>
+      <PixBank merchantId={merchantId} />
       {pending && (
         <StepUpDialog
           title={pending.kind === 'add' ? 'Confirmar nova carteira' : pending.kind === 'default' ? 'Trocar carteira padrão' : 'Remover carteira'}

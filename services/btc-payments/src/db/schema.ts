@@ -1766,3 +1766,35 @@ export const invoices = pgTable(
     check('invoices_currency_chk', sql`${table.currency} in ('BRL','USD')`),
   ],
 );
+
+/**
+ * API Pix do banco da propria loja (conta PJ): com ela, o Pix da fatura cai
+ * em reais na conta da loja e a confirmacao e automatica. Credenciais e
+ * certificado cifrados (AAD = id da loja).
+ */
+export const merchantPixBanks = pgTable(
+  'merchant_pix_banks',
+  {
+    clientId: uuid('client_id')
+      .primaryKey()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    psp: text('psp').$type<'efi' | 'inter' | 'outro'>().notNull(),
+    environment: text('environment').$type<'producao' | 'homologacao'>().notNull(),
+    baseUrl: text('base_url'),
+    tokenUrl: text('token_url'),
+    oauthClientId: text('oauth_client_id').notNull(),
+    oauthClientSecretEnc: text('oauth_client_secret_enc').notNull(),
+    certificateEnc: text('certificate_enc').notNull(),
+    certificatePassphraseEnc: text('certificate_passphrase_enc'),
+    pixKey: text('pix_key').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    lastCheckAt: timestamp('last_check_at', { withTimezone: true, mode: 'date' }),
+    lastCheckError: text('last_check_error'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check('merchant_pix_banks_psp_chk', sql`${table.psp} in ('efi','inter','outro')`),
+    check('merchant_pix_banks_env_chk', sql`${table.environment} in ('producao','homologacao')`),
+  ],
+);

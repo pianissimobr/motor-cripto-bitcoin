@@ -6,6 +6,7 @@ import type { ApiClient } from '../domain/types.js';
 import type { DashAuthService } from '../services/dash-auth-service.js';
 import type { DashService } from '../services/dash-service.js';
 import type { InvoiceService } from '../services/invoice-service.js';
+import type { PixDiretoService } from '../services/pix-direto-service.js';
 import { dashSessionGuard } from './dash-session.js';
 
 export type DashRoutesDeps = {
@@ -13,6 +14,7 @@ export type DashRoutesDeps = {
   auth: DashAuthService;
   dash: DashService;
   invoices?: InvoiceService;
+  pixDireto?: PixDiretoService;
 };
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
@@ -291,6 +293,66 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
       );
       const rows = await invoices.listForClient(merchant.id, { limit: query.limit, mode: query.mode });
       return { invoices: rows.map((row) => invoices.dto(row)) };
+    });
+  }
+
+  // ---- banco da loja (Pix direto confirmado pela API Pix)
+
+  const pixDireto = deps.pixDireto;
+  if (pixDireto) {
+    app.get('/v1/dash/merchants/:merchantId/pix-bank', opts, async (request) =>
+      pixDireto.get((await merchantOf(request)).id),
+    );
+
+    app.put('/v1/dash/merchants/:merchantId/pix-bank', opts, async (request) => {
+      const merchant = await merchantOf(request);
+      const body = parse(
+        z
+          .object({
+            psp: z.enum(['efi', 'inter', 'outro']),
+            environment: z.enum(['producao', 'homologacao']),
+            base_url: z.string().trim().max(300).nullable().optional(),
+            token_url: z.string().trim().max(300).nullable().optional(),
+            client_id: z.string().trim().min(1).max(200),
+            client_secret: z.string().max(500).optional(),
+            certificate_p12_base64: z.string().max(40_000).optional(),
+            certificate_passphrase: z.string().max(200).optional(),
+            pix_key: z.string().trim().min(5).max(77),
+            step_up: stepUp,
+          })
+          .strict(),
+        request.body ?? {},
+        'corpo',
+      );
+      // Credencial bancaria: senha + codigo, como carteira.
+      await auth.assertStepUp(request.dashUser!, {
+        password: body.step_up.password,
+        requestId: body.step_up.request_id,
+        code: body.step_up.code,
+      });
+      const saved = await pixDireto.save(
+        merchant.id,
+        {
+          psp: body.psp,
+          environment: body.environment,
+          baseUrl: body.base_url,
+          tokenUrl: body.token_url,
+          clientId: body.client_id,
+          clientSecret: body.client_secret,
+          certificateP12Base64: body.certificate_p12_base64,
+          certificatePassphrase: body.certificate_passphrase,
+          pixKey: body.pix_key,
+        },
+        `painel:${request.dashUser!.id}`,
+      );
+      await dash.notifyBankChange(merchant);
+      return saved;
+    });
+
+    app.delete('/v1/dash/merchants/:merchantId/pix-bank', opts, async (request) => {
+      const merchant = await merchantOf(request);
+      await pixDireto.remove(merchant.id, `painel:${request.dashUser!.id}`);
+      return { configured: false };
     });
   }
 

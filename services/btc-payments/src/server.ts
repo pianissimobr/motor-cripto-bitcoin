@@ -32,6 +32,7 @@ import { AuthoIssuerClient } from './adapters/autho/client.js';
 import { DashAuthService } from './services/dash-auth-service.js';
 import { DashService } from './services/dash-service.js';
 import { InvoiceService } from './services/invoice-service.js';
+import { PixDiretoService } from './services/pix-direto-service.js';
 import { createDashQueries } from './db/dash-queries.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
@@ -207,12 +208,14 @@ export async function main(): Promise<void> {
     const dashAuth = config.dashboard.enabled
       ? new DashAuthService({ repos, clients, config, logger, emailSender, ...(autho ? { autho } : {}) })
       : undefined;
+    const pixDireto = new PixDiretoService({ db: db.db, repos, config, logger });
     const invoices = new InvoiceService({
       db: db.db,
       repos,
       config,
       logger,
       prices: fxPrices,
+      pixDireto,
       ...(pixCharges ? { pixCharges } : {}),
       ...(swap ? { swap } : {}),
     });
@@ -257,6 +260,7 @@ export async function main(): Promise<void> {
         ...(dashAuth ? { dashAuth } : {}),
         ...(dash ? { dash } : {}),
         invoices,
+        pixDireto,
         ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(swap ? { swap } : {}),

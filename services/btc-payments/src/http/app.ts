@@ -176,6 +176,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             auth: deps.services.dashAuth,
             dash: deps.services.dash,
             ...(deps.services.invoices ? { invoices: deps.services.invoices } : {}),
+            ...(deps.services.pixDireto ? { pixDireto: deps.services.pixDireto } : {}),
           });
         }
         registerPainelPages(routes, publicDir);

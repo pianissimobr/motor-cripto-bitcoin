@@ -86,6 +86,7 @@ export async function truncateAll(db: DbClient): Promise<void> {
         webhook_events,
         invoices,
         store_keys,
+        merchant_pix_banks,
         onchain_payments,
         onchain_sweeps,
         lightning_payments,

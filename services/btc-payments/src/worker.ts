@@ -8,6 +8,7 @@ import { EsploraClient } from './adapters/chain/esplora.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { OnchainWatcher } from './services/onchain-watcher.js';
 import { InvoiceService } from './services/invoice-service.js';
+import { PixDiretoService } from './services/pix-direto-service.js';
 import { WebhookDeliveryService } from './services/webhook-delivery-service.js';
 import { AlertService } from './services/alert-service.js';
 import { LedgerService } from './ledger/ledger-service.js';
@@ -194,6 +195,7 @@ export async function startWorker(): Promise<WorkerHandle> {
     repos,
     config,
     logger,
+    pixDireto: new PixDiretoService({ db: db.db, repos, config, logger }),
     ...(pixCharges ? { pixCharges } : {}),
     ...(swap ? { swap } : {}),
   });

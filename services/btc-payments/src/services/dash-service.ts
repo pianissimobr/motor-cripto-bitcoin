@@ -456,6 +456,16 @@ export class DashService {
     };
   }
 
+  /** Aviso aos membros quando o banco do Pix direto muda. */
+  async notifyBankChange(merchant: ApiClient): Promise<void> {
+    await this.notifyMembers(
+      merchant,
+      'Banco do Pix alterado',
+      `A conta bancaria que recebe o Pix da loja ${merchant.name} foi configurada ou alterada no painel. ` +
+        'Se nao foi voce, entre no painel, remova a configuracao e troque sua senha.',
+    );
+  }
+
   // ------------------------------------------------------------ exportacao
 
   /** CSV das vendas no periodo (no maximo 366 dias), para o contador. */
