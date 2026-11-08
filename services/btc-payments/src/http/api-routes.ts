@@ -49,6 +49,7 @@ import { registerUserRoutes } from './user-routes.js';
 import { createWalletSchema } from './wallet-schema.js';
 import type { EmailSender } from '../services/email-sender.js';
 import type { DashAuthService } from '../services/dash-auth-service.js';
+import type { DashService } from '../services/dash-service.js';
 import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export type ApiServices = {
@@ -78,6 +79,7 @@ export type ApiServices = {
   emailSender?: EmailSender;
   /** Painel do lojista (`/auth/*`, `/v1/dash/*`), com DASHBOARD_ENABLED. */
   dashAuth?: DashAuthService;
+  dash?: DashService;
   autho?: AuthoIssuerClient;
 };
 

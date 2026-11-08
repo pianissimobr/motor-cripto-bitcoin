@@ -2747,7 +2747,8 @@ export function createRepositories(db: Db): Repositories {
             eq(merchantWallets.purpose, 'loja'),
           ),
         )
-        .orderBy(asc(merchantWallets.createdAt))
+        // A padrao escolhida no painel; sem padrao, a mais antiga.
+        .orderBy(desc(merchantWallets.isDefault), asc(merchantWallets.createdAt))
         .limit(1);
       return rows[0] ?? null;
     },

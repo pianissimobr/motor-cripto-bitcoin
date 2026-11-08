@@ -393,6 +393,42 @@ export class DashAuthService {
     }
   }
 
+  /**
+   * Confirmacao de operacao sensivel (carteira, chave de API): pede a senha
+   * e, com o authO, manda um codigo por e-mail. Sem o authO (so fora de
+   * producao) a senha basta.
+   */
+  async startStepUp(user: User, password: string, altcha?: string): Promise<{ requestId: string; emailCode: boolean }> {
+    this.assertPassword(user, password);
+    if (!this.deps.autho) return { requestId: randomUUID(), emailCode: false };
+    const issued = await this.deps.autho.issueCode({
+      subject: this.subjectFor(user.email),
+      email: user.email,
+      purpose: 'login_2fa',
+      altcha: this.requireAltcha(altcha),
+    });
+    return { requestId: issued.requestId, emailCode: true };
+  }
+
+  async assertStepUp(
+    user: User,
+    input: { password: string; requestId?: string | undefined; code?: string | undefined },
+  ): Promise<void> {
+    this.assertPassword(user, input.password);
+    if (!this.deps.autho) return;
+    if (!input.requestId || !input.code) {
+      throw new ValidationError('informe o codigo enviado por e-mail');
+    }
+    const verified = await this.deps.autho.verifyCode({
+      requestId: input.requestId,
+      subject: this.subjectFor(user.email),
+      code: input.code,
+    });
+    if (verified.email !== user.email || verified.purpose !== 'login_2fa') {
+      throw new ValidationError('codigo invalido');
+    }
+  }
+
   async logout(sessionToken: string): Promise<void> {
     const session = await this.deps.repos.findSessionByTokenHash(hashOpaqueToken(sessionToken));
     if (session) await this.deps.repos.revokeSession(session.id);

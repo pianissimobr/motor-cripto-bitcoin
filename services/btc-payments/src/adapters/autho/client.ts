@@ -9,7 +9,8 @@ import { AppError, UpstreamError, ValidationError } from '../../domain/errors.js
  * Chamadas servidor-a-servidor assinadas:
  * HMAC-SHA256(secret, `${timestamp}.${nonce}.${rawBody}`) em hex.
  */
-export type AuthoPurpose = 'email_verification' | 'password_reset';
+/** `login_2fa` serve de confirmacao de operacao sensivel no painel (step-up). */
+export type AuthoPurpose = 'email_verification' | 'password_reset' | 'login_2fa';
 
 export type AuthoIssuedCode = { requestId: string; email: string; expiresAt: string };
 export type AuthoVerifiedCode = { email: string; purpose: string };

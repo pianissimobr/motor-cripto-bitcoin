@@ -11,6 +11,7 @@ import type { Readiness } from './readiness.js';
 import { registerRoutes } from './routes.js';
 import { registerApiRoutes, type ApiServices } from './api-routes.js';
 import { registerAuthRoutes } from './auth-routes.js';
+import { registerDashRoutes } from './dash-routes.js';
 
 export type AppDeps = {
   config: {
@@ -150,6 +151,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
           auth: deps.services.dashAuth,
           ...(deps.services.autho ? { autho: deps.services.autho } : {}),
         });
+        if (deps.services.dash) {
+          registerDashRoutes(routes, {
+            config: deps.services.config,
+            auth: deps.services.dashAuth,
+            dash: deps.services.dash,
+          });
+        }
       }
     }
   });

@@ -42,6 +42,8 @@ export type CreatePaymentRequestInput = {
   description?: string | null;
   expiresInSeconds?: number;
   metadata?: Record<string, unknown> | null;
+  /** Carteira da loja que recebe o USDC (sem ela, a padrao). */
+  destinationAddress?: string | null;
 };
 
 export type PaymentRequestDto = {
@@ -243,6 +245,7 @@ export class PaymentRequestService {
         externalId: `${input.externalId}:pix`,
         amountBrlCents: input.amountFiatCents,
         payerTaxNumber: input.payerTaxNumber!,
+        ...(input.destinationAddress ? { destinationAddress: input.destinationAddress } : {}),
         ...(input.payerName ? { payerName: input.payerName } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
       });
@@ -258,6 +261,7 @@ export class PaymentRequestService {
         externalId: `${input.externalId}:btc`,
         amountFiatCents: input.amountFiatCents,
         currency: input.currency,
+        ...(input.destinationAddress ? { destinationAddress: input.destinationAddress } : {}),
         ...(input.description ? { description: input.description } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
       });

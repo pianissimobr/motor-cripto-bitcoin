@@ -30,6 +30,8 @@ import { PaymentRequestService } from './services/payment-request-service.js';
 import { CashOutService } from './services/cashout-service.js';
 import { AuthoIssuerClient } from './adapters/autho/client.js';
 import { DashAuthService } from './services/dash-auth-service.js';
+import { DashService } from './services/dash-service.js';
+import { createDashQueries } from './db/dash-queries.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
@@ -206,6 +208,20 @@ export async function main(): Promise<void> {
     const dashAuth = config.dashboard.enabled
       ? new DashAuthService({ repos, clients, config, logger, emailSender, ...(autho ? { autho } : {}) })
       : undefined;
+    const dash = dashAuth
+      ? new DashService({
+          config,
+          logger,
+          repos,
+          queries: createDashQueries(db.db),
+          clients,
+          auth: dashAuth,
+          emailSender,
+          ...(pixCharges ? { pixCharges } : {}),
+          ...(swap ? { swap } : {}),
+          paymentRequests,
+        })
+      : undefined;
 
     const app = buildApp({
       config,
@@ -230,6 +246,7 @@ export async function main(): Promise<void> {
         walletNotifier,
         emailSender,
         ...(dashAuth ? { dashAuth } : {}),
+        ...(dash ? { dash } : {}),
         ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(swap ? { swap } : {}),
