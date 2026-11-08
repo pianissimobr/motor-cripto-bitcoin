@@ -190,6 +190,13 @@
       "when": 1794143147908,
       "tag": "0026_invoices",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794145375733,
+      "tag": "0027_invoice_usdc_pix_direto",
+      "breakpoints": true
     }
   ]
 }

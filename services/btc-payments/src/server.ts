@@ -130,16 +130,14 @@ export async function main(): Promise<void> {
       );
     }
     const walletNotifier = new WalletChangeNotifier({ repos, logger, alerts, emailSender });
-    const fx = new FxService(
-      db.db,
-      // Com cache: as fontes de taxa sao publicas e tem cota propria (a
-      // AwesomeAPI responde 429 com frequencia), e uma rajada de cobrancas
-      // nao pode virar uma rajada de requisicoes.
-      new CachedFxPriceProvider(
-        new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
-        config.fx.priceCacheMs,
-      ),
+    // Com cache: as fontes de taxa sao publicas e tem cota propria (a
+    // AwesomeAPI responde 429 com frequencia), e uma rajada de cobrancas
+    // nao pode virar uma rajada de requisicoes.
+    const fxPrices = new CachedFxPriceProvider(
+      new HttpFxPriceProvider({ timeoutMs: config.esplora.timeoutMs }),
+      config.fx.priceCacheMs,
     );
+    const fx = new FxService(db.db, fxPrices);
     const ledger = new LedgerService(db.db);
     const wallets = new MerchantWalletService(db.db);
     const metrics = new MetricsService({
@@ -214,6 +212,7 @@ export async function main(): Promise<void> {
       repos,
       config,
       logger,
+      prices: fxPrices,
       ...(pixCharges ? { pixCharges } : {}),
       ...(swap ? { swap } : {}),
     });

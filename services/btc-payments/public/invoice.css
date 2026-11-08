@@ -38,3 +38,4 @@ input { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--
 .error { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 0.9rem; }
 .hint { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top: 10px; }
 .timer { text-align: center; color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; }
+.hint.strong { color: var(--text); font-weight: 700; }

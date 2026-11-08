@@ -31,7 +31,7 @@ const createSchema = z
     success_url: z.string().trim().max(500).optional(),
     cancel_url: z.string().trim().max(500).optional(),
     ipn_callback_url: z.string().trim().max(500).optional(),
-    rails: z.array(z.enum(['pix', 'bitcoin'])).min(1).max(2).optional(),
+    rails: z.array(z.enum(['pix', 'pix_direto', 'bitcoin', 'usdc'])).min(1).max(4).optional(),
     expires_in_minutes: z.number().int().min(15).max(1440).optional(),
   })
   .strict();
@@ -163,6 +163,16 @@ export function registerInvoiceRoutes(app: FastifyInstance, deps: { invoices: In
   app.post('/i/:id/bitcoin', { config: PUBLIC_POST }, async (request) => {
     const { id } = parse(idParams, request.params, 'fatura');
     return invoices.chooseBitcoin(id);
+  });
+
+  app.post('/i/:id/usdc', { config: PUBLIC_POST }, async (request) => {
+    const { id } = parse(idParams, request.params, 'fatura');
+    return invoices.chooseUsdc(id);
+  });
+
+  app.post('/i/:id/pix-direto', { config: PUBLIC_POST }, async (request) => {
+    const { id } = parse(idParams, request.params, 'fatura');
+    return invoices.choosePixDireto(id);
   });
 
   app.post('/i/:id/simulate', { config: PUBLIC_POST }, async (request) => {

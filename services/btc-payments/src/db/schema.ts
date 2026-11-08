@@ -1724,13 +1724,28 @@ export const invoices = pgTable(
     successUrl: text('success_url'),
     cancelUrl: text('cancel_url'),
     ipnUrl: text('ipn_url'),
-    rails: jsonb('rails').$type<Array<'pix' | 'bitcoin'>>().notNull(),
+    rails: jsonb('rails').$type<Array<'pix' | 'bitcoin' | 'usdc' | 'pix_direto'>>().notNull(),
     status: text('status').$type<InvoiceStatus>().notNull().default('aguardando'),
     pixChargeId: uuid('pix_charge_id').references(() => pixCharges.id, { onDelete: 'set null' }),
     swapOrderId: uuid('swap_order_id').references(() => swapOrders.id, { onDelete: 'set null' }),
     /** Trilho escolhido no modo teste (nao ha cobranca real). */
-    testRail: text('test_rail').$type<'pix' | 'bitcoin'>(),
-    paidRail: text('paid_rail').$type<'pix' | 'bitcoin'>(),
+    testRail: text('test_rail').$type<'pix' | 'bitcoin' | 'usdc' | 'pix_direto'>(),
+    paidRail: text('paid_rail').$type<'pix' | 'bitcoin' | 'usdc' | 'pix_direto'>(),
+    /**
+     * Trilho USDC direto: o pagador manda USDC da carteira dele para a da
+     * loja. O valor leva "centavos de centavo" unicos (ate 0,009999) para
+     * apontar qual transferencia pagou qual fatura.
+     */
+    usdcAmountMinor: bigint('usdc_amount_minor', { mode: 'bigint' }),
+    usdcAddress: text('usdc_address'),
+    usdcStartBlock: bigint('usdc_start_block', { mode: 'bigint' }),
+    /** Ultimo bloco ja varrido (a busca continua dali). */
+    usdcScannedBlock: bigint('usdc_scanned_block', { mode: 'bigint' }),
+    usdcTxHash: text('usdc_tx_hash'),
+    usdcLogIndex: integer('usdc_log_index'),
+    /** Pix direto: o txid da cobranca criada na API Pix do banco da loja. */
+    pixDiretoTxid: text('pix_direto_txid'),
+    pixDiretoCopypaste: text('pix_direto_copypaste'),
     txHash: text('tx_hash'),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
     paidAt: timestamp('paid_at', { withTimezone: true, mode: 'date' }),
@@ -1741,6 +1756,8 @@ export const invoices = pgTable(
     uniqueIndex('invoices_order_uq').on(table.clientId, table.mode, table.orderId),
     index('invoices_open_idx').on(table.status, table.updatedAt),
     index('invoices_client_created_idx').on(table.clientId, table.createdAt),
+    // Uma transferencia prova uma fatura so.
+    uniqueIndex('invoices_usdc_transfer_uq').on(table.usdcTxHash, table.usdcLogIndex),
     check('invoices_mode_chk', sql`${table.mode} in ('live','test')`),
     check(
       'invoices_status_chk',

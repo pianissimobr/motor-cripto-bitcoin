@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import QRCode from 'qrcode';
+import { getAddress } from 'viem';
 import type { AppConfig } from '../config.js';
 import { encryptSecret } from '../crypto/cipher.js';
 import { sha256Hex } from '../crypto/hmac.js';
@@ -14,15 +15,65 @@ import { assertWebhookUrl, defaultHostLookup, type HostLookup } from '../net/web
 import type { PixChargeService } from './pix-charge-service.js';
 import { normalizePayerTax } from './pix-charge-service.js';
 import type { SwapService } from './swap-service.js';
+import { createSwapDeliveryChain, type SwapDeliveryChain } from '../adapters/chain/swap-delivery-verify.js';
 
 export type StoreKeyMode = 'live' | 'test';
 export type InvoiceRow = typeof invoices.$inferSelect;
 export type StoreKeyRow = typeof storeKeys.$inferSelect;
-export type InvoiceRail = 'pix' | 'bitcoin';
+export type InvoiceRail = 'pix' | 'bitcoin' | 'usdc' | 'pix_direto';
 
 export type PublicPayment =
   | { rail: 'pix'; qr_copypaste: string; qr_svg: string; test: boolean }
-  | { rail: 'bitcoin'; address: string; amount_btc: string; bip21: string; qr_svg: string; test: boolean };
+  | { rail: 'pix_direto'; qr_copypaste: string; qr_svg: string; test: boolean }
+  | { rail: 'bitcoin'; address: string; amount_btc: string; bip21: string; qr_svg: string; test: boolean }
+  | {
+      rail: 'usdc';
+      address: string;
+      amount_usdc: string;
+      network: string;
+      token: string;
+      uri: string;
+      qr_svg: string;
+      test: boolean;
+    };
+
+/** O que a fatura precisa do Pix direto (implementado em pix-direto-service). */
+export type PixDiretoGateway = {
+  isConfigured(clientId: string): Promise<boolean>;
+  createCharge(input: {
+    clientId: string;
+    txid: string;
+    amountCents: bigint;
+    description: string;
+    expiresInSeconds: number;
+  }): Promise<{ copypaste: string }>;
+  checkPaid(clientId: string, txid: string): Promise<{ paid: boolean; txHash: string | null }>;
+};
+
+/** Preco do BTC em centavos, na moeda pedida (a cotacao dolar/real sai dai). */
+export type BtcPriceSource = { getBtcPrice(currency: 'BRL' | 'USD'): Promise<{ btcPriceCents: bigint }> };
+
+/** Unidades minimas de USDC (6 casas) -> "18.430027". */
+export function formatUsdc(minor: bigint): string {
+  return `${minor / 1_000_000n}.${(minor % 1_000_000n).toString().padStart(6, '0')}`;
+}
+
+/**
+ * Valor da fatura em USDC: dolar direto ou real convertido pelo preco do BTC
+ * nas duas moedas (mesma fonte), arredondado para cima ate o centavo (a loja
+ * nao recebe menos que o pedido).
+ */
+export function usdcMinorFor(amountCents: bigint, currency: 'BRL' | 'USD', prices?: { brl: bigint; usd: bigint }): bigint {
+  let minor: bigint;
+  if (currency === 'USD') {
+    minor = amountCents * 10_000n;
+  } else {
+    if (!prices || prices.brl <= 0n || prices.usd <= 0n) throw new ValidationError('cotacao do dolar indisponivel');
+    const numerator = amountCents * prices.usd * 10_000n;
+    minor = (numerator + prices.brl - 1n) / prices.brl;
+  }
+  return ((minor + 9_999n) / 10_000n) * 10_000n;
+}
 
 export type InvoiceServiceDeps = {
   db: Db;
@@ -31,6 +82,12 @@ export type InvoiceServiceDeps = {
   logger: Logger;
   pixCharges?: PixChargeService;
   swap?: SwapService;
+  /** Rede para o trilho USDC direto (injetavel nos testes). */
+  chain?: Pick<SwapDeliveryChain, 'getBlockNumber' | 'getTransferLogs'>;
+  /** Preco do BTC em real e em dolar: da a cotacao para a fatura em real. */
+  prices?: BtcPriceSource;
+  /** Pix na conta da propria loja, pela API Pix do banco dela. */
+  pixDireto?: PixDiretoGateway;
   /** Resolucao de DNS do ipn_callback_url (injetavel nos testes). */
   lookupHost?: HostLookup;
   now?: () => Date;
@@ -76,12 +133,18 @@ export function deriveInvoiceStatus(input: {
   current: InvoiceStatus;
   pix: PixChargeStatus | null;
   bitcoin: SwapStatus | null;
+  /** Transferencia de USDC com o valor exato, ja confirmada e reservada. */
+  usdcPaid?: boolean;
+  /** Cobranca no banco da loja (API Pix) concluida. */
+  pixDiretoPaid?: boolean;
   expiresAt: Date;
   now: Date;
 }): { status: InvoiceStatus; paidRail: InvoiceRail | null } {
   if (FINAL.includes(input.current) && input.current !== 'expirado') {
     return { status: input.current, paidRail: null };
   }
+  if (input.usdcPaid) return { status: 'pago', paidRail: 'usdc' };
+  if (input.pixDiretoPaid) return { status: 'pago', paidRail: 'pix_direto' };
   if (input.pix === 'pago' || input.pix === 'liquidado') return { status: 'pago', paidRail: 'pix' };
   if (input.bitcoin === 'liquidado') return { status: 'pago', paidRail: 'bitcoin' };
   const inFlight =
@@ -225,11 +288,13 @@ export class InvoiceService {
     if (existing) return { invoice: await this.sync(existing), reused: true };
 
     const amountCents = priceToCents(input.priceAmount);
-    const rails = [...new Set(input.rails ?? (['pix', 'bitcoin'] as InvoiceRail[]))];
-    if (input.priceCurrency !== 'BRL' && rails.includes('pix')) {
-      // Pix e em real; em dolar so o Bitcoin.
-      if (input.rails?.includes('pix')) throw new ValidationError('Pix so aceita price_currency BRL');
-      rails.splice(rails.indexOf('pix'), 1);
+    const rails = [...new Set(input.rails ?? (await this.defaultRails(client.id, mode)))];
+    for (const rail of ['pix', 'pix_direto'] as const) {
+      if (input.priceCurrency !== 'BRL' && rails.includes(rail)) {
+        // Pix e em real; em dolar so Bitcoin e USDC.
+        if (input.rails?.includes(rail)) throw new ValidationError('Pix so aceita price_currency BRL');
+        rails.splice(rails.indexOf(rail), 1);
+      }
     }
     if (rails.length === 0) throw new ValidationError('nenhum meio de pagamento disponivel');
     if (mode === 'live') {
@@ -280,6 +345,18 @@ export class InvoiceService {
       if (again) return { invoice: again, reused: true };
       throw err;
     }
+  }
+
+  /** Trilhos oferecidos quando a plataforma nao escolhe: o que esta ligado. */
+  async defaultRails(clientId: string, mode: StoreKeyMode): Promise<InvoiceRail[]> {
+    const rails: InvoiceRail[] = [];
+    const bank = mode === 'live' && this.deps.pixDireto ? await this.deps.pixDireto.isConfigured(clientId) : false;
+    // Com o banco da loja ligado, o Pix cai em reais na conta dela.
+    if (bank) rails.push('pix_direto');
+    else if (this.deps.pixCharges || mode === 'test') rails.push('pix');
+    if (this.deps.swap || mode === 'test') rails.push('bitcoin');
+    rails.push('usdc');
+    return rails;
   }
 
   async findByOrder(clientId: string, mode: StoreKeyMode, orderId: string): Promise<InvoiceRow | null> {
@@ -337,6 +414,15 @@ export class InvoiceService {
       if (row.status === 'aguardando' && this.now() >= row.expiresAt) return this.transition(row, 'expirado', null, null);
       return row;
     }
+    if (row.status === 'pago' || row.status === 'cancelado') return row;
+    let usdc: { paid: boolean; txHash: string | null } = { paid: Boolean(row.usdcTxHash), txHash: row.usdcTxHash };
+    if (!usdc.paid && row.usdcAmountMinor !== null) {
+      usdc = await this.scanUsdc(row);
+    }
+    let pixDireto: { paid: boolean; txHash: string | null } = { paid: false, txHash: null };
+    if (row.pixDiretoTxid && this.deps.pixDireto) {
+      pixDireto = await this.deps.pixDireto.checkPaid(row.clientId, row.pixDiretoTxid);
+    }
     let pix: PixChargeStatus | null = null;
     let pixTx: string | null = null;
     let bitcoin: SwapStatus | null = null;
@@ -351,8 +437,25 @@ export class InvoiceService {
       bitcoin = order?.status ?? null;
       swapTx = order?.deliveryTxHash ?? null;
     }
-    const next = deriveInvoiceStatus({ current: row.status, pix, bitcoin, expiresAt: row.expiresAt, now: this.now() });
-    const txHash = next.paidRail === 'pix' ? pixTx : next.paidRail === 'bitcoin' ? swapTx : row.txHash;
+    const next = deriveInvoiceStatus({
+      current: row.status,
+      pix,
+      bitcoin,
+      usdcPaid: usdc.paid,
+      pixDiretoPaid: pixDireto.paid,
+      expiresAt: row.expiresAt,
+      now: this.now(),
+    });
+    const txHash =
+      next.paidRail === 'pix'
+        ? pixTx
+        : next.paidRail === 'bitcoin'
+          ? swapTx
+          : next.paidRail === 'usdc'
+            ? usdc.txHash
+            : next.paidRail === 'pix_direto'
+              ? pixDireto.txHash
+              : row.txHash;
     if (next.status === row.status && txHash === row.txHash) return row;
     return this.transition(row, next.status, next.paidRail, txHash);
   }
@@ -385,6 +488,68 @@ export class InvoiceService {
     return updated;
   }
 
+  private chain(): Pick<SwapDeliveryChain, 'getBlockNumber' | 'getTransferLogs'> {
+    if (!this.deps.chain) {
+      this.deps.chain = createSwapDeliveryChain({
+        rpcUrls: this.deps.config.settlement.rpcUrls,
+        chainId: this.deps.config.settlement.chainId,
+        chainLabel: this.deps.config.settlement.chain,
+      });
+    }
+    return this.deps.chain;
+  }
+
+  /**
+   * Procura a transferencia de USDC com o valor exato para a carteira da
+   * loja, a partir do bloco em que o pagador escolheu USDC e so em blocos com
+   * a profundidade minima. Achou: reserva a transferencia (uma fatura por
+   * transferencia) e devolve o hash.
+   */
+  private async scanUsdc(row: InvoiceRow): Promise<{ paid: boolean; txHash: string | null }> {
+    const none = { paid: false, txHash: null };
+    if (row.usdcAmountMinor === null || !row.usdcAddress || row.usdcStartBlock === null) return none;
+    const chain = this.chain();
+    let latest: bigint;
+    try {
+      latest = await chain.getBlockNumber();
+    } catch {
+      return none;
+    }
+    const depth = BigInt(Math.max(1, this.deps.config.settlement.confirmations));
+    const deep = latest - (depth - 1n);
+    let from = row.usdcScannedBlock !== null ? row.usdcScannedBlock + 1n : row.usdcStartBlock;
+    // No maximo 20 mil blocos por rodada; a proxima continua dali.
+    const end = deep < from + 20_000n ? deep : from + 20_000n;
+    if (end < from) return none;
+    const contracts = this.deps.config.settlement.usdcAddresses.map((a) => a.toLowerCase());
+    for (; from <= end; from += 1_000n) {
+      const to = from + 999n < end ? from + 999n : end;
+      let logs;
+      try {
+        logs = await chain.getTransferLogs({ contracts, recipient: row.usdcAddress, fromBlock: from, toBlock: to });
+      } catch {
+        return none;
+      }
+      for (const log of logs) {
+        if (log.value !== row.usdcAmountMinor) continue;
+        if (await this.deps.repos.isSwapDeliveryClaimed(log.transactionHash, log.logIndex)) continue;
+        try {
+          const claimed = await this.deps.db
+            .update(invoices)
+            .set({ usdcTxHash: log.transactionHash.toLowerCase(), usdcLogIndex: log.logIndex, usdcScannedBlock: to, updatedAt: this.now() })
+            .where(and(eq(invoices.id, row.id), isNull(invoices.usdcTxHash)))
+            .returning({ id: invoices.id });
+          if (claimed.length > 0) return { paid: true, txHash: log.transactionHash.toLowerCase() };
+        } catch {
+          // Outra fatura levou esta transferencia (indice unico): segue.
+          continue;
+        }
+      }
+      await this.deps.db.update(invoices).set({ usdcScannedBlock: to }).where(eq(invoices.id, row.id));
+    }
+    return none;
+  }
+
   private async enqueueIpn(row: InvoiceRow): Promise<void> {
     const eventId = randomUUID();
     await this.deps.repos.insertWebhookEvent({
@@ -411,7 +576,23 @@ export class InvoiceService {
       .where(
         or(
           inArray(invoices.status, ['confirmando']),
-          and(eq(invoices.status, 'aguardando'), or(lt(invoices.expiresAt, this.now()), sql`${invoices.pixChargeId} is not null`, sql`${invoices.swapOrderId} is not null`)),
+          and(
+            eq(invoices.status, 'aguardando'),
+            or(
+              lt(invoices.expiresAt, this.now()),
+              sql`${invoices.pixChargeId} is not null`,
+              sql`${invoices.swapOrderId} is not null`,
+              sql`${invoices.usdcAmountMinor} is not null`,
+              sql`${invoices.pixDiretoTxid} is not null`,
+            ),
+          ),
+          // Pagamento atrasado: quem mandou USDC ou pagou o Pix do banco depois
+          // do vencimento ainda vira `pago` (o dinheiro ja esta com a loja).
+          and(
+            eq(invoices.status, 'expirado'),
+            sql`(${invoices.usdcAmountMinor} is not null or ${invoices.pixDiretoTxid} is not null)`,
+            sql`${invoices.expiresAt} > ${new Date(this.now().getTime() - 86_400_000).toISOString()}::timestamptz`,
+          ),
         ),
       )
       .orderBy(invoices.updatedAt)
@@ -487,15 +668,36 @@ export class InvoiceService {
    */
   async paymentFor(row: InvoiceRow, rail: InvoiceRail): Promise<PublicPayment | null> {
     const qr = (text: string) => QRCode.toString(text, { type: 'svg', margin: 1, width: 240 });
+    if (rail === 'usdc') {
+      if (row.usdcAmountMinor === null || !row.usdcAddress) return null;
+      if (row.mode === 'test' && row.testRail !== 'usdc') return null;
+      const token = this.deps.config.settlement.usdcAddresses[0] ?? '';
+      const amount = formatUsdc(row.usdcAmountMinor);
+      // EIP-681: carteiras como a MetaMask abrem a transferencia pronta.
+      const uri = `ethereum:${token}@${this.deps.config.settlement.chainId}/transfer?address=${row.usdcAddress}&uint256=${row.usdcAmountMinor}`;
+      return {
+        rail,
+        address: getAddress(row.usdcAddress),
+        amount_usdc: amount,
+        network: this.deps.config.settlement.chain === 'polygon' ? 'Polygon' : 'Base',
+        token,
+        uri,
+        qr_svg: await qr(uri),
+        test: row.mode === 'test',
+      };
+    }
     if (row.mode === 'test') {
       if (row.testRail !== rail) return null;
-      if (rail === 'pix') {
+      if (rail === 'pix' || rail === 'pix_direto') {
         const copy = `TESTE-SEM-VALOR-${row.id.slice(0, 8)}`;
         return { rail, qr_copypaste: copy, qr_svg: await qr(copy), test: true };
       }
       const address = 'tb1qteste0000000000000000000000000000000';
       const bip21 = `bitcoin:${address}?amount=0.0001`;
-      return { rail, address, amount_btc: '0.0001', bip21, qr_svg: await qr(bip21), test: true };
+      return { rail: 'bitcoin', address, amount_btc: '0.0001', bip21, qr_svg: await qr(bip21), test: true };
+    }
+    if (rail === 'pix_direto' && row.pixDiretoCopypaste) {
+      return { rail, qr_copypaste: row.pixDiretoCopypaste, qr_svg: await qr(row.pixDiretoCopypaste), test: false };
     }
     if (rail === 'pix' && row.pixChargeId) {
       const charge = await this.deps.repos.findPixChargeById(row.pixChargeId);
@@ -510,6 +712,115 @@ export class InvoiceService {
       return { rail, address: order.depositAddress, amount_btc: btc, bip21, qr_svg: await qr(bip21), test: false };
     }
     return null;
+  }
+
+  /**
+   * Pagador escolheu USDC: fixa o valor (com os "centavos de centavo"
+   * unicos), o endereco da loja e o bloco de partida da busca.
+   */
+  async chooseUsdc(id: string) {
+    let row = await this.findPublic(id);
+    if (!row) throw new NotFoundError('fatura nao encontrada');
+    row = await this.sync(row);
+    this.assertOpen(row, 'usdc');
+    if (row.usdcAmountMinor !== null && (row.mode === 'live' || row.testRail === 'usdc')) return this.paymentFor(row, 'usdc');
+
+    let prices: { brl: bigint; usd: bigint } | undefined;
+    if (row.currency === 'BRL') {
+      if (this.deps.prices) {
+        const [brl, usd] = await Promise.all([this.deps.prices.getBtcPrice('BRL'), this.deps.prices.getBtcPrice('USD')]);
+        prices = { brl: brl.btcPriceCents, usd: usd.btcPriceCents };
+      } else if (row.mode === 'test') {
+        prices = { brl: 500n, usd: 100n }; // teste sem cotacao: 5 reais por dolar
+      }
+    }
+    const base = usdcMinorFor(row.amountCents, row.currency, prices);
+
+    let address: string;
+    let startBlock: bigint;
+    if (row.mode === 'test') {
+      address = '0x000000000000000000000000000000000000dEaD';
+      startBlock = 0n;
+    } else {
+      const wallet = await this.deps.repos.findActiveUsdcSettlementWalletForClient(row.clientId);
+      const client = wallet ? null : await this.deps.repos.findClientById(row.clientId);
+      const found = wallet?.address ?? client?.settlementAddress ?? null;
+      if (!found) throw new ValidationError('a loja ainda nao tem carteira de recebimento');
+      address = found.toLowerCase();
+      startBlock = await this.chain().getBlockNumber();
+    }
+
+    // Valor unico entre as faturas em aberto para o mesmo endereco.
+    let amount = base;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const dust = BigInt(1 + Math.floor(Math.random() * 9_999));
+      const candidate = base + dust;
+      const clash = await this.deps.db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.usdcAddress, address),
+            eq(invoices.usdcAmountMinor, candidate),
+            inArray(invoices.status, ['aguardando', 'confirmando', 'expirado']),
+          ),
+        )
+        .limit(1);
+      if (clash.length === 0) {
+        amount = candidate;
+        break;
+      }
+    }
+    if (amount === base) throw new ConflictError('nao foi possivel reservar um valor unico; tente de novo');
+
+    const updated = await this.deps.db
+      .update(invoices)
+      .set({
+        usdcAmountMinor: amount,
+        usdcAddress: address,
+        usdcStartBlock: startBlock,
+        ...(row.mode === 'test' ? { testRail: 'usdc' as const } : {}),
+        updatedAt: this.now(),
+      })
+      .where(and(eq(invoices.id, row.id), isNull(invoices.usdcAmountMinor)))
+      .returning();
+    const fresh = updated[0] ?? (await this.findPublic(row.id))!;
+    return this.paymentFor(fresh, 'usdc');
+  }
+
+  /**
+   * Pagador escolheu Pix e a loja ligou o banco dela: cria a cobranca na API
+   * Pix do banco (o dinheiro cai em reais na conta da loja). Sem CPF: o
+   * banco identifica o pagador.
+   */
+  async choosePixDireto(id: string) {
+    let row = await this.findPublic(id);
+    if (!row) throw new NotFoundError('fatura nao encontrada');
+    row = await this.sync(row);
+    this.assertOpen(row, 'pix_direto');
+    if (row.mode === 'test') {
+      await this.deps.db.update(invoices).set({ testRail: 'pix_direto', updatedAt: this.now() }).where(eq(invoices.id, row.id));
+      return this.paymentFor({ ...row, testRail: 'pix_direto' }, 'pix_direto');
+    }
+    if (row.pixDiretoCopypaste) return this.paymentFor(row, 'pix_direto');
+    if (!this.deps.pixDireto) throw new ValidationError('Pix indisponivel no momento');
+    // txid da API Pix: 26 a 35 caracteres alfanumericos. O id da fatura sem
+    // hifens tem 32 e torna a criacao idempotente no banco.
+    const txid = row.id.replace(/-/g, '');
+    const seconds = Math.max(300, Math.floor((row.expiresAt.getTime() - this.now().getTime()) / 1000));
+    const charge = await this.deps.pixDireto.createCharge({
+      clientId: row.clientId,
+      txid,
+      amountCents: row.amountCents,
+      description: row.description ?? `Pedido ${row.orderId}`,
+      expiresInSeconds: seconds,
+    });
+    const updated = await this.deps.db
+      .update(invoices)
+      .set({ pixDiretoTxid: txid, pixDiretoCopypaste: charge.copypaste, updatedAt: this.now() })
+      .where(eq(invoices.id, row.id))
+      .returning();
+    return this.paymentFor(updated[0] ?? row, 'pix_direto');
   }
 
   /** So no modo teste: marca como paga e dispara o IPN de verdade. */

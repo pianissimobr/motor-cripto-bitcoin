@@ -46,6 +46,7 @@ import type {
 } from '../domain/types.js';
 import type { Db } from './client.js';
 import {
+  invoices,
   storeKeys,
   addressRevocations,
   apiClients,
@@ -3374,7 +3375,14 @@ export function createRepositories(db: Db): Repositories {
           ),
         )
         .limit(1);
-      return rows.length > 0;
+      if (rows.length > 0) return true;
+      // A mesma transferencia tambem nao pode ter pago uma fatura em USDC.
+      const paid = await db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(and(eq(invoices.usdcTxHash, txHash.toLowerCase()), eq(invoices.usdcLogIndex, logIndex)))
+        .limit(1);
+      return paid.length > 0;
     },
 
     async claimSwapDelivery(id, txHash, logIndex) {

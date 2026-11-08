@@ -117,10 +117,14 @@ maybeDescribe('faturas hospedadas e chaves de loja (integration)', () => {
     expect(res.json().error.message).toMatch(/carteira/);
   });
 
-  it('em dolar, so Bitcoin', async () => {
+  it('em dolar, sem Pix; sem Pix nem swap ligados, so USDC', async () => {
     const s = await store('live');
     const res = await post(s.apiKey, '/v1/invoices', body({ price_currency: 'USD' }));
-    expect(res.json().rails).toEqual(['bitcoin']);
+    expect(res.json().rails).toEqual(['usdc']);
+    const both = await post(s.apiKey, '/v1/invoices', body({ order_id: 'y', price_currency: 'USD', rails: ['pix', 'bitcoin'] }));
+    expect(both.statusCode).toBe(400);
+    const btc = await post(s.apiKey, '/v1/invoices', body({ order_id: 'z', price_currency: 'USD', rails: ['bitcoin', 'usdc'] }));
+    expect(btc.json().rails).toEqual(['bitcoin', 'usdc']);
     expect((await post(s.apiKey, '/v1/invoices', body({ order_id: 'x', price_currency: 'USD', rails: ['pix'] }))).statusCode).toBe(400);
   });
 
@@ -172,7 +176,7 @@ maybeDescribe('faturas hospedadas e chaves de loja (integration)', () => {
 
   it('producao: simular nao existe; chave de teste nao le fatura de producao', async () => {
     const live = await store('live');
-    const created = (await post(live.apiKey, '/v1/invoices', body())).json();
+    const created = (await post(live.apiKey, '/v1/invoices', body({ rails: ['pix', 'usdc'] }))).json();
     expect((await app.inject({ method: 'POST', url: `/i/${created.id}/simulate`, payload: {} })).statusCode).toBe(404);
     const testKey = await invoices.createStoreKey(live.client.id, 'test');
     expect((await get(testKey.api_key, `/v1/invoices/${created.id}`)).statusCode).toBe(404);

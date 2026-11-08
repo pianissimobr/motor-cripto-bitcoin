@@ -87,14 +87,23 @@
     if (!tab) tab = (state.payments[0] && state.payments[0].rail) || rails[0];
     if (rails.length > 1) {
       app.append(el('div', { class: 'tabs', role: 'tablist' }, rails.map((r) => {
-        const b = el('button', { type: 'button', class: r === tab ? 'active' : '' }, r === 'pix' ? 'Pix' : 'Bitcoin');
+        const b = el('button', { type: 'button', class: r === tab ? 'active' : '' }, railLabel(r, rails));
         b.onclick = () => { tab = r; error = null; render(); };
         return b;
       })));
     }
 
     const payment = state.payments.find((p) => p.rail === tab);
-    if (payment && payment.rail === 'pix') {
+    if (payment && payment.rail === 'usdc') {
+      app.append(
+        svgImg(payment.qr_svg, 'QR Code USDC'),
+        el('p', { class: 'hint strong' }, 'Envie exatamente ' + payment.amount_usdc + ' USDC na rede ' + payment.network + ':'),
+        copyRow(payment.address, 'Copiar endereço'),
+        el('div', { style: 'height:8px' }),
+        copyRow(payment.amount_usdc, 'Copiar valor'),
+        el('p', { class: 'hint' }, 'O valor tem centavos a mais de propósito: é assim que reconhecemos o seu pagamento. Envie o valor exato, só pela rede ' + payment.network + '. Se enviar de uma corretora, confira que ela não desconta a taxa do valor enviado.'),
+      );
+    } else if (payment && (payment.rail === 'pix' || payment.rail === 'pix_direto')) {
       app.append(svgImg(payment.qr_svg, 'QR Code Pix'), copyRow(payment.qr_copypaste, 'Copiar Pix'), el('p', { class: 'hint' }, 'Abra o app do seu banco, escolha Pix e leia o QR ou cole o código.'));
     } else if (payment && payment.rail === 'bitcoin') {
       app.append(
@@ -103,6 +112,14 @@
         copyRow(payment.address, 'Copiar'),
         el('p', { class: 'hint' }, 'A confirmação pode levar de 10 a 30 minutos.'),
       );
+    } else if (tab === 'usdc') {
+      const b = el('button', { class: 'btn', type: 'button', disabled: busy }, busy ? 'Gerando…' : 'Pagar com USDC');
+      b.onclick = () => choose('/usdc', {});
+      app.append(el('p', { class: 'muted' }, 'Pague com dólar digital (USDC) direto da sua carteira ou corretora.'), b);
+    } else if (tab === 'pix_direto') {
+      const b = el('button', { class: 'btn', type: 'button', disabled: busy }, busy ? 'Gerando…' : 'Gerar Pix');
+      b.onclick = () => choose('/pix-direto', {});
+      app.append(el('p', { class: 'muted' }, 'Pague pelo app do seu banco com Pix.'), b);
     } else if (tab === 'pix') {
       const input = el('input', { id: 'tax', inputmode: 'numeric', autocomplete: 'off', placeholder: '000.000.000-00', required: true, maxlength: 18 });
       const form = el('form', {}, el('label', { for: 'tax' }, 'CPF ou CNPJ de quem vai pagar'), input, el('button', { class: 'btn', disabled: busy }, busy ? 'Gerando…' : 'Gerar Pix'));
@@ -121,6 +138,13 @@
       };
       app.append(sim);
     }
+  }
+
+  function railLabel(rail, rails) {
+    if (rail === 'pix') return rails.includes('pix_direto') ? 'Pix (dólar)' : 'Pix';
+    if (rail === 'pix_direto') return 'Pix';
+    if (rail === 'usdc') return 'USDC';
+    return 'Bitcoin';
   }
 
   async function choose(path, body) {

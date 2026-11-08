@@ -35,3 +35,20 @@ describe('price_amount', () => {
     for (const bad of ['0', '-1', '1.005', '1e3', '']) expect(() => priceToCents(bad)).toThrow();
   });
 });
+
+import { formatUsdc, usdcMinorFor } from '../src/services/invoice-service.js';
+
+describe('valor em USDC', () => {
+  it('real convertido pela cotacao, arredondado para cima ate o centavo', () => {
+    // dolar a R$ 5: R$ 100 = 20 USDC
+    expect(usdcMinorFor(10_000n, 'BRL', { brl: 500n, usd: 100n })).toBe(20_000_000n);
+    // R$ 1,00 a 5,33 por dolar = 0,1876... -> 0,19
+    expect(usdcMinorFor(100n, 'BRL', { brl: 533n, usd: 100n })).toBe(190_000n);
+    expect(usdcMinorFor(1_234n, 'USD')).toBe(12_340_000n);
+    expect(() => usdcMinorFor(100n, 'BRL')).toThrow(/cotacao/);
+  });
+
+  it('formata com 6 casas', () => {
+    expect(formatUsdc(20_000_123n)).toBe('20.000123');
+  });
+});
