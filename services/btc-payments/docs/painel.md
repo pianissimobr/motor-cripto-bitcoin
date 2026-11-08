@@ -112,16 +112,36 @@ Com a chave `mk_store_test_…`, nenhum provedor é chamado. A página mostra
 "Simular pagamento", e o IPN sai de verdade. Uma chave de teste não enxerga
 fatura de produção, e vice-versa.
 
-## WooCommerce
+## Plugins das lojas virtuais
 
-O plugin está em `integrations/woocommerce/libreflow-gateway`. O build da imagem
-o empacota em `/downloads/libreflow-woocommerce.zip`, link do painel em
-Integração e API.
+Os plugins ficam em `integrations/`. O `integrations/build.sh`, que o Dockerfile
+roda, empacota cada um em `/downloads/` (links no painel, em Integração e API)
+com o cliente PHP compartilhado (`integrations/shared/LibreFlowApi.php`).
 
-1. Instalar o `.zip` e ativar.
-2. Em WooCommerce → Pagamentos → LibreFlow Pay, colar a chave de loja e o
-   segredo IPN e salvar. O plugin testa a conexão ao salvar.
+| Plataforma | Pacote | Pedido aguardando → pago |
+|---|---|---|
+| WooCommerce 7+ | `libreflow-woocommerce.zip` | pendente → processando |
+| PrestaShop 8 | `libreflow-prestashop.zip` | "Aguardando pagamento LibreFlow" → "Pagamento aceito" |
+| Magento 2 | `libreflow-magento.zip` (`app/code/Libreflow/Pay`) | pending_payment → processing (fatura offline) |
+| OpenCart 4 | `libreflow.ocmod.zip` | situações escolhidas na configuração |
+| WHMCS | `libreflow-whmcs.zip` | pagamento registrado na fatura do WHMCS |
 
-O plugin é compatível com HPOS e com o checkout em blocos. Foi testado de ponta a
-ponta (pedido → fatura → pagamento simulado → IPN → pedido "Processando") em
-WordPress 7.1 com WooCommerce 11.2.
+Todos seguem o mesmo fluxo:
+
+1. Criar a fatura no checkout e levar o cliente para `/i/:id`.
+2. No IPN, conferir a assinatura.
+3. Reconsultar a fatura (`GET /v1/invoices/:id`).
+4. Comparar valor e moeda com o pedido.
+5. Só então mudar o pedido.
+
+O WHMCS não registra pagamento de fatura de teste, para não liberar serviço sem
+dinheiro.
+
+Testes feitos:
+- **WooCommerce:** WordPress 7.1 + WooCommerce 11.2, de ponta a ponta.
+- **PrestaShop:** PrestaShop 8.2, de ponta a ponta. Checkout por HTTP, pedido
+  criado pelo controller, IPN real marcando "Pagamento aceito" e IPN forjado
+  recusado com 401.
+- **Magento, OpenCart e WHMCS:** lint em PHP 7.4 e 8.3, e teste do cliente
+  compartilhado (assinatura do motor conferida em PHP). Ainda não foram testados
+  numa instalação real.

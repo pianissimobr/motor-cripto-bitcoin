@@ -21,6 +21,46 @@ const PLATFORMS = [
     download: '/downloads/libreflow-woocommerce.zip',
   },
   {
+    id: 'prestashop',
+    name: 'PrestaShop',
+    steps: [
+      'Em Módulos → Gerenciador de módulos → Enviar um módulo, envie o .zip abaixo.',
+      'Em Configurar, cole a chave de loja e o segredo IPN e salve: o módulo testa a conexão.',
+      'O pedido nasce em "Aguardando pagamento LibreFlow" e vira "Pagamento aceito" quando o cliente paga.',
+    ],
+    download: '/downloads/libreflow-prestashop.zip',
+  },
+  {
+    id: 'magento',
+    name: 'Magento 2',
+    steps: [
+      'Extraia o .zip na raiz da loja (cria app/code/Libreflow/Pay).',
+      'Rode: bin/magento module:enable Libreflow_Pay && bin/magento setup:upgrade && bin/magento cache:flush',
+      'Em Lojas → Configuração → Vendas → Métodos de pagamento → LibreFlow Pay, cole a chave e o segredo IPN.',
+    ],
+    download: '/downloads/libreflow-magento.zip',
+  },
+  {
+    id: 'opencart',
+    name: 'OpenCart 4',
+    steps: [
+      'Em Extensões → Instalador, envie o libreflow.ocmod.zip.',
+      'Em Extensões → Extensões → Pagamentos, instale e edite "LibreFlow Pay".',
+      'Cole a chave de loja e o segredo IPN, escolha as situações do pedido e salve: a extensão testa a conexão.',
+    ],
+    download: '/downloads/libreflow.ocmod.zip',
+  },
+  {
+    id: 'whmcs',
+    name: 'WHMCS',
+    steps: [
+      'Extraia o .zip na raiz do WHMCS (cria modules/gateways/libreflow.php).',
+      'Em Configurações → Pagamentos → Gateways, ative "LibreFlow Pay" e cole a chave e o segredo IPN.',
+      'A fatura do WHMCS ganha o botão "Pagar agora"; o pagamento entra sozinho. Faturas de teste não são baixadas.',
+    ],
+    download: '/downloads/libreflow-whmcs.zip',
+  },
+  {
     id: 'shopify',
     name: 'Shopify',
     steps: [

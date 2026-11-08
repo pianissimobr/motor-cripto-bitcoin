@@ -22,11 +22,12 @@ RUN npm ci --no-audit --no-fund
 COPY dashboard ./
 RUN npm run build
 
-# Plugin do WooCommerce, empacotado para download no painel.
+# Plugins das lojas virtuais (WooCommerce, PrestaShop, Magento, OpenCart,
+# WHMCS), empacotados para download no painel.
 FROM alpine:3.20 AS plugins
 RUN apk add --no-cache zip
-COPY integrations/woocommerce /src
-RUN cd /src && zip -qr /libreflow-woocommerce.zip libreflow-gateway
+COPY integrations /src
+RUN sh /src/build.sh /downloads
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
@@ -36,7 +37,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY public ./public
 COPY --from=dashboard /app/public/painel ./public/painel
-COPY --from=plugins /libreflow-woocommerce.zip ./public/downloads/libreflow-woocommerce.zip
+COPY --from=plugins /downloads ./public/downloads
 RUN npm prune --omit=dev
 USER node
 EXPOSE 4580

@@ -15,3 +15,4 @@ backups/
 public/painel/
 *.tsbuildinfo
 public/downloads/
+integrations/dist

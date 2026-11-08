@@ -1,0 +1,9 @@
+{
+  "name": "libreflow/module-pay",
+  "description": "LibreFlow Pay: Pix, Bitcoin e USDC para Magento 2",
+  "type": "magento2-module",
+  "version": "0.1.0",
+  "license": "GPL-2.0-or-later",
+  "require": { "php": ">=7.4", "ext-curl": "*" },
+  "autoload": { "files": ["registration.php"], "psr-4": { "Libreflow\\Pay\\": "" } }
+}
