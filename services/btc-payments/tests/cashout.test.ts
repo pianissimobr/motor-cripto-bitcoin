@@ -81,10 +81,20 @@ function build(overrides: Record<string, string> = {}) {
         version: input.version,
       }) as unknown as CashOutCharge,
     insertWebhookEvent: async () => null,
+    findCashOutChargeByIdForClient: async (id: string) => ({
+      id,
+      clientId: 'c1',
+      status: 'aguardando_deposito',
+      providerCashoutId: 'co_1',
+      originAddress: ORIGIN.toLowerCase(),
+      amountBrlCents: 650n,
+    }),
   } as unknown as Repositories;
   const service = new CashOutService({
     repos,
-    lunium: {} as unknown as LuniumClient,
+    lunium: {
+      previewCashOut: async () => ({ amount: '1.2', brl_amount: '6.50' }),
+    } as unknown as LuniumClient,
     config,
     logger: silentLogger,
   });
@@ -92,6 +102,16 @@ function build(overrides: Record<string, string> = {}) {
 }
 
 describe('cash-out (regras)', () => {
+  it('BR Code acima do maximo e recusado (o limite vale sobre o valor do codigo)', async () => {
+    const { service } = build();
+    const brCode = buildBrCode({ key: 'adm@exemplo.com.br', amount: '300000.00' });
+    await expect(
+      service.create({ clientId: 'c1', externalId: 'e1', originAddress: ORIGIN, brCode }),
+    ).rejects.toThrow(/valor acima do maximo/);
+    await expect(service.quote({ brCode })).rejects.toThrow(/valor acima do maximo/);
+  });
+
+
   it('exige BR Code ou chave Pix', async () => {
     const { service } = build();
     await expect(

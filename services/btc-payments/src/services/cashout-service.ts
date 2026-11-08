@@ -153,8 +153,9 @@ export class CashOutService {
     refundAddress?: string | null;
     sandboxScenario?: string | null;
   }): Promise<CashOutQuoteDto> {
-    this.assertEnabled();
+    await this.assertEnabled();
     const target = this.resolveTarget(input);
+    await this.assertWithinLimits(target.amountBrlCents);
     const preview = await this.deps.lunium.previewCashOut({
       asset: this.deps.config.cashout.asset,
       network: this.deps.config.cashout.network,
@@ -187,25 +188,17 @@ export class CashOutService {
   async create(
     input: CreateCashOutInput,
   ): Promise<{ dto: CashOutDto; reused: boolean }> {
-    this.assertEnabled();
-    const amount = input.amountBrlCents ?? 0n;
-    if (amount > 0n && amount < this.deps.config.cashout.minBrlCents) {
-      throw new ValidationError(
-        `valor abaixo do minimo (${this.deps.config.cashout.minBrlCents.toString()} centavos)`,
-      );
-    }
-    if (amount > this.deps.config.cashout.maxBrlCents) {
-      throw new ValidationError(
-        `valor acima do maximo (${this.deps.config.cashout.maxBrlCents.toString()} centavos)`,
-      );
-    }
-
+    await this.assertEnabled();
     const target = this.resolveTarget({
       amountBrlCents: input.amountBrlCents,
       pixKey: input.pixKey,
       pixKeyType: input.pixKeyType,
       brCode: input.brCode,
     });
+    // O limite vale sobre o valor efetivo: com BR Code, o valor vem de dentro
+    // do codigo (antes o limite olhava so o corpo e um QR de qualquer valor
+    // passava).
+    await this.assertWithinLimits(target.amountBrlCents);
 
     const existing = await this.deps.repos.findCashOutChargeByClientAndExternalId(
       input.clientId,
@@ -478,9 +471,21 @@ export class CashOutService {
     return local;
   }
 
-  private assertEnabled(): void {
+  private async assertEnabled(): Promise<void> {
     if (!this.deps.config.cashout.enabled) {
       throw new ServiceUnavailableError('cash-out desabilitado');
+    }
+  }
+
+  /** Limites de valor do cash-out, sobre o valor efetivo do Pix. */
+  private async assertWithinLimits(amount: bigint): Promise<void> {
+    const min = this.deps.config.cashout.minBrlCents;
+    const max = this.deps.config.cashout.maxBrlCents;
+    if (amount < min) {
+      throw new ValidationError(`valor abaixo do minimo (${min.toString()} centavos)`);
+    }
+    if (amount > max) {
+      throw new ValidationError(`valor acima do maximo (${max.toString()} centavos)`);
     }
   }
 
