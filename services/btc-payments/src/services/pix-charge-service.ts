@@ -497,7 +497,23 @@ export class PixChargeService {
       return { checked: 0, synced: 0, errors: 0, skipped: true };
     }
 
-    const charges = await this.deps.repos.listPixChargesToReconcile(limit);
+    // Feed de eventos: 1 chamada diz o que mudou. As que mudaram sincronizam
+    // ja; as demais em aberto, so na varredura (a cada pixSweepMs). Sem o
+    // feed, consulta todas como antes.
+    const changed = await this.changedRefsFromFeed();
+    const now = this.now().getTime();
+    const sweepMs = this.deps.config.jobs.pixSweepMs;
+    const fromFeed = changed ? await this.deps.repos.listOpenPixChargesByProviderRefs([...changed]) : [];
+    const swept = (await this.deps.repos.listPixChargesToReconcile(limit)).filter(
+      (charge) =>
+        !changed ||
+        charge.status === 'criando' ||
+        charge.status === 'incerto' ||
+        !charge.lastCheckedAt ||
+        now - charge.lastCheckedAt.getTime() >= sweepMs,
+    );
+    const seen = new Set<string>();
+    const charges = [...fromFeed, ...swept].filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
     let synced = 0;
     let errors = 0;
     for (const charge of charges) {
@@ -513,6 +529,34 @@ export class PixChargeService {
       }
     }
     return { checked: charges.length, synced, errors };
+  }
+
+  /** Ultimo evento do feed ja visto (em memoria; reiniciar so revarre). */
+  private lastFeedTs: string | null = null;
+
+  /**
+   * Referencias de cash-in que mudaram desde o ultimo ciclo, pelo feed de
+   * eventos da Lunium. `null` quando o feed falhou (o reconcile volta a
+   * consultar cada cobranca).
+   */
+  private async changedRefsFromFeed(): Promise<Set<string> | null> {
+    if (!this.deps.lunium.getEvents) return null;
+    try {
+      const feed = await this.deps.lunium.getEvents(200);
+      const refs = new Set<string>();
+      let newest = this.lastFeedTs;
+      for (const event of feed.eventos ?? []) {
+        if (event.fluxo !== 'cashin' || !event.ref) continue;
+        if (this.lastFeedTs && event.ts <= this.lastFeedTs) continue;
+        refs.add(event.ref);
+        if (!newest || event.ts > newest) newest = event.ts;
+      }
+      this.lastFeedTs = newest;
+      return refs;
+    } catch (err) {
+      this.deps.logger.warn({ err }, 'feed de eventos da Lunium indisponivel; consultando cada cobranca');
+      return null;
+    }
   }
 
   /**

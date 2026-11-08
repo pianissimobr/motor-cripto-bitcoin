@@ -795,6 +795,8 @@ export type Repositories = {
   ) => Promise<PixCharge | null>;
   updatePixCharge: (input: UpdatePixChargeInput) => Promise<PixCharge | null>;
   listPixChargesToReconcile: (limit: number) => Promise<PixCharge[]>;
+  /** Cobrancas em aberto pelo id da Lunium (cashin_id) ou pelo external_id enviado a ela. */
+  listOpenPixChargesByProviderRefs: (refs: string[]) => Promise<PixCharge[]>;
   listPixChargesAwaitingPayout: (limit: number) => Promise<PixCharge[]>;
   listPixCharges: (limit: number) => Promise<PixCharge[]>;
   listPixChargesForMerchant: (
@@ -3900,6 +3902,19 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(pixCharges.id, input.id))
         .returning();
       return rows[0] ?? null;
+    },
+
+    async listOpenPixChargesByProviderRefs(refs) {
+      if (refs.length === 0) return [];
+      return db
+        .select()
+        .from(pixCharges)
+        .where(
+          and(
+            inArray(pixCharges.status, ['criando', 'pendente', 'pago', 'incerto']),
+            or(inArray(pixCharges.providerChargeId, refs), inArray(pixCharges.providerExternalId, refs)),
+          ),
+        );
     },
 
     async listPixChargesToReconcile(limit) {

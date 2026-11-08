@@ -117,6 +117,13 @@ export type CatalogRail = {
   }[];
 };
 
+/** `GET /cashin/events`. */
+export type LuniumEventFeed = {
+  projeto?: string;
+  agora?: string;
+  eventos?: { ts: string; fluxo: string; provedor?: string; ref: string; valor?: string; estado?: string; detalhe?: string | null; tx?: string | null }[];
+};
+
 /** `GET /pix/keys/lookup` (DICT). */
 export type LuniumPixKeyLookup = {
   pix_key: string;
@@ -459,6 +466,15 @@ export class LuniumClient {
   async lookupPixKey(key: string, type?: string | null): Promise<LuniumPixKeyLookup> {
     const query = new URLSearchParams({ key, ...(type ? { type } : {}) });
     return this.request<LuniumPixKeyLookup>('GET', `/pix/keys/lookup?${query}`, undefined, 'normal');
+  }
+
+  /**
+   * `GET /cashin/events` — feed dos eventos recentes da chave (todos os
+   * fluxos). Uma chamada diz quais operacoes mudaram, em vez de consultar
+   * cada cobranca.
+   */
+  async getEvents(limit = 200): Promise<LuniumEventFeed> {
+    return this.request<LuniumEventFeed>('GET', `/cashin/events?limit=${Math.min(Math.max(limit, 1), 200)}`, undefined, 'normal');
   }
 
   async health(): Promise<{ ok: boolean; detail?: string }> {

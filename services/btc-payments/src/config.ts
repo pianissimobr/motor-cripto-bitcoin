@@ -338,6 +338,11 @@ const EnvSchema = z
     JOBS_ONCHAIN_POLL_MS: intFromEnv(15_000, 1_000),
     JOBS_WEBHOOK_POLL_MS: intFromEnv(10_000, 1_000),
     JOBS_PIX_POLL_MS: intFromEnv(30_000, 1_000),
+    /**
+     * Com o feed de eventos da Lunium, cada cobranca aberta e consultada uma a
+     * uma so a cada este intervalo (as que aparecem no feed, na hora).
+     */
+    JOBS_PIX_SWEEP_MS: intFromEnv(300_000, 10_000),
     JOBS_PIX_BATCH_SIZE: intFromEnv(30, 1, 1_000),
     JOBS_SUBSCRIPTION_MS: intFromEnv(60_000, 1_000),
     JOBS_RECONCILIATION_MS: intFromEnv(86_400_000, 60_000),
@@ -708,6 +713,7 @@ export type AppConfig = {
     onchainPollMs: number;
     webhookPollMs: number;
     pixPollMs: number;
+    pixSweepMs: number;
     pixBatchSize: number;
     subscriptionMs: number;
     reconciliationMs: number;
@@ -1009,6 +1015,7 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       onchainPollMs: env.JOBS_ONCHAIN_POLL_MS,
       webhookPollMs: env.JOBS_WEBHOOK_POLL_MS,
       pixPollMs: env.JOBS_PIX_POLL_MS,
+      pixSweepMs: env.JOBS_PIX_SWEEP_MS,
       pixBatchSize: env.JOBS_PIX_BATCH_SIZE,
       subscriptionMs: env.JOBS_SUBSCRIPTION_MS,
       reconciliationMs: env.JOBS_RECONCILIATION_MS,
