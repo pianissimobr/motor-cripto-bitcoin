@@ -33,6 +33,9 @@ function order(overrides: Partial<SwapOrder> = {}): FakeOrder {
     sourceAddress: null,
     depositChannelId: null,
     expectedAssetMinor: null,
+    startBlock: null,
+    deliveryTxHash: null,
+    deliveryLogIndex: null,
     feeTotalBps: null,
     expiresAt: null,
     providerPayload: null,
@@ -51,6 +54,8 @@ type Harness = {
   service: SwapService;
   rows: FakeOrder[];
   calls: { quote: number; swap: number; track: number };
+  /** Altura da rede falsa (o pedido nasce em 1.000; o teste avanca). */
+  chain: { height: bigint };
 };
 
 function build(
@@ -60,6 +65,9 @@ function build(
     trackStatus?: string;
     existing?: FakeOrder | null;
     verification?: 'ok' | 'pending' | 'invalid';
+    /** Usa o verificador real contra esta "rede" (logs de Transfer para o destino). */
+    transfers?: { txHash: string; logIndex: number; value: bigint; block: bigint }[];
+    trackHash?: string | null;
     utxos?: Array<{ txid: string; vout: number; value: number; status: { confirmed: boolean } }>;
   } = {},
 ): Harness {
@@ -67,7 +75,19 @@ function build(
   const calls = { quote: 0, swap: 0, track: 0 };
   let stored = options.existing ?? null;
 
+  const claimed = new Set<string>();
+  const chain = { height: 1_000n };
   const repos = {
+    isSwapDeliveryClaimed: async (txHash: string, logIndex: number) => claimed.has(`${txHash.toLowerCase()}:${logIndex}`),
+    claimSwapDelivery: async (id: string, txHash: string, logIndex: number) => {
+      const key = `${txHash.toLowerCase()}:${logIndex}`;
+      const row = rows.find((r) => r.id === id);
+      if (!row || row.deliveryTxHash || claimed.has(key)) return false;
+      claimed.add(key);
+      row.deliveryTxHash = txHash.toLowerCase();
+      row.deliveryLogIndex = logIndex;
+      return true;
+    },
     findSwapOrderByClientAndExternalId: async (_clientId: string, externalId: string) =>
       stored && stored.externalId === externalId ? stored : null,
     createSwapOrder: async (input: Record<string, unknown>) => {
@@ -151,7 +171,7 @@ function build(
     },
     track: async () => {
       calls.track += 1;
-      return { status: options.trackStatus ?? 'completed', hash: null };
+      return { status: options.trackStatus ?? 'completed', hash: options.trackHash ?? null };
     },
     rateLimiter: { cooldownRemaining: () => 0 },
   } as unknown as SwapKitClient;
@@ -187,15 +207,29 @@ function build(
     logger: silentLogger,
     fx,
     esplora: esplora as never,
-    verifyDelivery: async () =>
-      verification === 'ok'
-        ? { kind: 'ok' as const, detail: 'ok' }
-        : verification === 'invalid'
-          ? { kind: 'invalid' as const, detail: 'sem prova' }
-          : { kind: 'pending' as const, detail: 'ainda nao' },
+    deliveryChain: {
+      getBlockNumber: async () => chain.height,
+      getTransactionReceipt: async () => {
+        throw new Error('sem receipt no teste');
+      },
+      getTransferLogs: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) =>
+        (options.transfers ?? [])
+          .filter((t) => t.block >= fromBlock && t.block <= toBlock)
+          .map((t) => ({ transactionHash: t.txHash, logIndex: t.logIndex, value: t.value, blockNumber: t.block })),
+    },
+    ...(options.transfers
+      ? {}
+      : {
+          verifyDelivery: async () =>
+            verification === 'ok'
+              ? { kind: 'ok' as const, detail: 'ok', proof: { txHash: `0x${'a'.repeat(64)}`, logIndex: 0, valueMinor: 1n } }
+              : verification === 'invalid'
+                ? { kind: 'invalid' as const, detail: 'sem prova' }
+                : { kind: 'pending' as const, detail: 'ainda nao' },
+        }),
   });
 
-  return { service, rows, calls };
+  return { service, rows, calls, chain };
 }
 
 describe('SwapService', () => {
@@ -353,5 +387,68 @@ describe('SwapService', () => {
     const synced = await service.sync(rows[0]!.id);
     expect(synced?.status).toBe('aguardando_deposito');
     expect(synced?.providerState).toBe('awaiting_deposit');
+  });
+
+  describe('prova de entrega sem hash (verificador real)', () => {
+    const TX1 = `0x${'1'.repeat(64)}`;
+    const TX2 = `0x${'2'.repeat(64)}`;
+    // Cotado 99,5 USDC; slippage padrao 1% -> minimo 98,505.
+    const create = async (service: SwapService, externalId: string) =>
+      (await service.create({ clientId: CLIENT_ID, externalId, amountFiatCents: 10_000n, currency: 'BRL' })).dto.id;
+
+    it('grava o bloco inicial do pedido (nao a metadata do cliente)', async () => {
+      const { service, rows } = build({ transfers: [] });
+      await service.create({
+        clientId: CLIENT_ID,
+        externalId: 'p1',
+        amountFiatCents: 10_000n,
+        currency: 'BRL',
+        metadata: { balance_before_minor: '0' },
+      });
+      expect(rows[0]?.startBlock).toBe(1_000n);
+    });
+
+    it('uma transferencia prova um pedido so (dois pedidos para o mesmo destino)', async () => {
+      const { service, rows, chain } = build({ transfers: [{ txHash: TX1, logIndex: 3, value: 99_500_000n, block: 1_010n }] });
+      const a = await create(service, 'p1');
+      const b = await create(service, 'p2');
+      chain.height = 1_100n;
+      expect((await service.sync(a))?.status).toBe('liquidado');
+      expect((await service.sync(b))?.status).toBe('trocado');
+      expect(rows.find((r) => r.id === a)?.deliveryTxHash).toBe(TX1);
+      expect(rows.find((r) => r.id === b)?.deliveryTxHash).toBeNull();
+    });
+
+    it('com duas entregas, cada pedido fica com a sua', async () => {
+      const { service, chain } = build({
+        transfers: [
+          { txHash: TX1, logIndex: 0, value: 99_500_000n, block: 1_010n },
+          { txHash: TX2, logIndex: 0, value: 99_400_000n, block: 1_020n },
+        ],
+      });
+      const a = await create(service, 'p1');
+      const b = await create(service, 'p2');
+      chain.height = 1_100n;
+      expect((await service.sync(a))?.status).toBe('liquidado');
+      expect((await service.sync(b))?.status).toBe('liquidado');
+    });
+
+    it('aceita a entrega dentro do slippage e recusa abaixo dele', async () => {
+      const dentro = build({ transfers: [{ txHash: TX1, logIndex: 0, value: 98_600_000n, block: 1_010n }] });
+      const d = await create(dentro.service, 'p1');
+      dentro.chain.height = 1_100n;
+      expect((await dentro.service.sync(d))?.status).toBe('liquidado');
+      const abaixo = build({ transfers: [{ txHash: TX1, logIndex: 0, value: 98_000_000n, block: 1_010n }] });
+      const b = await create(abaixo.service, 'p1');
+      abaixo.chain.height = 1_100n;
+      expect((await abaixo.service.sync(b))?.status).toBe('trocado');
+    });
+
+    it('transferencia anterior ao pedido nao conta', async () => {
+      const { service, chain } = build({ transfers: [{ txHash: TX1, logIndex: 0, value: 99_500_000n, block: 900n }] });
+      const a = await create(service, 'p1');
+      chain.height = 1_100n;
+      expect((await service.sync(a))?.status).toBe('trocado');
+    });
   });
 });

@@ -27,7 +27,9 @@ import {
   type SwapKitSwap,
 } from '../adapters/swapkit/client.js';
 import {
+  createSwapDeliveryChain,
   verifySwapDelivery,
+  type SwapDeliveryChain,
   type SwapDeliveryVerification,
 } from '../adapters/chain/swap-delivery-verify.js';
 import type { AlertService } from './alert-service.js';
@@ -52,6 +54,8 @@ export type SwapServiceDeps = {
     order: SwapOrder,
     track: { hash?: string | null },
   ) => Promise<SwapDeliveryVerification>;
+  /** Rede do USDC (bloco inicial e logs). Injetavel nos testes. */
+  deliveryChain?: SwapDeliveryChain;
 };
 
 export type CreateSwapOrderInput = {
@@ -112,6 +116,32 @@ function iso(value: Date | null): string | null {
  */
 export class SwapService {
   constructor(private readonly deps: SwapServiceDeps) {}
+
+  private chainClient: SwapDeliveryChain | null = null;
+
+  private deliveryChain(): SwapDeliveryChain {
+    if (this.deps.deliveryChain) return this.deps.deliveryChain;
+    this.chainClient ??= createSwapDeliveryChain({
+      rpcUrls: this.deps.config.settlement.rpcUrls,
+      chainId: this.deps.config.settlement.chainId,
+      chainLabel: this.deps.config.settlement.chain,
+    });
+    return this.chainClient;
+  }
+
+  /**
+   * Bloco atual da rede do USDC, gravado quando o pedido nasce: e de onde a
+   * prova sem hash comeca a procurar a entrega. Sem rede, `null` (a prova
+   * sem hash fica impossivel e o pedido cai em `manual`, nunca em `liquidado`).
+   */
+  private async currentBlock(): Promise<bigint | null> {
+    try {
+      return await this.deliveryChain().getBlockNumber();
+    } catch (err) {
+      this.deps.logger.warn({ err }, 'swap: bloco inicial indisponivel');
+      return null;
+    }
+  }
 
   private now(): Date {
     return this.deps.now?.() ?? new Date();
@@ -251,6 +281,8 @@ export class SwapService {
   ): Promise<{ dto: SwapOrderDto; reused: boolean }> {
     try {
       const sourceAddress = this.sourceAddress(order.sourceAddress ?? null);
+      // Antes da cotacao: a entrega so pode acontecer depois deste bloco.
+      const startBlock = await this.currentBlock();
       const quote = await this.deps.swapkit.quote({
         sellAsset: this.deps.config.swapkit.sellAsset,
         buyAsset: this.deps.config.swapkit.buyAsset,
@@ -293,6 +325,7 @@ export class SwapService {
         depositAddress,
         depositChannelId: swap.meta?.providerDepositChannelId ?? null,
         expectedAssetMinor,
+        startBlock,
         feeTotalBps: this.totalFeeBps(route),
         expiresAt,
         providerPayload: {
@@ -476,8 +509,25 @@ export class SwapService {
           (await this.applyStatus(current, 'trocado', providerState)) ?? current;
       }
 
+      // Ja provado num ciclo anterior (a transferencia esta reservada).
+      if (current.deliveryTxHash) {
+        return this.applyStatus(current, 'liquidado', providerState, { error: null });
+      }
+
       const verified = await this.verifyDelivery(current, track);
       if (verified.kind === 'ok') {
+        // Reserva a transferencia: se outro pedido a pegou no mesmo instante,
+        // este fica `trocado` e o proximo ciclo procura outra.
+        const claimed = await this.deps.repos.claimSwapDelivery(
+          current.id,
+          verified.proof.txHash,
+          verified.proof.logIndex,
+        );
+        if (!claimed) {
+          return this.applyStatus(current, 'trocado', providerState, {
+            error: 'a transferencia vista ja provou outro pedido',
+          });
+        }
         return this.applyStatus(current, 'liquidado', providerState, {
           providerPayload: {
             ...(current.providerPayload ?? {}),
@@ -514,42 +564,30 @@ export class SwapService {
   /**
    * Confere a entrega do USDC na carteira de destino.
    *
-   * Com hash de transacao, a prova e o `Transfer` do ERC-20. Sem hash (o
-   * trilho de deposito costuma nao devolver), a prova e o saldo grew em
-   * relacao a linha de base.
+   * O minimo e o cotado menos o slippage aceito na rota: exigir o cotado
+   * inteiro mandaria uma entrega legitima para `manual`.
    */
   private async verifyDelivery(
     order: SwapOrder,
     track: { hash?: string | null },
-  ) {
+  ): Promise<SwapDeliveryVerification> {
     const expected = order.expectedAssetMinor ?? 0n;
     if (expected <= 0n) {
-      return { kind: 'invalid' as const, detail: 'valor esperado desconhecido' };
+      return { kind: 'invalid', detail: 'valor esperado desconhecido' };
     }
     if (this.deps.verifyDelivery) {
       return this.deps.verifyDelivery(order, track);
     }
-    const baseline = this.baselineFrom(order);
+    const slippage = BigInt(this.deps.config.swapkit.slippageBps);
     return verifySwapDelivery({
-      rpcUrls: this.deps.config.settlement.rpcUrls,
-      chainId: this.deps.config.settlement.chainId,
+      chain: this.deliveryChain(),
       usdcAddresses: this.deps.config.settlement.usdcAddresses,
       recipient: order.destinationAddress,
-      expectedMinor: expected,
+      minMinor: (expected * (10_000n - slippage)) / 10_000n,
       txHash: track.hash ?? null,
-      baselineMinor: baseline,
-      chainLabel: this.deps.config.settlement.chain,
+      fromBlock: order.startBlock,
+      isClaimed: (txHash, logIndex) => this.deps.repos.isSwapDeliveryClaimed(txHash, logIndex),
     });
-  }
-
-  private baselineFrom(order: SwapOrder): bigint | null {
-    const raw = order.metadata?.['balance_before_minor'];
-    if (raw === undefined || raw === null) return null;
-    try {
-      return BigInt(String(raw));
-    } catch {
-      return null;
-    }
   }
 
   private async applyStatus(

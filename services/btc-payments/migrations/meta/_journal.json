@@ -169,6 +169,13 @@
       "when": 1794091477432,
       "tag": "0023_cashout_gas_topup",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794114324829,
+      "tag": "0024_swap_delivery_proof",
+      "breakpoints": true
     }
   ]
 }

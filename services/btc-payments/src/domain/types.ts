@@ -643,6 +643,11 @@ export type SwapOrder = {
   depositChannelId: string | null;
   /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
   expectedAssetMinor: bigint | null;
+  /** Bloco da rede do USDC quando o pedido nasceu. */
+  startBlock: bigint | null;
+  /** Transferencia que provou a entrega (tx + indice do log). */
+  deliveryTxHash: string | null;
+  deliveryLogIndex: number | null;
   feeTotalBps: number | null;
   expiresAt: Date | null;
   providerPayload: Record<string, unknown> | null;

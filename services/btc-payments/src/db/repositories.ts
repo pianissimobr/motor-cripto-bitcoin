@@ -384,6 +384,7 @@ export type UpdateSwapOrderInput = {
   depositAddress?: string | null;
   depositChannelId?: string | null;
   expectedAssetMinor?: bigint | null;
+  startBlock?: bigint | null;
   feeTotalBps?: number | null;
   expiresAt?: Date | null;
   providerPayload?: Record<string, unknown> | null;
@@ -866,6 +867,13 @@ export type Repositories = {
     providerOrderId: string,
   ) => Promise<SwapOrder | null>;
   updateSwapOrder: (input: UpdateSwapOrderInput) => Promise<SwapOrder | null>;
+  /** `true` quando a transferencia (tx + log) ja provou a entrega de algum pedido. */
+  isSwapDeliveryClaimed: (txHash: string, logIndex: number) => Promise<boolean>;
+  /**
+   * Amarra a transferencia ao pedido. `false` quando outro pedido ja a usou
+   * (indice unico) ou o pedido ja tem prova.
+   */
+  claimSwapDelivery: (id: string, txHash: string, logIndex: number) => Promise<boolean>;
   listSwapOrdersToReconcile: (limit: number) => Promise<SwapOrder[]>;
   /**
    * Pedido aberto com o mesmo valor em sats.
@@ -3280,6 +3288,7 @@ export function createRepositories(db: Db): Repositories {
           ...(input.depositChannelId !== undefined
             ? { depositChannelId: input.depositChannelId }
             : {}),
+          ...(input.startBlock !== undefined ? { startBlock: input.startBlock } : {}),
           ...(input.expectedAssetMinor !== undefined
             ? { expectedAssetMinor: input.expectedAssetMinor }
             : {}),
@@ -3301,6 +3310,42 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(swapOrders.id, input.id))
         .returning();
       return rows[0] ?? null;
+    },
+
+    async isSwapDeliveryClaimed(txHash, logIndex) {
+      const rows = await db
+        .select({ id: swapOrders.id })
+        .from(swapOrders)
+        .where(
+          and(
+            eq(swapOrders.deliveryTxHash, txHash.toLowerCase()),
+            eq(swapOrders.deliveryLogIndex, logIndex),
+          ),
+        )
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    async claimSwapDelivery(id, txHash, logIndex) {
+      try {
+        const rows = await db
+          .update(swapOrders)
+          .set({
+            deliveryTxHash: txHash.toLowerCase(),
+            deliveryLogIndex: logIndex,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(swapOrders.id, id), isNull(swapOrders.deliveryTxHash)))
+          .returning({ id: swapOrders.id });
+        return rows.length > 0;
+      } catch (err) {
+        // 23505: a mesma transferencia ja provou outro pedido.
+        if ((err as { code?: string; cause?: { code?: string } }).code === '23505' ||
+          (err as { cause?: { code?: string } }).cause?.code === '23505') {
+          return false;
+        }
+        throw err;
+      }
     },
 
     async findOpenSwapOrderByAmountSats(amountSats) {

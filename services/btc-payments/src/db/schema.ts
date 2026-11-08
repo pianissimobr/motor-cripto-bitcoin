@@ -1026,6 +1026,14 @@ export const swapOrders = pgTable(
     depositChannelId: text('deposit_channel_id'),
     /** Quanto o USDC deve chegar (unidades minimas de 6 casas). */
     expectedAssetMinor: bigint('expected_asset_minor', { mode: 'bigint' }),
+    /**
+     * Bloco da rede do USDC quando o pedido nasceu (gravado pelo motor). Sem o
+     * hash da entrega, a prova e um Transfer para o destino a partir daqui.
+     */
+    startBlock: bigint('start_block', { mode: 'bigint' }),
+    /** Transferencia que provou a entrega: uma transferencia, um pedido. */
+    deliveryTxHash: text('delivery_tx_hash'),
+    deliveryLogIndex: integer('delivery_log_index'),
     feeTotalBps: integer('fee_total_bps'),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
     providerPayload: jsonb('provider_payload').$type<Record<string, unknown> | null>(),
@@ -1045,6 +1053,9 @@ export const swapOrders = pgTable(
       .where(sql`${table.depositAddress} is not null`),
     index('swap_orders_status_idx').on(table.status),
     index('swap_orders_destination_idx').on(table.destinationAddress),
+    uniqueIndex('swap_orders_delivery_uq')
+      .on(table.deliveryTxHash, table.deliveryLogIndex)
+      .where(sql`${table.deliveryTxHash} is not null`),
     check(
       'swap_orders_status_chk',
       sql`${table.status} in ('criando','pendente','aguardando_deposito','depositado','trocado','liquidado','expirado','reembolsado','falhou','incerto','manual')`,
