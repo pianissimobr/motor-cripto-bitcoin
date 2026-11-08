@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LuniumClient, LuniumError } from '../src/adapters/lunium/client.js';
+import { isRetryable, LuniumClient, LuniumError } from '../src/adapters/lunium/client.js';
 import { signWebhook } from '../src/crypto/hmac.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -240,4 +240,32 @@ describe('LuniumClient', () => {
     expect(chamadas).toBe(3); // duas tentativas e o erro final
     expect(client.rateLimiter.currentLimit).toBeLessThan(60);
   }, 20_000);
+
+  it('respeita o acao da Lunium para decidir se repete', async () => {
+    let calls = 0;
+    const client = new LuniumClient({
+      apiUrl: 'https://lunium.test',
+      apiKey: 'lun_test_key',
+      timeoutMs: 5_000,
+      fetchImpl: async () => {
+        calls += 1;
+        return jsonResponse({ erro: 'config_provedor', acao: 'parar', detail: 'configuracao do provedor', request_id: 'req_2' }, 502);
+      },
+    });
+    await expect(client.getCharge('ci_1')).rejects.toMatchObject({ code: 'config_provedor', action: 'parar' });
+    // Nao repetiu: um 502 com "parar" e uma chamada so.
+    expect(calls).toBe(1);
+  });
+});
+
+describe('isRetryable', () => {
+  it('acao manda mais que o status', () => {
+    expect(isRetryable(502, { acao: 'parar' })).toBe(false);
+    expect(isRetryable(503, { acao: 'falar_com_suporte' })).toBe(false);
+    expect(isRetryable(500, { acao: 'corrigir' })).toBe(false);
+    expect(isRetryable(503, { acao: 'repetir' })).toBe(true);
+    expect(isRetryable(429, { acao: 'esperar' })).toBe(true);
+    expect(isRetryable(502, null)).toBe(true);
+    expect(isRetryable(400, null)).toBe(false);
+  });
 });

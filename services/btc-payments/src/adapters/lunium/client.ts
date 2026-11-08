@@ -616,7 +616,7 @@ export class LuniumClient {
         } catch {
           parsed = null;
         }
-        const retryable = response.status === 429 || response.status >= 500;
+        const retryable = isRetryable(response.status, parsed);
         if (response.status === 429) {
           // O provedor recusou por limite: pausa geral e reduz o teto.
           this.limiter.recordThrottled(retryAfterMs(response.headers));
@@ -710,4 +710,18 @@ export type LuniumErrorOptions = {
 
 export function isLuniumError(value: unknown): value is LuniumError {
   return value instanceof LuniumError;
+}
+
+/**
+ * Repetir a chamada? A Lunium manda `acao` em todo erro, e ela manda mais
+ * que o status HTTP: um 502 `config_provedor` vem com `parar` (repetir nunca
+ * resolve), e `corrigir`/`falar_com_suporte` tambem nao melhoram tentando de
+ * novo. `repetir` e `esperar` (cota) podem repetir. Sem `acao`, vale o status:
+ * 429 e 5xx repetem.
+ */
+export function isRetryable(status: number, body: Record<string, unknown> | null): boolean {
+  const acao = typeof body?.acao === 'string' ? body.acao : null;
+  if (acao === 'corrigir' || acao === 'parar' || acao === 'falar_com_suporte') return false;
+  if (acao === 'repetir' || acao === 'esperar') return true;
+  return status === 429 || status >= 500;
 }
