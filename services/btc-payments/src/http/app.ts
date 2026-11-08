@@ -3,6 +3,7 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
+import { createReadStream, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { AppError, ValidationError } from '../domain/errors.js';
@@ -77,11 +78,27 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     index: false,
   });
 
+  // Assets do painel: com curinga, para valer tambem para arquivos gerados
+  // depois que o servidor subiu (o static acima so registra os que existem).
+  const painelAssets = join(publicDir, 'painel', 'assets');
+  if (existsSync(painelAssets)) void app.register(fastifyStatic, {
+    root: painelAssets,
+    prefix: '/painel/assets/',
+    decorateReply: false,
+    wildcard: true,
+    index: false,
+  });
+
   // O snippet /checkout.js e carregado por sites de lojistas em outro
   // dominio; o Helmet manda CORP same-origin por padrao, o que o bloqueia.
   app.addHook('onSend', async (request, reply, payload) => {
-    if (request.url.split('?')[0] === '/checkout.js') {
+    const path = request.url.split('?')[0] ?? '';
+    if (path === '/checkout.js') {
       reply.header('cross-origin-resource-policy', 'cross-origin');
+    }
+    // Assets do painel levam hash no nome: podem ficar em cache para sempre.
+    if (path.startsWith('/painel/assets/') && reply.statusCode === 200) {
+      reply.header('cache-control', 'public, max-age=31536000, immutable');
     }
     return payload;
   });
@@ -158,6 +175,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             dash: deps.services.dash,
           });
         }
+        registerPainelPages(routes, publicDir);
       }
     }
   });
@@ -229,4 +247,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   return app;
+}
+
+/**
+ * O SPA do painel: toda rota em /painel devolve o index.html (o roteamento e
+ * no navegador). Os assets com hash sao servidos pelo @fastify/static.
+ */
+function registerPainelPages(app: FastifyInstance, publicDir: string): void {
+  const index = join(publicDir, 'painel', 'index.html');
+  const send = async (_request: unknown, reply: import('fastify').FastifyReply) => {
+    if (!existsSync(index)) {
+      return reply.status(404).send({ error: { code: 'not_found', message: 'painel nao instalado' } });
+    }
+    return reply
+      .header('cache-control', 'no-cache')
+      .header('x-robots-tag', 'noindex')
+      .type('text/html; charset=utf-8')
+      .send(createReadStream(index));
+  };
+  app.get('/painel', send);
+  app.get('/painel/*', send);
 }

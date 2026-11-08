@@ -10,3 +10,7 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 backups/
+
+# Build do painel (gerado no Dockerfile)
+public/painel/
+*.tsbuildinfo

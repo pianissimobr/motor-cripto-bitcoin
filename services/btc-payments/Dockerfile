@@ -14,6 +14,14 @@ COPY src ./src
 COPY migrations ./migrations
 CMD ["npm", "run", "migrate"]
 
+# Painel do lojista (React + Vite): vira arquivos estaticos em public/painel.
+FROM node:22-alpine AS dashboard
+WORKDIR /app/dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY dashboard ./
+RUN npm run build
+
 FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
@@ -21,6 +29,7 @@ COPY package.json package-lock.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY public ./public
+COPY --from=dashboard /app/public/painel ./public/painel
 RUN npm prune --omit=dev
 USER node
 EXPOSE 4580

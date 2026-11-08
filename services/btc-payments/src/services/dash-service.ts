@@ -294,6 +294,13 @@ export class DashService {
     },
   ) {
     if (!this.deps.paymentRequests) throw new ForbiddenError('links de pagamento indisponiveis');
+    // Mensagem clara antes de tentar: o 503 do servico sai como "erro interno".
+    if (input.rails.includes('bitcoin') && !this.deps.swap) {
+      throw new ValidationError('pagamento em Bitcoin indisponivel no momento');
+    }
+    if (input.rails.includes('pix') && !this.deps.pixCharges) {
+      throw new ValidationError('Pix indisponivel no momento');
+    }
     let destinationAddress: string | undefined;
     if (input.walletId) {
       const wallet = await this.deps.queries.findSettlementWallet(merchant.id, input.walletId);

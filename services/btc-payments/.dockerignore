@@ -8,3 +8,5 @@ data
 !.env.example
 *.log
 *.tsbuildinfo
+dashboard/node_modules
+public/painel
