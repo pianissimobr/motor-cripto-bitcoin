@@ -46,6 +46,7 @@ import type {
 } from '../domain/types.js';
 import type { Db } from './client.js';
 import {
+  storeKeys,
   addressRevocations,
   apiClients,
   apiNonces,
@@ -240,6 +241,11 @@ export type InsertWebhookEventInput = {
   intentId?: string | null;
   pixChargeId?: string | null;
   cashoutChargeId?: string | null;
+  invoiceId?: string | null;
+  /** Destino proprio (IPN da fatura); sem ele, o webhook da loja. */
+  targetUrl?: string | null;
+  /** Chave de loja que assina o evento; sem ela, o segredo do webhook da loja. */
+  storeKeyId?: string | null;
   eventType: string;
   dedupeKey: string;
   payload: Record<string, unknown>;
@@ -1095,6 +1101,8 @@ export type Repositories = {
   // Observabilidade / admin
   getStatusCounts: () => Promise<StatusCounts>;
   listWebhookEvents: (limit: number) => Promise<WebhookEvent[]>;
+  /** Chave de loja (assinatura do IPN da fatura), mesmo revogada. */
+  findStoreKeyById: (id: string) => Promise<{ id: string; ipnSecretEnc: string } | null>;
   replayWebhookEvent: (id: string) => Promise<WebhookEvent | null>;
 
   // Auditoria
@@ -2626,6 +2634,9 @@ export function createRepositories(db: Db): Repositories {
           intentId: input.intentId ?? null,
           pixChargeId: input.pixChargeId ?? null,
           cashoutChargeId: input.cashoutChargeId ?? null,
+          invoiceId: input.invoiceId ?? null,
+          targetUrl: input.targetUrl ?? null,
+          storeKeyId: input.storeKeyId ?? null,
           eventType: input.eventType,
           dedupeKey: input.dedupeKey,
           payload: input.payload,
@@ -2670,6 +2681,15 @@ export function createRepositories(db: Db): Repositories {
           status: input.final ? 'falhou' : 'pendente',
         })
         .where(eq(webhookEvents.id, input.id));
+    },
+
+    async findStoreKeyById(id) {
+      const rows = await db
+        .select({ id: storeKeys.id, ipnSecretEnc: storeKeys.ipnSecretEnc })
+        .from(storeKeys)
+        .where(eq(storeKeys.id, id))
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     async listWebhookEvents(limit) {

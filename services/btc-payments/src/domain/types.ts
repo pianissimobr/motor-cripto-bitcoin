@@ -348,6 +348,9 @@ export type WebhookEvent = {
   clientId: string;
   intentId: string | null;
   pixChargeId: string | null;
+  invoiceId?: string | null;
+  targetUrl?: string | null;
+  storeKeyId?: string | null;
   eventType: string;
   dedupeKey: string;
   payload: Record<string, unknown>;

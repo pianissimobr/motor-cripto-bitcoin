@@ -78,7 +78,9 @@ export class WebhookDeliveryService {
     if (!client || client.status !== 'ativo') {
       return this.fail(event, now, 'cliente da API inexistente ou inativo');
     }
-    if (!client.webhookUrl || client.webhookUrl.trim().length === 0) {
+    // IPN de fatura: URL e segredo proprios (da chave de loja).
+    const targetUrl = event.targetUrl?.trim() || client.webhookUrl.trim();
+    if (!targetUrl) {
       await this.deps.repos.markWebhookDelivered(event.id);
       this.deps.logger.debug(
         { eventId: event.id, clientId: client.id },
@@ -89,11 +91,12 @@ export class WebhookDeliveryService {
 
     let secret: string;
     try {
-      secret = decryptSecret(
-        client.webhookSecretEnc,
-        this.deps.config.crypto.keyring,
-        client.id,
-      );
+      const storeKey = event.storeKeyId
+        ? await this.deps.repos.findStoreKeyById(event.storeKeyId)
+        : null;
+      secret = storeKey
+        ? decryptSecret(storeKey.ipnSecretEnc, this.deps.config.crypto.keyring, storeKey.id)
+        : decryptSecret(client.webhookSecretEnc, this.deps.config.crypto.keyring, client.id);
     } catch (err) {
       this.deps.logger.error(
         { err, clientId: client.id },
@@ -110,7 +113,7 @@ export class WebhookDeliveryService {
     let statusCode = 0;
     let errorMessage: string | null = null;
     try {
-      const response = await fetchImpl(client.webhookUrl, {
+      const response = await fetchImpl(targetUrl, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

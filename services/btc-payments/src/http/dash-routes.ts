@@ -5,12 +5,14 @@ import { ValidationError } from '../domain/errors.js';
 import type { ApiClient } from '../domain/types.js';
 import type { DashAuthService } from '../services/dash-auth-service.js';
 import type { DashService } from '../services/dash-service.js';
+import type { InvoiceService } from '../services/invoice-service.js';
 import { dashSessionGuard } from './dash-session.js';
 
 export type DashRoutesDeps = {
   config: AppConfig;
   auth: DashAuthService;
   dash: DashService;
+  invoices?: InvoiceService;
 };
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
@@ -223,6 +225,53 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
     const query = parse(z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }), request.query, 'consulta');
     return { events: await dash.listWebhookEvents(merchant, query.limit) };
   });
+
+  // ---- chaves de loja (plugins) e faturas
+
+  const invoices = deps.invoices;
+  if (invoices) {
+    app.get('/v1/dash/merchants/:merchantId/store-keys', opts, async (request) => ({
+      keys: await invoices.listStoreKeys((await merchantOf(request)).id),
+    }));
+
+    app.post('/v1/dash/merchants/:merchantId/store-keys', opts, async (request, reply) => {
+      const merchant = await merchantOf(request);
+      const body = parse(
+        z.object({ mode: z.enum(['live', 'test']), label: z.string().trim().max(60).optional(), step_up: stepUp.optional() }).strict(),
+        request.body ?? {},
+        'corpo',
+      );
+      // Chave de producao recebe dinheiro de verdade: pede senha + codigo.
+      if (body.mode === 'live') {
+        if (!body.step_up) throw new ValidationError('confirme com sua senha para gerar a chave de producao');
+        await auth.assertStepUp(request.dashUser!, {
+          password: body.step_up.password,
+          requestId: body.step_up.request_id,
+          code: body.step_up.code,
+        });
+      }
+      const created = await invoices.createStoreKey(merchant.id, body.mode, body.label, `painel:${request.dashUser!.id}`);
+      return reply.status(201).header('cache-control', 'no-store').send(created);
+    });
+
+    app.post('/v1/dash/merchants/:merchantId/store-keys/:id/revoke', opts, async (request) => {
+      const merchant = await merchantOf(request);
+      const { id } = parse(withId, request.params, 'chave');
+      await invoices.revokeStoreKey(merchant.id, id, `painel:${request.dashUser!.id}`);
+      return { keys: await invoices.listStoreKeys(merchant.id) };
+    });
+
+    app.get('/v1/dash/merchants/:merchantId/invoices', opts, async (request) => {
+      const merchant = await merchantOf(request);
+      const query = parse(
+        z.object({ mode: z.enum(['live', 'test']).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }),
+        request.query,
+        'consulta',
+      );
+      const rows = await invoices.listForClient(merchant.id, { limit: query.limit, mode: query.mode });
+      return { invoices: rows.map((row) => invoices.dto(row)) };
+    });
+  }
 
   app.post('/v1/dash/merchants/:merchantId/webhook/events/:id/replay', opts, async (request) => {
     const merchant = await merchantOf(request);

@@ -13,6 +13,7 @@ import { registerRoutes } from './routes.js';
 import { registerApiRoutes, type ApiServices } from './api-routes.js';
 import { registerAuthRoutes } from './auth-routes.js';
 import { registerDashRoutes } from './dash-routes.js';
+import { registerInvoiceRoutes } from './invoice-routes.js';
 
 export type AppDeps = {
   config: {
@@ -162,6 +163,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
     if (deps.services) {
       registerApiRoutes(routes, deps.services);
+      if (deps.services.invoices) registerInvoiceRoutes(routes, { invoices: deps.services.invoices });
       if (deps.services.dashAuth && deps.services.config.dashboard.enabled) {
         registerAuthRoutes(routes, {
           config: deps.services.config,
@@ -173,6 +175,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
             config: deps.services.config,
             auth: deps.services.dashAuth,
             dash: deps.services.dash,
+            ...(deps.services.invoices ? { invoices: deps.services.invoices } : {}),
           });
         }
         registerPainelPages(routes, publicDir);

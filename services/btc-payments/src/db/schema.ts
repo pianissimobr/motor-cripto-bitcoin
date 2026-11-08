@@ -510,6 +510,15 @@ export const webhookEvents = pgTable(
     cashoutChargeId: uuid('cashout_charge_id').references(() => cashoutCharges.id, {
       onDelete: 'cascade',
     }),
+    /** Fatura hospedada que gerou o IPN (eventos `invoice.*`). */
+    invoiceId: uuid('invoice_id').references(() => invoices.id, { onDelete: 'cascade' }),
+    /**
+     * Destino proprio do evento (o `ipn_callback_url` da fatura). Sem ele, o
+     * webhook da loja.
+     */
+    targetUrl: text('target_url'),
+    /** Chave de loja cujo segredo IPN assina o evento (sem ela, o da loja). */
+    storeKeyId: uuid('store_key_id').references(() => storeKeys.id, { onDelete: 'set null' }),
     eventType: text('event_type').notNull(),
     dedupeKey: text('dedupe_key').notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
@@ -1658,5 +1667,85 @@ export const subscriptionCharges = pgTable(
       'subscription_charges_status_chk',
       sql`${table.status} in ('criada','paga','falhou')`,
     ),
+  ],
+);
+
+/**
+ * Chave de loja virtual (plugins WooCommerce/Shopify): um header
+ * `x-api-key`, sem assinar cada chamada. So cria e consulta faturas; com a
+ * chave vazada, ninguem consegue mexer em carteira nem desviar dinheiro (a
+ * fatura sempre paga a loja). `test` nunca chama provedor.
+ */
+export const storeKeys = pgTable(
+  'store_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    mode: text('mode').$type<'live' | 'test'>().notNull(),
+    label: text('label'),
+    keyPrefix: text('key_prefix').notNull(),
+    keyHash: text('key_hash').notNull(),
+    /** Segredo que assina o IPN, cifrado (AAD = id da chave). */
+    ipnSecretEnc: text('ipn_secret_enc').notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    uniqueIndex('store_keys_hash_uq').on(table.keyHash),
+    index('store_keys_client_idx').on(table.clientId),
+    check('store_keys_mode_chk', sql`${table.mode} in ('live','test')`),
+  ],
+);
+
+export type InvoiceStatus = 'aguardando' | 'confirmando' | 'pago' | 'expirado' | 'cancelado';
+
+/**
+ * Fatura hospedada (/i/:id). O Pix e o Bitcoin so sao criados quando o
+ * pagador escolhe: o Pix precisa do CPF dele, e abrir a pagina nao abre
+ * ordem em provedor nenhum.
+ */
+export const invoices = pgTable(
+  'invoices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => apiClients.id, { onDelete: 'cascade' }),
+    storeKeyId: uuid('store_key_id').references(() => storeKeys.id, { onDelete: 'set null' }),
+    mode: text('mode').$type<'live' | 'test'>().notNull(),
+    orderId: text('order_id').notNull(),
+    amountCents: bigint('amount_cents', { mode: 'bigint' }).notNull(),
+    currency: text('currency').$type<'BRL' | 'USD'>().notNull(),
+    description: text('description'),
+    customerEmail: text('customer_email'),
+    successUrl: text('success_url'),
+    cancelUrl: text('cancel_url'),
+    ipnUrl: text('ipn_url'),
+    rails: jsonb('rails').$type<Array<'pix' | 'bitcoin'>>().notNull(),
+    status: text('status').$type<InvoiceStatus>().notNull().default('aguardando'),
+    pixChargeId: uuid('pix_charge_id').references(() => pixCharges.id, { onDelete: 'set null' }),
+    swapOrderId: uuid('swap_order_id').references(() => swapOrders.id, { onDelete: 'set null' }),
+    /** Trilho escolhido no modo teste (nao ha cobranca real). */
+    testRail: text('test_rail').$type<'pix' | 'bitcoin'>(),
+    paidRail: text('paid_rail').$type<'pix' | 'bitcoin'>(),
+    txHash: text('tx_hash'),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    paidAt: timestamp('paid_at', { withTimezone: true, mode: 'date' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    uniqueIndex('invoices_order_uq').on(table.clientId, table.mode, table.orderId),
+    index('invoices_open_idx').on(table.status, table.updatedAt),
+    index('invoices_client_created_idx').on(table.clientId, table.createdAt),
+    check('invoices_mode_chk', sql`${table.mode} in ('live','test')`),
+    check(
+      'invoices_status_chk',
+      sql`${table.status} in ('aguardando','confirmando','pago','expirado','cancelado')`,
+    ),
+    check('invoices_currency_chk', sql`${table.currency} in ('BRL','USD')`),
   ],
 );

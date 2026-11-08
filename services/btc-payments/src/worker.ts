@@ -7,6 +7,7 @@ import { loadEnv } from './load-env.js';
 import { EsploraClient } from './adapters/chain/esplora.js';
 import { PaymentIntentService } from './services/payment-intent-service.js';
 import { OnchainWatcher } from './services/onchain-watcher.js';
+import { InvoiceService } from './services/invoice-service.js';
 import { WebhookDeliveryService } from './services/webhook-delivery-service.js';
 import { AlertService } from './services/alert-service.js';
 import { LedgerService } from './ledger/ledger-service.js';
@@ -186,6 +187,21 @@ export async function startWorker(): Promise<WorkerHandle> {
       run: () => watcher.runCycle(batch),
     });
   }
+
+  // Faturas hospedadas: estado pelas cobrancas, validade e IPN.
+  const invoiceService = new InvoiceService({
+    db: db.db,
+    repos,
+    config,
+    logger,
+    ...(pixCharges ? { pixCharges } : {}),
+    ...(swap ? { swap } : {}),
+  });
+  jobs.push({
+    name: 'invoice-sync',
+    intervalMs: config.jobs.webhookPollMs,
+    run: () => invoiceService.runSyncCycle(batch),
+  });
 
   if (pixCharges) {
     const service = pixCharges;
