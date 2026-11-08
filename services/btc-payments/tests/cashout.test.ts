@@ -30,7 +30,7 @@ function buildBrCode(fields: { key: string; amount?: string }): string {
   return `${withoutCrc}6304${brCodeCrc16(`${withoutCrc}6304`)}`;
 }
 
-function build(overrides: Record<string, string> = {}, flags?: Partial<AppFlags>) {
+function build(overrides: Record<string, string> = {}, flags?: Partial<AppFlags>, lookup?: (key: string) => Promise<unknown>) {
   const config = testConfig({
     PIX_ENABLED: 'true',
     CASHOUT_ENABLED: 'true',
@@ -95,6 +95,7 @@ function build(overrides: Record<string, string> = {}, flags?: Partial<AppFlags>
     repos,
     lunium: {
       previewCashOut: async () => ({ amount: '1.2', brl_amount: '6.50' }),
+      ...(lookup ? { lookupPixKey: lookup } : {}),
     } as unknown as LuniumClient,
     config,
     logger: silentLogger,
@@ -289,5 +290,33 @@ describe('cash-out (regras)', () => {
     expect(updated.status).toBe('liquidado');
     expect(updated.providerState).toBe('COMPLETED');
     expect(updated.amountAssetMinor).toBe(1_436_256n);
+  });
+
+  it('cotacao traz o titular da chave (DICT) quando a Lunium confere', async () => {
+    const seen: string[] = [];
+    const { service } = build({}, undefined, async (key) => {
+      seen.push(key);
+      return { pix_key: key, pix_key_type: 'email', owner_name: 'MARIA DA SILVA', owner_tax_number: '***.456.789-**', institution_name: 'Banco Inter', verified: true, source: 'dict', checked_at: '' };
+    });
+    const byKey = await service.quote({ amountBrlCents: 650n, pixKey: 'maria@exemplo.com', pixKeyType: 'email' });
+    expect(byKey.recipient).toEqual({ name: 'MARIA DA SILVA', institution: 'Banco Inter', document_masked: '***.456.789-**', source: 'dict' });
+    // QR estatico: a chave vem de dentro do codigo.
+    await service.quote({ brCode: buildBrCode({ key: 'loja@exemplo.com', amount: '6.50' }) });
+    expect(seen).toEqual(['maria@exemplo.com', 'loja@exemplo.com']);
+  });
+
+  it('sem conferencia (indisponivel, nao verificado ou erro) a cotacao segue sem titular', async () => {
+    for (const lookup of [
+      async () => ({ available: false, verified: false, owner_name: null, source: 'disabled' }),
+      async () => ({ verified: false, owner_name: 'X', source: 'dict' }),
+      async () => {
+        throw new Error('503');
+      },
+    ]) {
+      const { service } = build({}, undefined, lookup);
+      const quote = await service.quote({ amountBrlCents: 650n, pixKey: 'maria@exemplo.com', pixKeyType: 'email' });
+      expect(quote.recipient).toBeNull();
+      expect(quote.amount).toBe('1.2');
+    }
   });
 });

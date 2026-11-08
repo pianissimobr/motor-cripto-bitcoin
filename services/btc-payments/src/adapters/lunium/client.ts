@@ -117,6 +117,21 @@ export type CatalogRail = {
   }[];
 };
 
+/** `GET /pix/keys/lookup` (DICT). */
+export type LuniumPixKeyLookup = {
+  pix_key: string;
+  pix_key_type: 'cpf' | 'cnpj' | 'phone' | 'email' | 'random';
+  owner_name: string | null;
+  owner_tax_number?: string | null;
+  institution_name?: string | null;
+  ispb?: string | null;
+  verified: boolean;
+  source: 'dict' | 'sandbox' | 'disabled';
+  checked_at: string;
+  cached?: boolean;
+  available?: boolean;
+};
+
 /** `GET /cashin/catalog` — o que a Lunium entrega no cash-in. */
 export type LuniumCashinCatalog = {
   updatedAt?: string | null;
@@ -434,6 +449,16 @@ export class LuniumClient {
       { refund_address: refundAddress },
       'alta',
     );
+  }
+
+  /**
+   * `GET /pix/keys/lookup` — titular da chave Pix no DICT (nome, banco e
+   * documento mascarado). Consulta auxiliar: `available: false` ou
+   * `verified: false` significam "nao deu para conferir", nunca bloqueio.
+   */
+  async lookupPixKey(key: string, type?: string | null): Promise<LuniumPixKeyLookup> {
+    const query = new URLSearchParams({ key, ...(type ? { type } : {}) });
+    return this.request<LuniumPixKeyLookup>('GET', `/pix/keys/lookup?${query}`, undefined, 'normal');
   }
 
   async health(): Promise<{ ok: boolean; detail?: string }> {

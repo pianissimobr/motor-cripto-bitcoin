@@ -55,6 +55,12 @@ export type CashOutQuoteDto = {
   merchant_name: string | null;
   pix_key: string | null;
   /**
+   * Titular da chave Pix no DICT (via Lunium), quando deu para conferir:
+   * nome, banco e documento mascarado. `null` quando a consulta nao esta
+   * disponivel ou a chave nao foi verificada (nao bloqueia a venda).
+   */
+  recipient: { name: string; institution: string | null; document_masked: string | null; source: 'dict' | 'sandbox' } | null;
+  /**
    * `true` quando a chave da Lunium e de sandbox.
    *
    * No sandbox o endereco de deposito e um endereco EVM sem dono: o app nao
@@ -182,8 +188,41 @@ export class CashOutService {
       expires_at: preview.expires_at ?? null,
       merchant_name: preview.merchant_name ?? null,
       pix_key: preview.pix_key ? maskPixKey(preview.pix_key) : null,
+      recipient: await this.lookupRecipient(input),
       sandbox: this.isSandbox(),
     };
+  }
+
+  /**
+   * Quem recebe o Pix, pelo DICT. Vale para chave digitada e para QR estatico
+   * (a chave esta dentro do codigo); QR dinamico nao traz a chave. Nunca
+   * derruba a cotacao: sem resposta conferida, `null`.
+   */
+  private async lookupRecipient(input: { pixKey?: string | null; pixKeyType?: string | null; brCode?: string | null }): Promise<CashOutQuoteDto['recipient']> {
+    let key = input.pixKey ?? null;
+    let type = input.pixKeyType ?? null;
+    if (!key && input.brCode) {
+      try {
+        key = parseBrCode(input.brCode).key;
+        type = null;
+      } catch {
+        key = null;
+      }
+    }
+    if (!key) return null;
+    try {
+      const found = await this.deps.lunium.lookupPixKey(key, type);
+      if (found.available === false || !found.verified || !found.owner_name || found.source === 'disabled') return null;
+      return {
+        name: found.owner_name,
+        institution: found.institution_name ?? null,
+        document_masked: found.owner_tax_number ?? null,
+        source: found.source,
+      };
+    } catch (err) {
+      this.deps.logger.debug({ err }, 'consulta do titular Pix indisponivel');
+      return null;
+    }
   }
 
   /**
