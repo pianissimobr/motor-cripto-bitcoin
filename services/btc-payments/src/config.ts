@@ -205,6 +205,12 @@ const EnvSchema = z
     PIX_MIN_BRL_CENTS: bigintFromEnv('102'),
     PIX_MAX_BRL_CENTS: bigintFromEnv('600000'),
     PIX_VERIFY_SETTLEMENT_TX: boolFromEnv(true),
+    /**
+     * Confirmacoes exigidas antes de aceitar uma entrega de USDC como prova
+     * (liquidacao Pix e entrega de swap). 12 blocos sao ~24 s na Polygon e
+     * na Base: cobre as reorganizacoes rasas sem atrasar a liquidacao.
+     */
+    SETTLEMENT_CONFIRMATIONS: intFromEnv(12, 1, 1_000),
 
     /**
      * Cash-out (venda de cripto por Pix). Desligado por padrao: o trilho
@@ -568,6 +574,8 @@ export type AppConfig = {
     /** Contratos aceitos como USDC na rede (nativo e bridged). */
     usdcAddresses: string[];
     nativeSymbol: string;
+    /** Profundidade minima do bloco de uma entrega de USDC. */
+    confirmations: number;
   };
   pix: {
     enabled: boolean;
@@ -770,6 +778,7 @@ function buildSettlement(env: Env): AppConfig['settlement'] {
     chainId: polygon ? env.POLYGON_CHAIN_ID : env.BASE_CHAIN_ID,
     usdcAddresses,
     nativeSymbol: polygon ? 'POL' : 'ETH',
+    confirmations: env.SETTLEMENT_CONFIRMATIONS,
   };
 }
 

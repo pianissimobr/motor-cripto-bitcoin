@@ -587,6 +587,7 @@ export class SwapService {
       txHash: track.hash ?? null,
       fromBlock: order.startBlock,
       isClaimed: (txHash, logIndex) => this.deps.repos.isSwapDeliveryClaimed(txHash, logIndex),
+      minConfirmations: this.deps.config.settlement.confirmations,
     });
   }
 

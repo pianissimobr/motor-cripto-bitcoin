@@ -26,6 +26,7 @@ export type SwapDeliveryChain = {
   getBlockNumber: () => Promise<bigint>;
   getTransactionReceipt: (hash: string) => Promise<{
     status: 'success' | 'reverted';
+    blockNumber: bigint;
     logs: { address: string; data: string; topics: string[]; logIndex: number | null; transactionHash: string | null }[];
   }>;
   /** Logs de `Transfer(_, to = recipient)` dos contratos, no intervalo. */
@@ -66,6 +67,7 @@ export function createSwapDeliveryChain(input: {
       const receipt = await client.getTransactionReceipt({ hash: hash as `0x${string}` });
       return {
         status: receipt.status,
+        blockNumber: receipt.blockNumber,
         logs: receipt.logs.map((log) => ({
           address: log.address,
           data: log.data,
@@ -123,7 +125,14 @@ export async function verifySwapDelivery(input: {
   /** Bloco em que o pedido nasceu (gravado pelo motor). */
   fromBlock?: bigint | null;
   isClaimed: (txHash: string, logIndex: number) => Promise<boolean>;
+  /**
+   * Profundidade minima do bloco da entrega (1 = basta estar num bloco).
+   * Uma reorganizacao rasa pode tirar a transferencia da cadeia depois que o
+   * motor ja marcou `liquidado`; esperar alguns blocos fecha essa janela.
+   */
+  minConfirmations?: number;
 }): Promise<SwapDeliveryVerification> {
+  const depth = BigInt(Math.max(1, input.minConfirmations ?? 1));
   if (input.minMinor <= 0n) {
     return { kind: 'invalid', detail: 'valor minimo da entrega invalido' };
   }
@@ -175,6 +184,8 @@ export async function verifySwapDelivery(input: {
         alreadyUsed = true;
         continue;
       }
+      const shallow = await notDeepEnough(input.chain, receipt.blockNumber, depth);
+      if (shallow) return shallow;
       return {
         kind: 'ok',
         detail: 'transferencia de USDC confirmada',
@@ -204,7 +215,10 @@ export async function verifySwapDelivery(input: {
     return { kind: 'pending', detail: 'rede indisponivel para conferir a entrega' };
   }
   const limit = input.fromBlock + MAX_SCAN_BLOCKS;
-  const end = latest < limit ? latest : limit;
+  // So olha blocos com a profundidade minima: o que e mais novo ainda pode
+  // sair da cadeia e volta a ser visto numa proxima rodada.
+  const deep = latest - (depth - 1n);
+  const end = deep < limit ? deep : limit;
   for (let from = input.fromBlock; from <= end; from += LOG_CHUNK) {
     const to = from + LOG_CHUNK - 1n < end ? from + LOG_CHUNK - 1n : end;
     let logs;
@@ -226,8 +240,32 @@ export async function verifySwapDelivery(input: {
       };
     }
   }
-  if (latest > limit) {
+  if (deep > limit) {
     return { kind: 'invalid', detail: 'nenhuma entrega na janela de busca depois do pedido' };
   }
   return { kind: 'pending', detail: 'entrega ainda nao vista na rede' };
+}
+
+/**
+ * `pending` quando o bloco ainda nao tem `depth` confirmacoes; `null` quando
+ * ja tem. Falha de rede tambem e `pending`: na duvida, nao liquida.
+ */
+export async function notDeepEnough(
+  chain: Pick<SwapDeliveryChain, 'getBlockNumber'>,
+  blockNumber: bigint,
+  depth: bigint,
+): Promise<{ kind: 'pending'; detail: string } | null> {
+  if (depth <= 1n) return null;
+  let latest: bigint;
+  try {
+    latest = await chain.getBlockNumber();
+  } catch {
+    return { kind: 'pending', detail: 'rede indisponivel para contar confirmacoes' };
+  }
+  const confirmations = latest - blockNumber + 1n;
+  if (confirmations >= depth) return null;
+  return {
+    kind: 'pending',
+    detail: `aguardando confirmacoes (${confirmations < 0n ? 0n : confirmations}/${depth})`,
+  };
 }

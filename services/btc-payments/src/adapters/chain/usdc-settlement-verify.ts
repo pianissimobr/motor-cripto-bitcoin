@@ -1,12 +1,9 @@
+import { decodeEventLog, erc20Abi, getAddress } from 'viem';
 import {
-  createPublicClient,
-  decodeEventLog,
-  erc20Abi,
-  fallback,
-  getAddress,
-  http,
-  defineChain,
-} from 'viem';
+  createSwapDeliveryChain,
+  notDeepEnough,
+  type SwapDeliveryChain,
+} from './swap-delivery-verify.js';
 
 export type UsdcSettlementVerification =
   | { kind: 'ok' }
@@ -34,6 +31,13 @@ export async function verifyUsdcSettlement(input: {
   timeoutMs?: number;
   /** Nome da rede, so para o log. */
   chainLabel?: string;
+  /**
+   * Profundidade minima do bloco da liquidacao. Com 1, uma reorganizacao
+   * rasa depois do `liquidado` deixava a cobranca paga sem o USDC.
+   */
+  minConfirmations?: number;
+  /** Acesso a rede (injetavel nos testes); por padrao, os `rpcUrls`. */
+  chain?: Pick<SwapDeliveryChain, 'getBlockNumber' | 'getTransactionReceipt'>;
 }): Promise<UsdcSettlementVerification> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(input.txHash)) {
     return { kind: 'invalid', detail: 'settlement_tx_hash invalido' };
@@ -56,26 +60,21 @@ export async function verifyUsdcSettlement(input: {
     return { kind: 'invalid', detail: 'endereco invalido na verificacao' };
   }
 
-  if (input.rpcUrls.length === 0) {
+  if (!input.chain && input.rpcUrls.length === 0) {
     return { kind: 'invalid', detail: 'nenhum RPC configurado' };
   }
-
-  const transport = fallback(
-    input.rpcUrls.map((url) => http(url, { timeout: input.timeoutMs ?? 15_000 })),
-  );
-  const chain = defineChain({
-    id: input.chainId,
-    name: input.chainLabel ?? 'EVM',
-    nativeCurrency: { name: 'Native', symbol: 'NATIVE', decimals: 18 },
-    rpcUrls: { default: { http: input.rpcUrls } },
-  });
-  const client = createPublicClient({ transport, chain });
+  const chain =
+    input.chain ??
+    createSwapDeliveryChain({
+      rpcUrls: input.rpcUrls,
+      chainId: input.chainId,
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.chainLabel !== undefined ? { chainLabel: input.chainLabel } : {}),
+    });
 
   let receipt;
   try {
-    receipt = await client.getTransactionReceipt({
-      hash: input.txHash as `0x${string}`,
-    });
+    receipt = await chain.getTransactionReceipt(input.txHash);
   } catch {
     return { kind: 'pending', detail: 'settlement tx ainda nao indexada' };
   }
@@ -93,8 +92,8 @@ export async function verifyUsdcSettlement(input: {
     try {
       decoded = decodeEventLog({
         abi: erc20Abi,
-        data: log.data,
-        topics: log.topics,
+        data: log.data as `0x${string}`,
+        topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
       });
     } catch {
       continue;
@@ -103,7 +102,12 @@ export async function verifyUsdcSettlement(input: {
     const args = decoded.args as { to?: string; value?: bigint };
     if (typeof args.to !== 'string' || typeof args.value !== 'bigint') continue;
     if (args.to.toLowerCase() === recipient && args.value >= input.minAmountMinor) {
-      return { kind: 'ok' };
+      const shallow = await notDeepEnough(
+        chain,
+        receipt.blockNumber,
+        BigInt(Math.max(1, input.minConfirmations ?? 1)),
+      );
+      return shallow ?? { kind: 'ok' };
     }
   }
 

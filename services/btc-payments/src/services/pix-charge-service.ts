@@ -689,6 +689,7 @@ export class PixChargeService {
       recipient: local.destinationAddress,
       minAmountMinor: update.assetAmountMinor ?? 0n,
       timeoutMs: this.deps.config.pix.timeoutMs,
+      minConfirmations: this.deps.config.settlement.confirmations,
     });
     if (result.kind === 'ok') return 'ok';
     this.deps.logger.warn(
