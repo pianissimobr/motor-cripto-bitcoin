@@ -30,6 +30,7 @@ import type { LedgerService } from '../ledger/ledger-service.js';
 import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
 import { enqueuePixChargeEvent } from './pix-events.js';
+import { normalizeTaxId } from '../domain/tax-id.js';
 
 export type CreatePixChargeInput = {
   clientId: string;
@@ -110,13 +111,13 @@ function iso(value: Date | null): string | null {
 }
 
 export function normalizePayerTax(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  if (digits.length !== 11 && digits.length !== 14) {
+  const taxId = normalizeTaxId(value);
+  if (!taxId) {
     throw new ValidationError(
-      'payer_tax_number deve ter 11 (CPF) ou 14 (CNPJ) digitos',
+      'payer_tax_number nao e um CPF ou CNPJ valido (confira os digitos)',
     );
   }
-  return digits;
+  return taxId.value;
 }
 
 function isUncertainProviderError(err: unknown): boolean {

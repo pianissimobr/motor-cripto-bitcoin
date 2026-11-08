@@ -10,6 +10,7 @@ import { isPossessionPurpose } from '../domain/possession.js';
 import { guessPixKeyType, maskPixKey } from '../domain/brcode.js';
 import { createApiAuth } from './auth.js';
 import type { ApiServices } from './api-routes.js';
+import { normalizePayerTax } from '../services/pix-charge-service.js';
 
 function parse<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
   const result = schema.safeParse(value);
@@ -104,7 +105,7 @@ export function createPayerTaxGuard(
       entry = { day, taxes: new Set() };
       seen.set(clientId, entry);
     }
-    const tax = payerTax.replace(/\D/g, '');
+    const tax = payerTax.toUpperCase().replace(/[\s.\-/]/g, '');
     if (entry.taxes.has(tax)) return true;
     if (entry.taxes.size >= maxPerDay) return false;
     entry.taxes.add(tax);
@@ -229,10 +230,12 @@ export function registerUserRoutes(app: FastifyInstance, services: ApiServices):
       const client = request.apiClient;
       if (!client) throw new UnauthorizedError('cliente nao autenticado');
       const query = parse(payerLimitsQuerySchema, request.query, 'query string');
-      if (!allowPayerTax(client.id, query.payer_tax)) {
+      // Confere antes do limite diario: um CPF digitado errado nao gasta vaga.
+      const payerTax = normalizePayerTax(query.payer_tax);
+      if (!allowPayerTax(client.id, payerTax)) {
         throw new ForbiddenError('limite de consultas de CPF distintos atingido hoje');
       }
-      return services.lunium.getLimits(query.payer_tax);
+      return services.lunium.getLimits(payerTax);
     },
   );
 
