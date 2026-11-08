@@ -104,6 +104,27 @@ function build(overrides: Record<string, string> = {}, flags?: Partial<AppFlags>
 }
 
 describe('cash-out (regras)', () => {
+  const dynamicQr = (amount?: string) => {
+    const tag = (id: string, value: string) => `${id}${String(value.length).padStart(2, '0')}${value}`;
+    const body = '000201' + tag('01', '12') +
+      tag('26', tag('00', 'br.gov.bcb.pix') + tag('25', 'pix.exemplo.com.br/qr/v2/cobv/9d36b84f')) +
+      tag('52', '0000') + tag('53', '986') + (amount ? tag('54', amount) : '') +
+      tag('58', 'BR') + tag('59', 'LOJA') + tag('60', 'SAO PAULO') + tag('62', tag('05', '***')) + '6304';
+    return body + brCodeCrc16(body);
+  };
+
+  it('QR dinamico com valor vai inteiro como BR Code', async () => {
+    const { service } = build();
+    await expect(service.quote({ brCode: dynamicQr('6.50') })).resolves.toMatchObject({ amount: '1.2' });
+  });
+
+  it('QR sem valor no codigo e recusado (dinamico, e estatico mesmo com amount_cents)', async () => {
+    const { service } = build();
+    await expect(service.quote({ brCode: dynamicQr() })).rejects.toThrow(/QR dinamico sem valor/);
+    const staticNoAmount = buildBrCode({ key: 'adm@exemplo.com.br' });
+    await expect(service.quote({ brCode: staticNoAmount, amountBrlCents: 650n })).rejects.toThrow(/BR Code sem valor/);
+  });
+
   it('BR Code acima do maximo e recusado (o limite vale sobre o valor do codigo)', async () => {
     const { service } = build();
     const brCode = buildBrCode({ key: 'adm@exemplo.com.br', amount: '300000.00' });

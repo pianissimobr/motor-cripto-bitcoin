@@ -16,8 +16,15 @@
  */
 
 export type BrCode = {
-  /** Chave Pix (tag 26, subtag 01). */
-  key: string;
+  /** Chave Pix (tag 26, subtag 01). `null` no QR dinamico. */
+  key: string | null;
+  /**
+   * URL da cobranca (tag 26, subtag 25): o QR dinamico traz a URL no lugar
+   * da chave. O PSP do recebedor resolve; o motor so repassa o codigo.
+   */
+  locationUrl: string | null;
+  /** `true` quando o QR e de cobranca dinamica (URL em vez de chave). */
+  dynamic: boolean;
   /** Tipo deduzido do formato da chave (null quando nao deduzivel). */
   keyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random' | null;
   /** Valor em reais (tag 54), quando o QR tem valor. */
@@ -150,8 +157,9 @@ export function parseBrCode(payload: string): BrCode {
     throw new BrCodeError('BR Code sem chave Pix');
   }
   const accountTags = parseTemplate(accountInfo);
-  const key = accountTags.get('01');
-  if (!key || key.trim().length === 0) {
+  const key = accountTags.get('01')?.trim() || null;
+  const locationUrl = accountTags.get('25')?.trim() || null;
+  if (!key && !locationUrl) {
     throw new BrCodeError('BR Code sem chave Pix');
   }
 
@@ -164,8 +172,10 @@ export function parseBrCode(payload: string): BrCode {
   const additionalTags = additionalData ? parseTemplate(additionalData) : new Map<string, string>();
 
   return {
-    key: key.trim(),
-    keyType: guessPixKeyType(key) ?? null,
+    key,
+    keyType: key ? (guessPixKeyType(key) ?? null) : null,
+    locationUrl,
+    dynamic: !key && Boolean(locationUrl),
     amount: tags.get('54')?.trim() || null,
     merchantName: tags.get('59')?.trim() || null,
     city: tags.get('60')?.trim() || null,

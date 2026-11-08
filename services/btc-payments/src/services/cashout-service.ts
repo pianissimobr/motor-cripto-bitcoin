@@ -562,12 +562,17 @@ export class CashOutService {
           'valor do pedido difere do valor do BR Code',
         );
       }
-      const amount = codeAmount ?? input.amountBrlCents ?? null;
-      if (amount == null) {
+      // QR sem valor nao vai como BR Code: a Lunium so paga cobranca com
+      // valor (medido em producao). O estatico vira chave + valor no app; o
+      // dinamico sem valor no codigo nao tem como ser pago aqui.
+      if (codeAmount == null) {
         throw new ValidationError(
-          'BR Code sem valor: peça um QR com valor ou envie a chave Pix e o valor',
+          parsed.dynamic
+            ? 'QR dinamico sem valor no codigo: nao da para pagar por aqui'
+            : 'BR Code sem valor: peça um QR com valor ou envie a chave Pix e o valor',
         );
       }
+      const amount = codeAmount;
       // A Lunium le o valor e o recebedor de dentro do codigo: so ele vai.
       return { amountBrlCents: amount, body: { brCode: input.brCode as string } };
     }

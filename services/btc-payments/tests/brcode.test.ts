@@ -145,4 +145,22 @@ describe('BR Code do Pix', () => {
       tag('52', '0000') + tag('53', '986') + tag('54', '10.00') + tag('58', 'BR') + tag('59', 'LOJA') + tag('60', 'SAO PAULO') + '6304';
     expect(() => parseBrCode(body + brCodeCrc16(body))).toThrow(/tag repetida/);
   });
+
+  it('aceita QR dinamico (URL da cobranca no lugar da chave)', () => {
+    const tag = (id: string, value: string) => `${id}${String(value.length).padStart(2, '0')}${value}`;
+    const account = tag('26', tag('00', 'br.gov.bcb.pix') + tag('25', 'pix.exemplo.com.br/qr/v2/cobv/9d36b84f'));
+    const body = '000201' + tag('01', '12') + account + tag('52', '0000') + tag('53', '986') + tag('54', '42.50') +
+      tag('58', 'BR') + tag('59', 'LOJA EXEMPLO') + tag('60', 'SAO PAULO') + tag('62', tag('05', '***')) + '6304';
+    const parsed = parseBrCode(body + brCodeCrc16(body));
+    expect(parsed.dynamic).toBe(true);
+    expect(parsed.key).toBeNull();
+    expect(parsed.locationUrl).toBe('pix.exemplo.com.br/qr/v2/cobv/9d36b84f');
+    expect(parsed.amount).toBe('42.50');
+  });
+
+  it('recusa bloco 26 sem chave e sem URL', () => {
+    const tag = (id: string, value: string) => `${id}${String(value.length).padStart(2, '0')}${value}`;
+    const body = '000201' + tag('26', tag('00', 'br.gov.bcb.pix')) + tag('53', '986') + '6304';
+    expect(() => parseBrCode(body + brCodeCrc16(body))).toThrow(/sem chave Pix/);
+  });
 });
