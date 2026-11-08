@@ -491,6 +491,11 @@ export class LuniumClient {
     return this.request<LuniumEventFeed>('GET', `/cashin/events?limit=${Math.min(Math.max(limit, 1), 200)}`, undefined, 'normal');
   }
 
+  /** `GET /keys/me` — limites vigentes da chave (faixa por operacao e piso por rota). */
+  async getKeyInfo(): Promise<unknown> {
+    return this.request<unknown>('GET', '/keys/me');
+  }
+
   /** `GET /webhooks/deliveries` — historico das entregas para o motor. */
   async listWebhookDeliveries(input: { status?: 'pending' | 'sent' | 'failed'; limit?: number } = {}) {
     const query = new URLSearchParams({ limit: String(Math.min(Math.max(input.limit ?? 50, 1), 200)), ...(input.status ? { status: input.status } : {}) });

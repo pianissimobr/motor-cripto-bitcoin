@@ -31,6 +31,7 @@ import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
 import { enqueuePixChargeEvent } from './pix-events.js';
 import { normalizeTaxId } from '../domain/tax-id.js';
+import { stricter, type LuniumLimits } from './lunium-limits.js';
 
 export type CreatePixChargeInput = {
   clientId: string;
@@ -91,6 +92,8 @@ export type PixPublicDto = {
 
 export type PixChargeServiceDeps = {
   repos: Repositories;
+  /** Limites vigentes da chave na Lunium (GET /keys/me), em cache. */
+  liveLimits?: Pick<LuniumLimits, 'get'>;
   /** Nao usado na liquidacao direta; mantido por compatibilidade. */
   ledger?: LedgerService;
   lunium: LuniumClient;
@@ -231,15 +234,16 @@ export class PixChargeService {
     if (!this.deps.config.pix.enabled) {
       throw new ServiceUnavailableError('PIX desabilitado');
     }
-    if (input.amountBrlCents < this.deps.config.pix.minBrlCents) {
-      throw new ValidationError(
-        `valor abaixo do minimo (${this.deps.config.pix.minBrlCents.toString()} centavos)`,
-      );
+    // Configuracao e limite vigente da chave na Lunium: vale o mais restrito.
+    const range = stricter(
+      { min: this.deps.config.pix.minBrlCents, max: this.deps.config.pix.maxBrlCents },
+      (await this.deps.liveLimits?.get())?.cashin,
+    );
+    if (input.amountBrlCents < range.min) {
+      throw new ValidationError(`valor abaixo do minimo (${range.min.toString()} centavos)`);
     }
-    if (input.amountBrlCents > this.deps.config.pix.maxBrlCents) {
-      throw new ValidationError(
-        `valor acima do maximo (${this.deps.config.pix.maxBrlCents.toString()} centavos)`,
-      );
+    if (input.amountBrlCents > range.max) {
+      throw new ValidationError(`valor acima do maximo (${range.max.toString()} centavos)`);
     }
 
     const payerTax = normalizePayerTax(input.payerTaxNumber);

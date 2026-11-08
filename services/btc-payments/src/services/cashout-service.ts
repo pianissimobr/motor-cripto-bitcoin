@@ -21,6 +21,7 @@ import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
 import type { AppFlags } from './flags-service.js';
 import { enqueueCashOutEvent, type CashOutEventType } from './cashout-events.js';
+import { stricter, type LuniumLimits } from './lunium-limits.js';
 
 export type CreateCashOutInput = {
   clientId: string;
@@ -106,6 +107,8 @@ export type CashOutDto = {
 };
 
 export type CashOutServiceDeps = {
+  /** Limites vigentes da chave na Lunium (GET /keys/me), em cache. */
+  liveLimits?: Pick<LuniumLimits, 'get'>;
   /**
    * Flags do app gravadas no motor (desligamento remoto). Sem elas, vale so a
    * configuracao do ambiente.
@@ -534,8 +537,10 @@ export class CashOutService {
 
   /** Limites do ambiente e das flags: vale o mais restrito. */
   private async assertWithinLimits(amount: bigint): Promise<void> {
-    let min = this.deps.config.cashout.minBrlCents;
-    let max = this.deps.config.cashout.maxBrlCents;
+    let { min, max } = stricter(
+      { min: this.deps.config.cashout.minBrlCents, max: this.deps.config.cashout.maxBrlCents },
+      (await this.deps.liveLimits?.get())?.cashout,
+    );
     if (this.deps.flags) {
       const { flags } = await this.deps.flags.get();
       const flagMin = BigInt(Math.round(flags.min_cash_out_brl * 100));

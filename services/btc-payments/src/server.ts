@@ -25,6 +25,7 @@ import { MetricsService } from './services/metrics-service.js';
 import { LuniumClient } from './adapters/lunium/client.js';
 import { SwapKitClient } from './adapters/swapkit/client.js';
 import { PixChargeService } from './services/pix-charge-service.js';
+import { LuniumLimits } from './services/lunium-limits.js';
 import { SwapService } from './services/swap-service.js';
 import { PaymentRequestService } from './services/payment-request-service.js';
 import { CashOutService } from './services/cashout-service.js';
@@ -165,8 +166,12 @@ export async function main(): Promise<void> {
       logger,
       alerts,
     });
+    // Limites vigentes da chave na Lunium (GET /keys/me), 10 min em cache.
+    const liveLimits = lunium
+      ? new LuniumLimits({ lunium, logger, asset: config.pix.asset, network: config.settlement.chain })
+      : undefined;
     const pixCharges = lunium
-      ? new PixChargeService({ repos, lunium, config, logger, alerts })
+      ? new PixChargeService({ repos, lunium, config, logger, alerts, ...(liveLimits ? { liveLimits } : {}) })
       : null;
     const swap = swapkit
       ? new SwapService({
@@ -182,7 +187,7 @@ export async function main(): Promise<void> {
     const flags = new FlagsService({ repos, logger });
     const cashOut =
       lunium && config.cashout.enabled
-        ? new CashOutService({ repos, lunium, config, logger, alerts, flags })
+        ? new CashOutService({ repos, lunium, config, logger, alerts, flags, ...(liveLimits ? { liveLimits } : {}) })
         : null;
     const luniumWebhook = pixCharges && lunium
       ? new LuniumWebhookService({
