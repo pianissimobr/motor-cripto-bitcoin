@@ -296,6 +296,27 @@ const EnvSchema = z
 
     SESSION_TTL_SECONDS: intFromEnv(604_800, 600, 31_536_000),
 
+    /** Painel do lojista (`/painel` e `/auth/*`). Desligado por padrao. */
+    DASHBOARD_ENABLED: boolFromEnv(false),
+    /** Fecha o cadastro de contas novas sem desligar o login. */
+    DASHBOARD_SIGNUP_ENABLED: boolFromEnv(true),
+    /**
+     * authO no perfil issuer: codigo de 6 digitos por e-mail e anti-robo
+     * (ALTCHA). Obrigatorio em producao com o painel ligado.
+     */
+    AUTHO_ISSUER_URL: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      httpUrl('AUTHO_ISSUER_URL invalida').optional(),
+    ),
+    AUTHO_TENANT: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(1).max(100).optional(),
+    ),
+    AUTHO_ISSUER_SECRET: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z.string().min(16, 'AUTHO_ISSUER_SECRET precisa ter ao menos 16 caracteres').optional(),
+    ),
+
 
     JOBS_LIGHTNING_RECONCILE_MS: intFromEnv(15_000, 1_000),
     JOBS_EXPIRY_POLL_MS: intFromEnv(10_000, 1_000),
@@ -486,7 +507,22 @@ const EnvSchema = z
           'LUNIUM_RATE_LIMIT_API_MAX + LUNIUM_RATE_LIMIT_WORKER_MAX nao pode passar de LUNIUM_RATE_LIMIT_MAX',
       });
     }
+    const authoSet = [env.AUTHO_ISSUER_URL, env.AUTHO_TENANT, env.AUTHO_ISSUER_SECRET].filter(Boolean).length;
+    if (authoSet !== 0 && authoSet !== 3) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTHO_ISSUER_URL'],
+        message: 'AUTHO_ISSUER_URL, AUTHO_TENANT e AUTHO_ISSUER_SECRET vao juntos',
+      });
+    }
     if (env.NODE_ENV !== 'production') return;
+    if (env.DASHBOARD_ENABLED && authoSet !== 3) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTHO_ISSUER_URL'],
+        message: 'em producao o painel exige o authO (codigo por e-mail e anti-robo)',
+      });
+    }
     if (env.ADMIN_TOKEN.length < 32) {
       ctx.addIssue({
         code: 'custom',
@@ -523,6 +559,11 @@ export type AppConfig = {
     rateLimitWindowMs: number;
     rateLimitMax: number;
     sessionTtlSeconds: number;
+  };
+  dashboard: {
+    enabled: boolean;
+    signupEnabled: boolean;
+    autho: { url: string; tenant: string; secret: string } | null;
   };
   database: {
     url: string;
@@ -816,6 +857,14 @@ export function loadConfig(raw: NodeJS.ProcessEnv = process.env): AppConfig {
       rateLimitWindowMs: env.RATE_LIMIT_WINDOW_MS,
       rateLimitMax: env.RATE_LIMIT_MAX,
       sessionTtlSeconds: env.SESSION_TTL_SECONDS,
+    },
+    dashboard: {
+      enabled: env.DASHBOARD_ENABLED,
+      signupEnabled: env.DASHBOARD_SIGNUP_ENABLED,
+      autho:
+        env.AUTHO_ISSUER_URL && env.AUTHO_TENANT && env.AUTHO_ISSUER_SECRET
+          ? { url: env.AUTHO_ISSUER_URL, tenant: env.AUTHO_TENANT, secret: env.AUTHO_ISSUER_SECRET }
+          : null,
     },
     database: {
       url: env.DATABASE_URL,

@@ -112,6 +112,8 @@ export async function createLightningWallet(
     lnbitsUrl,
     secretEnc,
     status: 'ativo',
+    label: null,
+    isDefault: false,
     createdAt: now,
     updatedAt: now,
   };

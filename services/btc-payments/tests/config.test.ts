@@ -100,4 +100,18 @@ describe('config', () => {
     expect(loadConfig({ ...BASE_ENV, TRUST_PROXY: '' }).server.trustProxy).toBe(false);
     expect(() => loadConfig({ ...BASE_ENV, TRUST_PROXY: 'talvez' })).toThrow(/TRUST_PROXY/);
   });
+
+  it('painel: o authO vem completo ou nao vem', () => {
+    expect(loadConfig({ ...BASE_ENV }).dashboard).toEqual({ enabled: false, signupEnabled: true, autho: null });
+    expect(() => loadConfig({ ...BASE_ENV, AUTHO_ISSUER_URL: 'https://auth.example.com' })).toThrow(/vao juntos/);
+    const config = loadConfig({
+      ...BASE_ENV,
+      DASHBOARD_ENABLED: 'true',
+      AUTHO_ISSUER_URL: 'https://auth.example.com',
+      AUTHO_TENANT: 'motor',
+      AUTHO_ISSUER_SECRET: 'segredo-com-mais-de-16',
+    });
+    expect(config.dashboard.enabled).toBe(true);
+    expect(config.dashboard.autho?.tenant).toBe('motor');
+  });
 });

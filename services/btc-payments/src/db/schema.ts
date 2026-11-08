@@ -173,11 +173,18 @@ export const merchantWallets = pgTable(
     secretEnc: text('secret_enc'),
     derivationPrefix: text('derivation_prefix'),
     status: text('status').$type<'ativo' | 'inativo'>().notNull().default('ativo'),
+    /** Apelido dado pelo lojista no painel (ex.: "MetaMask da loja"). */
+    label: text('label'),
+    /** Carteira padrao da loja na rede: recebe quando a cobranca nao escolhe. */
+    isDefault: boolean('is_default').notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (table) => [
     index('merchant_wallets_merchant_idx').on(table.merchantId),
+    uniqueIndex('merchant_wallets_default_uq')
+      .on(table.merchantId, table.kind, table.chain)
+      .where(sql`${table.isDefault} and ${table.status} = 'ativo'`),
     index('merchant_wallets_kind_idx').on(table.kind, table.status),
     uniqueIndex('merchant_wallets_chain_address_uq').on(
       table.chain,
@@ -1535,6 +1542,9 @@ export const sessions = pgTable(
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
     revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true, mode: 'date' }),
+    /** Navegador e IP do login, para a tela de sessoes do painel. */
+    userAgent: text('user_agent'),
+    ip: text('ip'),
     createdAt: createdAt(),
   },
   (table) => [

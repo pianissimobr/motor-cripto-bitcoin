@@ -10,6 +10,7 @@ import type { Logger } from '../logger.js';
 import type { Readiness } from './readiness.js';
 import { registerRoutes } from './routes.js';
 import { registerApiRoutes, type ApiServices } from './api-routes.js';
+import { registerAuthRoutes } from './auth-routes.js';
 
 export type AppDeps = {
   config: {
@@ -143,6 +144,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
     if (deps.services) {
       registerApiRoutes(routes, deps.services);
+      if (deps.services.dashAuth && deps.services.config.dashboard.enabled) {
+        registerAuthRoutes(routes, {
+          config: deps.services.config,
+          auth: deps.services.dashAuth,
+          ...(deps.services.autho ? { autho: deps.services.autho } : {}),
+        });
+      }
     }
   });
 

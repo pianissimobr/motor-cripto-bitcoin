@@ -384,6 +384,8 @@ export type MerchantWallet = {
   lnbitsUrl: string | null;
   secretEnc: string | null;
   status: 'ativo' | 'inativo';
+  label: string | null;
+  isDefault: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -727,6 +729,8 @@ export type Session = {
   expiresAt: Date;
   revokedAt: Date | null;
   lastSeenAt: Date | null;
+  userAgent: string | null;
+  ip: string | null;
   createdAt: Date;
 };
 

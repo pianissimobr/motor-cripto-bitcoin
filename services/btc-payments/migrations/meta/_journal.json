@@ -176,6 +176,13 @@
       "when": 1794114324829,
       "tag": "0024_swap_delivery_proof",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794129824095,
+      "tag": "0025_dashboard",
+      "breakpoints": true
     }
   ]
 }

@@ -28,6 +28,8 @@ import { PixChargeService } from './services/pix-charge-service.js';
 import { SwapService } from './services/swap-service.js';
 import { PaymentRequestService } from './services/payment-request-service.js';
 import { CashOutService } from './services/cashout-service.js';
+import { AuthoIssuerClient } from './adapters/autho/client.js';
+import { DashAuthService } from './services/dash-auth-service.js';
 import { LuniumWebhookService } from './services/lunium-webhook-service.js';
 import { SubscriptionService } from './services/subscription-service.js';
 import { WalletChangeNotifier } from './services/wallet-change-notifier.js';
@@ -199,6 +201,12 @@ export async function main(): Promise<void> {
     const deviceClients = new DeviceClientService({ repos, config, logger });
     const operations = new OperationsService({ repos, logger });
 
+    // Painel do lojista: so existe com DASHBOARD_ENABLED=true.
+    const autho = config.dashboard.autho ? new AuthoIssuerClient(config.dashboard.autho) : undefined;
+    const dashAuth = config.dashboard.enabled
+      ? new DashAuthService({ repos, clients, config, logger, emailSender, ...(autho ? { autho } : {}) })
+      : undefined;
+
     const app = buildApp({
       config,
       logger,
@@ -220,6 +228,9 @@ export async function main(): Promise<void> {
         flags,
         ...(lnbitsFor ? { lnbitsFor } : {}),
         walletNotifier,
+        emailSender,
+        ...(dashAuth ? { dashAuth } : {}),
+        ...(autho ? { autho } : {}),
         ...(pixCharges ? { pixCharges } : {}),
         ...(swap ? { swap } : {}),
         paymentRequests,

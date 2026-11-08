@@ -47,6 +47,9 @@ import type { FlagsService } from '../services/flags-service.js';
 import type { LuniumClient } from '../adapters/lunium/client.js';
 import { registerUserRoutes } from './user-routes.js';
 import { createWalletSchema } from './wallet-schema.js';
+import type { EmailSender } from '../services/email-sender.js';
+import type { DashAuthService } from '../services/dash-auth-service.js';
+import type { AuthoIssuerClient } from '../adapters/autho/client.js';
 
 export type ApiServices = {
   config: AppConfig;
@@ -72,6 +75,10 @@ export type ApiServices = {
   operations?: OperationsService;
   flags?: FlagsService;
   lunium?: LuniumClient;
+  emailSender?: EmailSender;
+  /** Painel do lojista (`/auth/*`, `/v1/dash/*`), com DASHBOARD_ENABLED. */
+  dashAuth?: DashAuthService;
+  autho?: AuthoIssuerClient;
 };
 
 /**

@@ -561,11 +561,17 @@ export type Repositories = {
     tokenHash: string;
     csrfTokenHash: string;
     expiresAt: Date;
+    userAgent?: string | null;
+    ip?: string | null;
   }) => Promise<Session>;
   findSessionByTokenHash: (tokenHash: string) => Promise<Session | null>;
   updateSessionSeen: (id: string, lastSeenAt: Date) => Promise<void>;
   revokeSession: (id: string) => Promise<void>;
-  revokeUserSessions: (userId: string) => Promise<number>;
+  /** Revoga a sessao so se for do usuario; `false` quando nao e. */
+  revokeSessionForUser: (id: string, userId: string) => Promise<boolean>;
+  /** Revoga as sessoes abertas do usuario, menos `exceptId` quando dado. */
+  revokeUserSessions: (userId: string, exceptId?: string) => Promise<number>;
+  listActiveSessionsForUser: (userId: string, now: Date) => Promise<Session[]>;
   deleteExpiredSessions: (now: Date) => Promise<number>;
 
   // Tokens de verificacao de e-mail e reset de senha
@@ -1308,6 +1314,8 @@ export function createRepositories(db: Db): Repositories {
           tokenHash: input.tokenHash,
           csrfTokenHash: input.csrfTokenHash,
           expiresAt: input.expiresAt,
+          userAgent: input.userAgent ?? null,
+          ip: input.ip ?? null,
         })
         .returning();
       const row = rows[0];
@@ -1338,15 +1346,37 @@ export function createRepositories(db: Db): Repositories {
         .where(eq(sessions.id, id));
     },
 
-    async revokeUserSessions(userId) {
+    async revokeSessionForUser(id, userId) {
+      const rows = await db
+        .update(sessions)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(sessions.id, id), eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+        .returning({ id: sessions.id });
+      return rows.length > 0;
+    },
+
+    async revokeUserSessions(userId, exceptId) {
       const rows = await db
         .update(sessions)
         .set({ revokedAt: new Date() })
         .where(
-          and(eq(sessions.userId, userId), isNull(sessions.revokedAt)),
+          and(
+            eq(sessions.userId, userId),
+            isNull(sessions.revokedAt),
+            ...(exceptId ? [ne(sessions.id, exceptId)] : []),
+          ),
         )
         .returning({ id: sessions.id });
       return rows.length;
+    },
+
+    async listActiveSessionsForUser(userId, now) {
+      return db
+        .select()
+        .from(sessions)
+        .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt), gt(sessions.expiresAt, now)))
+        .orderBy(desc(sessions.createdAt))
+        .limit(50);
     },
 
     async deleteExpiredSessions(now) {
