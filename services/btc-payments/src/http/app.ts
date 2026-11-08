@@ -18,7 +18,7 @@ export type AppDeps = {
       version: string;
     };
     server: {
-      trustProxy: boolean;
+      trustProxy: false | number;
       corsAllowedOrigins: string[];
       rateLimitMax: number;
       rateLimitWindowMs: number;
@@ -32,7 +32,14 @@ export type AppDeps = {
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({
     logger: false,
-    trustProxy: deps.config.server.trustProxy,
+    // N saltos confiaveis = confia nos enderecos de hop 0..N-1 (o proxy da
+    // frente acrescenta o IP real; o que o cliente escreveu fica alem dele).
+    trustProxy:
+      deps.config.server.trustProxy === false
+        ? false
+        : ((hops: number) => (_address: string, hop: number) => hop < hops)(
+            deps.config.server.trustProxy,
+          ),
     bodyLimit: 64 * 1024,
     requestTimeout: 15_000,
   });
@@ -96,7 +103,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     allowList: (request) => request.url === '/health',
     // A chave e o IP. Usar o cabecalho Authorization (antes de autenticar)
     // deixava qualquer um ganhar um balde novo a cada requisicao trocando o
-    // valor do cabecalho. Atras de proxy, ligue TRUST_PROXY.
+    // valor do cabecalho. Atras de proxy, TRUST_PROXY=1 (o IP vem do salto
+    // que o proxy acrescentou, nao do que o cliente escreveu).
     keyGenerator: (request) => {
       const path = request.url.split('?')[0] ?? request.url;
       if (path.startsWith('/webhooks/lnbits')) return `lnbits:${request.ip}`;
@@ -123,14 +131,20 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     );
   });
 
-  registerRoutes(app, {
-    service: deps.config.service,
-    readiness: deps.readiness,
+  // As rotas entram num plugin registrado DEPOIS do rate limit. O
+  // @fastify/rate-limit so se aplica as rotas declaradas depois que ele
+  // carrega: com as rotas no nivel raiz (sincronas, antes do `ready`), o
+  // limite nunca valia em rota nenhuma. Erro, 404, parser e hooks continuam
+  // no app raiz e sao herdados.
+  void app.register(async (routes) => {
+    registerRoutes(routes, {
+      service: deps.config.service,
+      readiness: deps.readiness,
+    });
+    if (deps.services) {
+      registerApiRoutes(routes, deps.services);
+    }
   });
-
-  if (deps.services) {
-    registerApiRoutes(app, deps.services);
-  }
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {

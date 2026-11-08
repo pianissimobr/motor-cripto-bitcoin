@@ -92,4 +92,12 @@ describe('config', () => {
     const env = { ...BASE_ENV, BTC_DERIVATION_PREFIX: "0'" };
     expect(() => loadConfig(env)).toThrow();
   });
+
+  it('TRUST_PROXY: true vale 1 salto (nunca a cadeia inteira); numero e N saltos', () => {
+    expect(loadConfig({ ...BASE_ENV, TRUST_PROXY: 'true' }).server.trustProxy).toBe(1);
+    expect(loadConfig({ ...BASE_ENV, TRUST_PROXY: '2' }).server.trustProxy).toBe(2);
+    expect(loadConfig({ ...BASE_ENV, TRUST_PROXY: 'false' }).server.trustProxy).toBe(false);
+    expect(loadConfig({ ...BASE_ENV, TRUST_PROXY: '' }).server.trustProxy).toBe(false);
+    expect(() => loadConfig({ ...BASE_ENV, TRUST_PROXY: 'talvez' })).toThrow(/TRUST_PROXY/);
+  });
 });

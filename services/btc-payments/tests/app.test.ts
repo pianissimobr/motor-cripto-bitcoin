@@ -9,7 +9,7 @@ const config = {
     version: '0.1.0',
   },
   server: {
-    trustProxy: false,
+    trustProxy: false as const,
     corsAllowedOrigins: ['http://localhost:4580'],
     rateLimitMax: 1_000,
     rateLimitWindowMs: 60_000,
@@ -75,6 +75,62 @@ describe('http app', () => {
     const response = await app.inject({ method: 'GET', url: '/nope' });
     expect(response.statusCode).toBe(404);
     expect(response.json().error.code).toBe('not_found');
+    await app.close();
+  });
+});
+
+/**
+ * O rate limit precisa valer de verdade: com as rotas registradas antes do
+ * plugin carregar, ele nunca se aplicava (e producao ficou sem limite).
+ */
+describe('rate limit', () => {
+  const build = (trustProxy: false | number) =>
+    buildApp({
+      config: { ...config, server: { ...config.server, trustProxy, rateLimitMax: 2 } },
+      logger: silentLogger,
+      readiness: readiness(true),
+    });
+
+  it('se aplica as rotas (a terceira chamada na janela e 429)', async () => {
+    const app = build(false);
+    const codes = [];
+    for (let i = 0; i < 3; i++) codes.push((await app.inject({ method: 'GET', url: '/ready' })).statusCode);
+    expect(codes).toEqual([200, 200, 429]);
+    await app.close();
+  });
+
+  it('atras de 1 proxy, X-Forwarded-For forjado nao abre um balde novo', async () => {
+    const app = build(1);
+    const codes = [];
+    for (let i = 0; i < 3; i++) {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/ready',
+        remoteAddress: '127.0.0.1',
+        // O nginx com $proxy_add_x_forwarded_for manda "<forjado>, <IP real>".
+        headers: { 'x-forwarded-for': `203.0.113.${i}, 198.51.100.5` },
+      });
+      codes.push(response.statusCode);
+    }
+    expect(codes).toEqual([200, 200, 429]);
+    await app.close();
+  });
+
+  it('clientes reais diferentes tem baldes diferentes', async () => {
+    const app = build(1);
+    for (let i = 0; i < 2; i++) {
+      await app.inject({ method: 'GET', url: '/ready', remoteAddress: '127.0.0.1', headers: { 'x-forwarded-for': '198.51.100.5' } });
+    }
+    const other = await app.inject({ method: 'GET', url: '/ready', remoteAddress: '127.0.0.1', headers: { 'x-forwarded-for': '198.51.100.6' } });
+    expect(other.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('/health fica fora do limite', async () => {
+    const app = build(false);
+    for (let i = 0; i < 4; i++) {
+      expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
+    }
     await app.close();
   });
 });

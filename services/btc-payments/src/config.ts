@@ -5,6 +5,27 @@ import type { SettlementChain } from './domain/types.js';
 export const SERVICE_NAME = 'btc-payments';
 export const SERVICE_VERSION = '0.1.0';
 
+/**
+ * Quantos proxies na frente do motor sao confiaveis (`X-Forwarded-For`).
+ *
+ * `true` vale **1 salto** (o nginx/Caddy da frente), nunca a cadeia inteira:
+ * confiar em tudo faz o Fastify usar o endereco mais a esquerda do cabecalho,
+ * que e o que o cliente escreveu — e o rate limit por IP deixa de valer.
+ * Um numero N confia em N saltos; `false`/`0` desliga.
+ */
+const trustProxyFromEnv = () =>
+  z
+    .string()
+    .optional()
+    .transform((v, ctx): false | number => {
+      const value = (v ?? '').trim().toLowerCase();
+      if (value === '' || ['false', 'no', 'off', '0'].includes(value)) return false;
+      if (['true', 'yes', 'on'].includes(value)) return 1;
+      if (/^[1-9]\d?$/.test(value)) return Number(value);
+      ctx.addIssue({ code: 'custom', message: 'TRUST_PROXY: use false, true (1 salto) ou o numero de saltos' });
+      return z.NEVER;
+    });
+
 const boolFromEnv = (def: boolean) =>
   z
     .string()
@@ -64,7 +85,7 @@ const EnvSchema = z
       'http://localhost:4580',
     ),
     ADMIN_TOKEN: z.string().min(16, 'ADMIN_TOKEN precisa ter ao menos 16 caracteres'),
-    TRUST_PROXY: boolFromEnv(false),
+    TRUST_PROXY: trustProxyFromEnv(),
     CORS_ALLOWED_ORIGINS: z.string().default(''),
 
     DATABASE_URL: z.string().min(1, 'DATABASE_URL obrigatorio'),
@@ -490,7 +511,8 @@ export type AppConfig = {
     host: string;
     logLevel: string;
     adminToken: string;
-    trustProxy: boolean;
+    /** `false` ou o numero de proxies confiaveis na frente do motor. */
+    trustProxy: false | number;
     corsAllowedOrigins: string[];
     rateLimitWindowMs: number;
     rateLimitMax: number;
