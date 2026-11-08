@@ -138,4 +138,11 @@ describe('BR Code do Pix', () => {
     expect(() => buildBrCode({ key: `${'a'.repeat(80)}@b.co` })).toThrow(/99 caracteres/);
   });
 
+  it('recusa QR com tag repetida, mesmo com CRC valido', () => {
+    const tag = (id: string, value: string) => `${id}${String(value.length).padStart(2, '0')}${value}`;
+    const account = (key: string) => tag('26', tag('00', 'br.gov.bcb.pix') + tag('01', key));
+    const body = '000201' + account('vitima@exemplo.com') + account('atacante@exemplo.com') +
+      tag('52', '0000') + tag('53', '986') + tag('54', '10.00') + tag('58', 'BR') + tag('59', 'LOJA') + tag('60', 'SAO PAULO') + '6304';
+    expect(() => parseBrCode(body + brCodeCrc16(body))).toThrow(/tag repetida/);
+  });
 });

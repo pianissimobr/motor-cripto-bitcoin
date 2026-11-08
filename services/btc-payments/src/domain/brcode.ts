@@ -82,6 +82,11 @@ function parseTags(payload: string): Map<string, string> {
     if (value.length !== length) {
       throw new BrCodeError('BR Code com tag incompleta');
     }
+    // Cada ID aparece uma vez por nivel: com tag repetida, o motor e a Lunium
+    // poderiam ler recebedores diferentes do mesmo QR.
+    if (tags.has(id)) {
+      throw new BrCodeError('BR Code com tag repetida');
+    }
     tags.set(id, value);
     offset += 4 + length;
   }
