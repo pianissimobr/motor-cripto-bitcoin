@@ -9,6 +9,7 @@ import {
   ValidationError,
 } from '../domain/errors.js';
 import type { PaymentRequest } from '../db/repositories.js';
+import type { PixChargeStatus, SwapStatus } from '../domain/types.js';
 import type { Logger } from '../logger.js';
 import type { PixChargeService } from './pix-charge-service.js';
 import type { SwapService } from './swap-service.js';
@@ -49,10 +50,13 @@ export type PaymentRequestDto = {
   amount_cents: string;
   currency: 'BRL' | 'USD';
   status: PaymentRequest['status'];
+  /** Trilho que o motor viu pago (`pix` ou `bitcoin`); `null` antes disso. */
+  paid_rail: 'pix' | 'bitcoin' | null;
   expires_at: string | null;
   options: {
     pix: {
       charge_id: string;
+      status: PixChargeStatus;
       qr_copypaste: string | null;
       qr_image_url: string | null;
       qr_svg: string | null;
@@ -60,6 +64,7 @@ export type PaymentRequestDto = {
     } | null;
     bitcoin: {
       swap_id: string;
+      status: SwapStatus;
       address: string | null;
       amount_btc: string;
       bip21: string | null;
@@ -67,6 +72,11 @@ export type PaymentRequestDto = {
       expires_at: string | null;
     } | null;
     pix_direto: {
+      /**
+       * Sempre `nao_observado`: o pagamento cai direto na conta do usuario e o
+       * motor nao tem como ver. Quem confirma e o extrato do banco.
+       */
+      status: 'nao_observado';
       br_code: string;
       key_masked: string;
       key_type: string | null;
@@ -77,6 +87,43 @@ export type PaymentRequestDto = {
   created_at: string;
   updated_at: string;
 };
+
+/** Estados finais em que o trilho nao recebe mais pagamento. */
+const PIX_DEAD: readonly PixChargeStatus[] = ['expirado', 'reembolsado', 'falhou'];
+const SWAP_DEAD: readonly SwapStatus[] = ['expirado', 'reembolsado', 'falhou'];
+
+/**
+ * Estado do pedido a partir dos trilhos que o motor acompanha.
+ *
+ * - `pago` quando o Pix da LuniumPay foi pago (ou liquidado) ou o swap
+ *   entregou o USDC; `paid_rail` diz qual.
+ * - `expirado` quando todos os trilhos observaveis morreram **e** nao ha Pix
+ *   direto: com Pix direto o pagador pode ter pago na chave do usuario, e o
+ *   motor nao sabe; declarar `expirado` ai levaria a loja a cancelar um
+ *   pedido pago. O pedido fica `pendente` e a conferencia e no extrato.
+ *
+ * Estados gravados que nao sao `pendente` (`criando`, `cancelado`, `falha`)
+ * passam como estao.
+ */
+export function deriveRequestStatus(input: {
+  stored: PaymentRequest['status'];
+  pix: PixChargeStatus | null;
+  bitcoin: SwapStatus | null;
+  hasPixDirect: boolean;
+}): { status: PaymentRequest['status']; paidRail: 'pix' | 'bitcoin' | null } {
+  if (input.stored !== 'pendente') return { status: input.stored, paidRail: null };
+  if (input.pix === 'pago' || input.pix === 'liquidado') {
+    return { status: 'pago', paidRail: 'pix' };
+  }
+  if (input.bitcoin === 'liquidado') return { status: 'pago', paidRail: 'bitcoin' };
+  const observable = [input.pix, input.bitcoin].filter((value) => value !== null);
+  const allDead =
+    observable.length > 0 &&
+    (input.pix === null || PIX_DEAD.includes(input.pix)) &&
+    (input.bitcoin === null || SWAP_DEAD.includes(input.bitcoin));
+  if (allDead && !input.hasPixDirect) return { status: 'expirado', paidRail: null };
+  return { status: 'pendente', paidRail: null };
+}
 
 function iso(value: Date | null): string | null {
   return value?.toISOString() ?? null;
@@ -266,6 +313,7 @@ export class PaymentRequestService {
       );
       pix = {
         charge_id: charge.id,
+        status: charge.status,
         qr_copypaste: charge.pix?.qr_copypaste ?? null,
         qr_image_url: charge.pix?.qr_image_url ?? null,
         qr_svg: charge.pix?.qr_svg ?? null,
@@ -279,6 +327,7 @@ export class PaymentRequestService {
       if (swap) {
         bitcoin = {
           swap_id: swap.id,
+          status: swap.status,
           address: swap.bitcoin.address,
           amount_btc: swap.bitcoin.amount_btc,
           bip21: swap.bitcoin.bip21,
@@ -291,6 +340,7 @@ export class PaymentRequestService {
     let pixDirect: PaymentRequestDto['options']['pix_direto'] = null;
     if (request.pixDirect) {
       pixDirect = {
+        status: 'nao_observado',
         br_code: request.pixDirect.br_code,
         key_masked: request.pixDirect.key_masked,
         key_type: request.pixDirect.key_type,
@@ -299,12 +349,19 @@ export class PaymentRequestService {
       };
     }
 
+    const derived = deriveRequestStatus({
+      stored: request.status,
+      pix: pix?.status ?? null,
+      bitcoin: bitcoin?.status ?? null,
+      hasPixDirect: pixDirect !== null,
+    });
     return {
       id: request.id,
       external_id: request.externalId,
       amount_cents: request.amountFiatCents.toString(),
       currency: request.currency,
-      status: request.status,
+      status: derived.status,
+      paid_rail: derived.paidRail,
       expires_at: iso(request.expiresAt),
       options: { pix, bitcoin, pix_direto: pixDirect },
       created_at: request.createdAt.toISOString(),

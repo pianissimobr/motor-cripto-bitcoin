@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PaymentRequestService } from '../src/services/payment-request-service.js';
+import { PaymentRequestService, deriveRequestStatus } from '../src/services/payment-request-service.js';
 import { silentLogger } from '../src/logger.js';
 import { testConfig } from './helpers.js';
 import type { Repositories } from '../src/db/repositories.js';
@@ -246,5 +246,56 @@ describe('PaymentRequestService', () => {
     expect(second.reused).toBe(true);
     expect(pixCharges.created).toBe(1);
     expect(swap.created).toBe(1);
+  });
+
+  it('mostra o estado de cada trilho e marca o Pix direto como nao observado', async () => {
+    const { service } = build({ pixKey: { pixKey: '12345678909' } });
+    const { dto } = await service.create({
+      clientId: CLIENT_ID,
+      externalId: 'pedido_1',
+      amountFiatCents: 10_000n,
+      currency: 'BRL',
+      payerTaxNumber: '00000000191',
+    });
+    const fetched = await service.get(dto.id);
+    expect(fetched?.options.pix?.status).toBe('pendente');
+    expect(fetched?.options.bitcoin?.status).toBe('aguardando_deposito');
+    expect(fetched?.options.pix_direto?.status).toBe('nao_observado');
+    expect(fetched?.status).toBe('pendente');
+    expect(fetched?.paid_rail).toBeNull();
+  });
+});
+
+describe('estado do pedido a partir dos trilhos', () => {
+  const base = { stored: 'pendente' as const, pix: null, bitcoin: null, hasPixDirect: false };
+
+  it('Pix pago ou swap liquidado deixam o pedido pago', () => {
+    expect(deriveRequestStatus({ ...base, pix: 'pago', bitcoin: 'aguardando_deposito' })).toEqual({
+      status: 'pago',
+      paidRail: 'pix',
+    });
+    expect(deriveRequestStatus({ ...base, pix: 'expirado', bitcoin: 'liquidado' })).toEqual({
+      status: 'pago',
+      paidRail: 'bitcoin',
+    });
+  });
+
+  it('swap so depositado ainda nao e pago', () => {
+    expect(deriveRequestStatus({ ...base, bitcoin: 'depositado' }).status).toBe('pendente');
+  });
+
+  it('todos os trilhos mortos: expirado', () => {
+    expect(deriveRequestStatus({ ...base, pix: 'expirado', bitcoin: 'falhou' }).status).toBe('expirado');
+  });
+
+  it('com Pix direto nunca declara expirado: o pagamento pode ter ido para a chave', () => {
+    expect(
+      deriveRequestStatus({ ...base, pix: 'expirado', bitcoin: 'expirado', hasPixDirect: true }).status,
+    ).toBe('pendente');
+    expect(deriveRequestStatus({ ...base, hasPixDirect: true }).status).toBe('pendente');
+  });
+
+  it('estado gravado diferente de pendente passa como esta', () => {
+    expect(deriveRequestStatus({ ...base, stored: 'cancelado', pix: 'pago' }).status).toBe('cancelado');
   });
 });

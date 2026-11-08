@@ -512,7 +512,13 @@ Regras:
   chave);
 - o `external_id` do site é a idempotência: repetir a chamada devolve o mesmo
   pedido (`200`), sem abrir cobranças novas;
-- `GET /v1/payment-requests/:id` devolve o pedido com o estado de cada trilho.
+- `GET /v1/payment-requests/:id` devolve o pedido com o estado de cada trilho
+  (`options.pix.status`, `options.bitcoin.status`) e o `status` do pedido
+  derivado deles, com `paid_rail` (`pix` | `bitcoin` | `null`);
+- `options.pix_direto.status` é sempre `nao_observado`: o pagamento vai direto
+  para a conta do usuário e o motor não vê. Com Pix direto, o pedido nunca
+  vira `expirado` sozinho (o pagador pode ter pago na chave); confira no
+  extrato.
 
 ### C16 — Swap (Bitcoin → dólar digital)
 

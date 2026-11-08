@@ -277,17 +277,20 @@ Resposta (201):
   "amount_cents": "10000",
   "currency": "BRL",
   "status": "pendente",
+  "paid_rail": null,
   "expires_at": null,
   "options": {
-    "pix": { "charge_id": "uuid", "qr_copypaste": "000201...", "qr_svg": "<svg ...>" },
+    "pix": { "charge_id": "uuid", "status": "pendente", "qr_copypaste": "000201...", "qr_svg": "<svg ...>" },
     "bitcoin": {
       "swap_id": "uuid",
+      "status": "aguardando_deposito",
       "address": "bc1q...",
       "amount_btc": "0.002",
       "bip21": "bitcoin:bc1q...?amount=0.002",
       "qr_svg": "<svg ...>"
     },
     "pix_direto": {
+      "status": "nao_observado",
       "br_code": "000201...",
       "key_masked": "00•••••••91",
       "key_type": "cpf",
@@ -298,7 +301,16 @@ Resposta (201):
 }
 ```
 
-Consulta: `GET /v1/payment-requests/:id`.
+Consulta: `GET /v1/payment-requests/:id`. Cada opcao traz o proprio `status`
+e o pedido traz `status` e `paid_rail`, derivados dos trilhos:
+
+- `pago` quando o Pix da LuniumPay foi pago (ou liquidado) ou o swap
+  entregou o USDC (`liquidado`); `paid_rail` diz qual (`pix` ou `bitcoin`);
+- `expirado` quando todos os trilhos acompanhados morreram e **nao** ha Pix
+  direto;
+- `pix_direto.status` e sempre `nao_observado`: o dinheiro cai direto na
+  conta do usuario e o motor nao ve. Com Pix direto no pedido, ele nunca vira
+  `expirado` sozinho; a confirmacao desse trilho e o extrato do banco.
 
 ## Bitcoin -> dolar digital (swap)
 
