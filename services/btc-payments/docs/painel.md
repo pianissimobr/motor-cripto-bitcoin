@@ -1,0 +1,127 @@
+# Painel do lojista e integração plug and play
+
+O painel (`/painel`) é onde o lojista **gerencia**: carteiras, chaves, webhook,
+links de pagamento, faturas e relatórios. Ele **não movimenta dinheiro**: não há
+saque nem envio. Os pagamentos caem direto na carteira de dólar digital (USDC)
+que o lojista cadastrar, qualquer uma (MetaMask, Trust, exchange).
+
+## Ligar
+
+```
+DASHBOARD_ENABLED=true
+DASHBOARD_SIGNUP_ENABLED=true     # false fecha o cadastro sem desligar o login
+AUTHO_ISSUER_URL=https://auth.libreflowdigital.com
+AUTHO_TENANT=...
+AUTHO_ISSUER_SECRET=...
+```
+
+Em produção o painel exige o authO: ele envia o código de 6 dígitos por e-mail
+(cadastro, "esqueci a senha" e confirmação de operação sensível) e o desafio
+anti-robô (ALTCHA).
+
+## Contas e segurança
+
+- Sessão em cookie `__Host-painel_sid` (httpOnly, Secure, SameSite=Lax) e CSRF no
+  header `x-csrf-token` em toda escrita.
+- Nenhuma resposta revela se um e-mail tem conta.
+- Limite de 10/min por IP nas rotas de login e cadastro, e trava de 15 minutos
+  por e-mail depois de 10 senhas erradas.
+- Cadastrar ou trocar carteira, gerar chave de API ou chave de loja de produção:
+  senha + código por e-mail (`login_2fa` no authO) e aviso por e-mail aos membros.
+- Trocar ou redefinir a senha encerra as outras sessões.
+
+## Fatura hospedada (plataformas)
+
+A loja virtual autentica com a **chave de loja** no header `x-api-key`
+(`mk_store_live_…` ou `mk_store_test_…`). A chave só cria e consulta faturas:
+vazada, não muda carteira nem desvia dinheiro (a fatura sempre paga a loja).
+
+```
+POST /v1/invoices
+x-api-key: mk_store_test_...
+
+{
+  "price_amount": "99.90",
+  "price_currency": "BRL",
+  "order_id": "1234",
+  "order_description": "Pedido #1234",
+  "customer_email": "cliente@exemplo.com",
+  "success_url": "https://loja.com/obrigado",
+  "cancel_url": "https://loja.com/carrinho",
+  "ipn_callback_url": "https://loja.com/ipn",
+  "rails": ["pix", "bitcoin"],
+  "expires_in_minutes": 60
+}
+```
+
+Resposta `201` (ou `200` com a mesma fatura quando o `order_id` se repete):
+
+```json
+{
+  "id": "uuid",
+  "order_id": "1234",
+  "mode": "test",
+  "status": "aguardando",
+  "price_amount": "99.90",
+  "price_currency": "BRL",
+  "invoice_url": "https://cripto.libreflowdigital.com/i/uuid",
+  "rails": ["pix", "bitcoin"],
+  "paid_rail": null,
+  "tx_hash": null,
+  "expires_at": "...",
+  "paid_at": null
+}
+```
+
+- `GET /v1/invoices/:id` e `GET /v1/invoices?order_id=` consultam.
+- `GET /v1/ping` serve de "testar conexão" e devolve o nome da loja e o modo.
+- Em dólar (`USD`), a fatura aceita só Bitcoin, porque o Pix é em real.
+- O `ipn_callback_url` precisa ser HTTPS e não pode apontar para a rede interna.
+
+Na página `/i/:id`, o pagador escolhe Pix (informando o CPF ou CNPJ) ou Bitcoin.
+A cobrança só é criada nesse momento, uma por fatura. Depois de pago, ele volta
+para o `success_url`.
+
+### Estados
+
+| status | quando |
+|---|---|
+| `aguardando` | ninguém pagou ainda |
+| `confirmando` | o Bitcoin chegou e está sendo convertido |
+| `pago` | Pix pago, ou USDC entregue na carteira (`paid_rail` diz qual) |
+| `expirado` | venceu sem nada em andamento |
+
+### IPN
+
+A cada mudança de estado, a fatura recebe um `POST` no `ipn_callback_url` (ou no
+webhook da loja, quando a fatura não tem URL própria). As tentativas seguem o
+mesmo esquema do webhook: 1 min, 5 min, 30 min, 2 h, 6 h e 24 h.
+
+- Corpo: `{ "event": "invoice.pago", "event_id", "created_at", "data": <fatura> }`
+- Header `x-webhook-signature: t=<unix>,v1=<hex>`, em que `hex` é o
+  HMAC-SHA256 do **segredo IPN** sobre `"<t>.<corpo>"`. Recuse diferenças de
+  mais de 5 minutos.
+
+Boa prática, e é o que o plugin faz: confira a assinatura, **consulte a fatura
+de novo** (`GET /v1/invoices/:id`) e compare o valor com o do pedido antes de
+marcá-lo como pago.
+
+### Modo teste
+
+Com a chave `mk_store_test_…`, nenhum provedor é chamado. A página mostra
+"Simular pagamento", e o IPN sai de verdade. Uma chave de teste não enxerga
+fatura de produção, e vice-versa.
+
+## WooCommerce
+
+O plugin está em `integrations/woocommerce/libreflow-gateway`. O build da imagem
+o empacota em `/downloads/libreflow-woocommerce.zip`, link do painel em
+Integração e API.
+
+1. Instalar o `.zip` e ativar.
+2. Em WooCommerce → Pagamentos → LibreFlow Pay, colar a chave de loja e o
+   segredo IPN e salvar. O plugin testa a conexão ao salvar.
+
+O plugin é compatível com HPOS e com o checkout em blocos. Foi testado de ponta a
+ponta (pedido → fatura → pagamento simulado → IPN → pedido "Processando") em
+WordPress 7.1 com WooCommerce 11.2.

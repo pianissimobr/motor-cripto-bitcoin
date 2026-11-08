@@ -10,3 +10,4 @@ data
 *.tsbuildinfo
 dashboard/node_modules
 public/painel
+public/downloads
