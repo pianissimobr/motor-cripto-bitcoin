@@ -153,6 +153,12 @@ export function registerDashRoutes(app: FastifyInstance, deps: DashRoutesDeps): 
       .send(csv);
   });
 
+  app.get('/v1/dash/merchants/:merchantId/payments/pix/:id/receipt', opts, async (request) => {
+    const merchant = await merchantOf(request);
+    const { id } = parse(withId, request.params, 'pagamento');
+    return dash.pixReceipt(merchant, id);
+  });
+
   app.get('/v1/dash/merchants/:merchantId/payments/:kind/:id', opts, async (request) => {
     const merchant = await merchantOf(request);
     const { kind, id } = parse(paymentParams, request.params, 'pagamento');

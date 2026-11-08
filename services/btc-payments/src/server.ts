@@ -240,6 +240,7 @@ export async function main(): Promise<void> {
           emailSender,
           ...(pixCharges ? { pixCharges } : {}),
           ...(swap ? { swap } : {}),
+          ...(lunium ? { lunium } : {}),
           paymentRequests,
         })
       : undefined;

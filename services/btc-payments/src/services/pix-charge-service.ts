@@ -66,6 +66,8 @@ export type PixChargeDto = {
     expires_at: string | null;
   };
   payout_id: string | null;
+  /** Identificador end-to-end do Banco Central, depois do pagamento. */
+  e2e: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -222,6 +224,7 @@ export class PixChargeService {
         expires_at: iso(charge.expiresAt),
       },
       payout_id: charge.payoutId,
+      e2e: charge.e2e,
       error: charge.error,
       created_at: charge.createdAt.toISOString(),
       updated_at: charge.updatedAt.toISOString(),

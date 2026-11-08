@@ -131,6 +131,19 @@ export type LuniumWebhookDelivery = {
   updated_at?: string;
 };
 
+/** `GET /v1/verificar/{e2e}`. */
+export type LuniumE2eVerification = {
+  verificado: boolean;
+  pago: boolean;
+  e2e: string;
+  valor_brl?: string;
+  pago_em?: string;
+  recebedor_iniciais?: string | null;
+  instituicao?: string | null;
+  liquidado_por?: string;
+  comprovante_url?: string | null;
+};
+
 /** `GET /cashin/events`. */
 export type LuniumEventFeed = {
   projeto?: string;
@@ -489,6 +502,21 @@ export class LuniumClient {
    */
   async getEvents(limit = 200): Promise<LuniumEventFeed> {
     return this.request<LuniumEventFeed>('GET', `/cashin/events?limit=${Math.min(Math.max(limit, 1), 200)}`, undefined, 'normal');
+  }
+
+  /**
+   * `GET /v1/verificar/{e2e}` — confirmacao publica de um Pix liquidado pela
+   * Lunium (valor, data, instituicao e link do comprovante). 404: nao foi
+   * liquidado pela Lunium.
+   */
+  async verifyE2e(e2e: string): Promise<LuniumE2eVerification | null> {
+    if (!/^E[0-9A-Za-z]{32}$/.test(e2e)) return null;
+    try {
+      return await this.request<LuniumE2eVerification>('GET', `/v1/verificar/${e2e}`);
+    } catch (err) {
+      if (err instanceof LuniumError && err.statusCode === 404) return null;
+      throw err;
+    }
   }
 
   /** `GET /keys/me` — limites vigentes da chave (faixa por operacao e piso por rota). */

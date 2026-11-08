@@ -13,6 +13,7 @@ import type { DashAuthService } from './dash-auth-service.js';
 import type { EmailSender } from './email-sender.js';
 import { deriveRequestStatus, type PaymentRequestRail, type PaymentRequestService } from './payment-request-service.js';
 import type { PixChargeService } from './pix-charge-service.js';
+import type { LuniumClient } from '../adapters/lunium/client.js';
 import type { SwapService } from './swap-service.js';
 
 export type DashServiceDeps = {
@@ -22,6 +23,8 @@ export type DashServiceDeps = {
   queries: DashQueries;
   /** Banco direto, para a exportacao. */
   db?: Db;
+  /** Lunium: conferencia publica do comprovante do Pix (e2e). */
+  lunium?: Pick<LuniumClient, 'verifyE2e'>;
   clients: ClientService;
   auth: DashAuthService;
   emailSender?: EmailSender;
@@ -280,6 +283,27 @@ export class DashService {
     const request = this.deps.paymentRequests ? await this.deps.paymentRequests.get(id, merchant.id) : null;
     if (!request) throw new NotFoundError('pedido nao encontrado');
     return { kind, payment: request, webhooks: [] };
+  }
+
+  /**
+   * Comprovante oficial de um Pix recebido (cash-in), conferido na Lunium
+   * pelo e2e do Banco Central.
+   */
+  async pixReceipt(merchant: ApiClient, id: string) {
+    if (!this.deps.lunium) throw new NotFoundError('comprovante indisponivel');
+    const charge = await this.deps.repos.findPixChargeByIdForClient(id, merchant.id);
+    if (!charge) throw new NotFoundError('cobranca nao encontrada');
+    if (!charge.e2e) throw new NotFoundError('este Pix ainda nao tem comprovante');
+    const found = await this.deps.lunium.verifyE2e(charge.e2e);
+    if (!found) return { verified: false, e2e: charge.e2e };
+    return {
+      verified: found.verificado && found.pago,
+      e2e: found.e2e,
+      amount_brl: found.valor_brl ?? null,
+      paid_at: found.pago_em ?? null,
+      institution: found.instituicao ?? null,
+      receipt_url: found.comprovante_url ?? null,
+    };
   }
 
   // ------------------------------------------------------ links de pagamento

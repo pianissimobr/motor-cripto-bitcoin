@@ -18,6 +18,7 @@ const maybeDescribe = TEST_DB_URL ? describe : describe.skip;
 const W1 = '0x4Cd01696Cd0165D6020AB7d8AE866Fdf2feD3855';
 const W2 = '0x1111111111111111111111111111111111111111';
 const STEP = { password: 'senha-forte-123' };
+const E2E = 'E' + '1'.repeat(32);
 
 type Session = { cookie: string; csrf: string };
 
@@ -48,6 +49,12 @@ maybeDescribe('painel: API /v1/dash (integration)', () => {
       auth,
       emailSender: mail,
       usdcBalanceOf: async () => 1_234_567n,
+      lunium: {
+        verifyE2e: async (e2e: string) =>
+          e2e === E2E
+            ? { verificado: true, pago: true, e2e, valor_brl: '25.00', pago_em: '2026-11-08T10:00:00-03:00', instituicao: 'Banco Inter', comprovante_url: 'https://lunium.example/c/1' }
+            : null,
+      } as never,
     });
     app = buildDashApp({ config, repos, emailSender: mail, extra: { dashAuth: auth, dash } });
   });
@@ -210,5 +217,18 @@ maybeDescribe('painel: API /v1/dash (integration)', () => {
 
     const detailOther = await get(b, `/v1/dash/merchants/${b.merchantId}/payments/pix/${p1.items[0].id}`);
     expect(detailOther.statusCode).toBe(404);
+  });
+
+  it('comprovante do Pix conferido na Lunium pelo e2e; so da propria loja', async () => {
+    const a = await login('l@ex.com');
+    const b = await login('m@ex.com');
+    const paid = await repos.createPixCharge({ clientId: a.merchantId, externalId: 'pago', providerExternalId: 'pix_pago', amountBrlCents: 2500n });
+    await repos.updatePixCharge({ id: paid.id, status: 'pago', e2e: E2E });
+    const open = await repos.createPixCharge({ clientId: a.merchantId, externalId: 'aberto', providerExternalId: 'pix_aberto', amountBrlCents: 2500n });
+
+    const receipt = await get(a, `/v1/dash/merchants/${a.merchantId}/payments/pix/${paid.id}/receipt`);
+    expect(receipt.json()).toMatchObject({ verified: true, amount_brl: '25.00', institution: 'Banco Inter', receipt_url: 'https://lunium.example/c/1' });
+    expect((await get(a, `/v1/dash/merchants/${a.merchantId}/payments/pix/${open.id}/receipt`)).statusCode).toBe(404);
+    expect((await get(b, `/v1/dash/merchants/${b.merchantId}/payments/pix/${paid.id}/receipt`)).statusCode).toBe(404);
   });
 });

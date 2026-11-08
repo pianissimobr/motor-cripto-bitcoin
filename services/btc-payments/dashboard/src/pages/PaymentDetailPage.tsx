@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { api, errorText } from '../api';
@@ -21,6 +22,58 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null;
+}
+
+type ReceiptData = {
+  verified: boolean;
+  e2e: string;
+  amount_brl?: string | null;
+  paid_at?: string | null;
+  institution?: string | null;
+  receipt_url?: string | null;
+};
+
+/** Comprovante oficial do Pix, conferido na Lunium pelo e2e do Banco Central. */
+function Receipt({ merchantId, id }: { merchantId: string; id: string }) {
+  const [show, setShow] = useState(false);
+  const query = useQuery({
+    queryKey: ['receipt', merchantId, id],
+    queryFn: () => api<ReceiptData>(`/v1/dash/merchants/${merchantId}/payments/pix/${id}/receipt`),
+    enabled: show,
+    retry: false,
+  });
+  return (
+    <Card title="Comprovante">
+      {!show && (
+        <button className="btn btn-ghost" onClick={() => setShow(true)}>
+          Conferir comprovante
+        </button>
+      )}
+      {query.isLoading && <Spinner />}
+      {query.error && <Alert>{errorText(query.error)}</Alert>}
+      {query.data && !query.data.verified && <Alert kind="warn">Pix não confirmado pela Lunium para o identificador {query.data.e2e}.</Alert>}
+      {query.data?.verified && (
+        <>
+          <Row label="Situação">
+            <StatusBadge status="pago" />
+          </Row>
+          <Row label="Valor">{query.data.amount_brl ? `R$ ${query.data.amount_brl.replace('.', ',')}` : '—'}</Row>
+          <Row label="Pago em">{dateTime(query.data.paid_at)}</Row>
+          <Row label="Banco do pagador">{query.data.institution ?? '—'}</Row>
+          <Row label="Identificador (E2E)">
+            <span className="mono">{query.data.e2e}</span>
+          </Row>
+          {query.data.receipt_url && (
+            <Row label="Comprovante">
+              <a href={query.data.receipt_url} target="_blank" rel="noreferrer noopener">
+                Abrir comprovante oficial
+              </a>
+            </Row>
+          )}
+        </>
+      )}
+    </Card>
+  );
 }
 
 export default function PaymentDetailPage() {
@@ -61,6 +114,7 @@ export default function PaymentDetailPage() {
           </Row>
         )}
       </Card>
+      {kind === 'pix' && str(p.e2e) && <Receipt merchantId={merchantId} id={id!} />}
       {kind === 'pix' && (
         <Card title="Notificações enviadas (webhook)">
           {replay.error && <Alert>{errorText(replay.error)}</Alert>}
