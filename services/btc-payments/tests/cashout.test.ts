@@ -4,6 +4,7 @@ import { testConfig } from './helpers.js';
 import { silentLogger } from '../src/logger.js';
 import { brCodeCrc16 } from '../src/domain/brcode.js';
 import { CashOutService } from '../src/services/cashout-service.js';
+import { DEFAULT_APP_FLAGS, type AppFlags } from '../src/services/flags-service.js';
 import type { Repositories } from '../src/db/repositories.js';
 import type { CashOutCharge } from '../src/domain/types.js';
 
@@ -29,7 +30,7 @@ function buildBrCode(fields: { key: string; amount?: string }): string {
   return `${withoutCrc}6304${brCodeCrc16(`${withoutCrc}6304`)}`;
 }
 
-function build(overrides: Record<string, string> = {}) {
+function build(overrides: Record<string, string> = {}, flags?: Partial<AppFlags>) {
   const config = testConfig({
     PIX_ENABLED: 'true',
     CASHOUT_ENABLED: 'true',
@@ -97,6 +98,7 @@ function build(overrides: Record<string, string> = {}) {
     } as unknown as LuniumClient,
     config,
     logger: silentLogger,
+    ...(flags ? { flags: { get: async () => ({ flags: { ...DEFAULT_APP_FLAGS, ...flags } }) } } : {}),
   });
   return { service, config };
 }
@@ -111,6 +113,24 @@ describe('cash-out (regras)', () => {
     await expect(service.quote({ brCode })).rejects.toThrow(/valor acima do maximo/);
   });
 
+  it('flag do operador desligada: cotacao, criacao e aceite recusados; deposito segue', async () => {
+    const { service } = build({}, { cash_out_enabled: false });
+    const brCode = buildBrCode({ key: 'adm@exemplo.com.br', amount: '6.50' });
+    await expect(service.quote({ brCode })).rejects.toThrow(/desligado pelo operador/);
+    await expect(
+      service.create({ clientId: 'c1', externalId: 'e1', originAddress: ORIGIN, brCode }),
+    ).rejects.toThrow(/desligado pelo operador/);
+    await expect(service.accept('o1', 'c1')).rejects.toThrow(/desligado pelo operador/);
+    await expect(service.reportDeposit('o1', 'c1', `0x${'a'.repeat(64)}`)).resolves.toBeTruthy();
+  });
+
+  it('o maximo das flags vale quando e mais restrito que o do ambiente', async () => {
+    const { service } = build({}, { max_cash_out_brl: 100 });
+    const brCode = buildBrCode({ key: 'adm@exemplo.com.br', amount: '150.00' });
+    await expect(service.quote({ brCode })).rejects.toThrow(/valor acima do maximo \(10000 centavos\)/);
+    const ok = buildBrCode({ key: 'adm@exemplo.com.br', amount: '6.50' });
+    await expect(service.quote({ brCode: ok })).resolves.toMatchObject({ amount: '1.2' });
+  });
 
   it('exige BR Code ou chave Pix', async () => {
     const { service } = build();

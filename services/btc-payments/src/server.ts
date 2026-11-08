@@ -173,9 +173,10 @@ export async function main(): Promise<void> {
           ...(esplora ? { esplora } : {}),
         })
       : null;
+    const flags = new FlagsService({ repos, logger });
     const cashOut =
       lunium && config.cashout.enabled
-        ? new CashOutService({ repos, lunium, config, logger, alerts })
+        ? new CashOutService({ repos, lunium, config, logger, alerts, flags })
         : null;
     const luniumWebhook = pixCharges && lunium
       ? new LuniumWebhookService({
@@ -197,7 +198,6 @@ export async function main(): Promise<void> {
     });
     const deviceClients = new DeviceClientService({ repos, config, logger });
     const operations = new OperationsService({ repos, logger });
-    const flags = new FlagsService({ repos, logger });
 
     const app = buildApp({
       config,

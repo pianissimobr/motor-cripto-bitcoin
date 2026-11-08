@@ -19,6 +19,7 @@ import { parseDecimalToMinor, type CashOutCharge } from '../domain/types.js';
 import type { Repositories } from '../db/repositories.js';
 import type { Logger } from '../logger.js';
 import type { AlertService } from './alert-service.js';
+import type { AppFlags } from './flags-service.js';
 import { enqueueCashOutEvent, type CashOutEventType } from './cashout-events.js';
 
 export type CreateCashOutInput = {
@@ -99,6 +100,11 @@ export type CashOutDto = {
 };
 
 export type CashOutServiceDeps = {
+  /**
+   * Flags do app gravadas no motor (desligamento remoto). Sem elas, vale so a
+   * configuracao do ambiente.
+   */
+  flags?: { get(): Promise<{ flags: AppFlags }> };
   repos: Repositories;
   lunium: LuniumClient;
   config: AppConfig;
@@ -269,6 +275,7 @@ export class CashOutService {
     id: string,
     clientId: string,
   ): Promise<CashOutDto> {
+    await this.assertEnabled();
     const local = await this.requireForClient(id, clientId);
     if (!local.providerCashoutId) {
       throw new ServiceUnavailableError('a ordem ainda nao tem id na LuniumPay');
@@ -471,16 +478,32 @@ export class CashOutService {
     return local;
   }
 
+  /**
+   * Ambiente ligado **e** flag do operador ligada. A flag e o desligamento
+   * remoto: vale para qualquer versao do app, porque e o motor que recusa.
+   * O registro de deposito nao passa por aqui (quem ja enviou o USDC precisa
+   * ser acompanhado).
+   */
   private async assertEnabled(): Promise<void> {
     if (!this.deps.config.cashout.enabled) {
       throw new ServiceUnavailableError('cash-out desabilitado');
     }
+    if (this.deps.flags && !(await this.deps.flags.get()).flags.cash_out_enabled) {
+      throw new ServiceUnavailableError('cash-out desligado pelo operador');
+    }
   }
 
-  /** Limites de valor do cash-out, sobre o valor efetivo do Pix. */
+  /** Limites do ambiente e das flags: vale o mais restrito. */
   private async assertWithinLimits(amount: bigint): Promise<void> {
-    const min = this.deps.config.cashout.minBrlCents;
-    const max = this.deps.config.cashout.maxBrlCents;
+    let min = this.deps.config.cashout.minBrlCents;
+    let max = this.deps.config.cashout.maxBrlCents;
+    if (this.deps.flags) {
+      const { flags } = await this.deps.flags.get();
+      const flagMin = BigInt(Math.round(flags.min_cash_out_brl * 100));
+      const flagMax = BigInt(Math.round(flags.max_cash_out_brl * 100));
+      if (flagMin > min) min = flagMin;
+      if (flagMax < max) max = flagMax;
+    }
     if (amount < min) {
       throw new ValidationError(`valor abaixo do minimo (${min.toString()} centavos)`);
     }
